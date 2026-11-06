@@ -1,0 +1,7 @@
+{
+  "name": "Campus Ride Sharing Portal — DIU",
+  "description": "Exclusive, safe, and affordable campus ride-sharing portal for Daffodil International University (DIU) students.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
