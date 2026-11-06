@@ -25,10 +25,25 @@ app.use(
   })
 );
 
-// CORS configuration supporting credentials (cookies & Bearer headers)
+// CORS configuration with explicit origin allowlist supporting credentials
+const allowedOrigins = process.env.CORS_ORIGINS
+  ? process.env.CORS_ORIGINS.split(',').map((s) => s.trim()).filter(Boolean)
+  : process.env.APP_URL
+  ? [process.env.APP_URL]
+  : [];
+
 app.use(
   cors({
-    origin: true,
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+      if (origin.includes('run.app') || (process.env.NODE_ENV !== 'production' && (origin.includes('localhost') || origin.includes('127.0.0.1')))) {
+        return callback(null, true);
+      }
+      callback(null, false);
+    },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']
   })
@@ -38,6 +53,52 @@ app.use(
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
+
+// Backend Cross-Origin State-Changing Request Security Middleware (Defense-in-depth against CSRF)
+app.use((req: Request, res: Response, next: NextFunction) => {
+  const unsafeMethods = ['POST', 'PUT', 'PATCH', 'DELETE'];
+  if (unsafeMethods.includes(req.method)) {
+    const origin = req.headers.origin;
+    const referer = req.headers.referer;
+
+    if (origin) {
+      const isAllowed =
+        allowedOrigins.length === 0 ||
+        allowedOrigins.includes(origin) ||
+        origin.includes('run.app') ||
+        (process.env.NODE_ENV !== 'production' && (origin.includes('localhost') || origin.includes('127.0.0.1')));
+
+      if (!isAllowed) {
+        res.status(403).json({
+          success: false,
+          message: 'Access denied: Untrusted cross-origin request rejected by backend security policy.'
+        });
+        return;
+      }
+    } else if (referer) {
+      try {
+        const refUrl = new URL(referer);
+        const refOrigin = refUrl.origin;
+        const isAllowed =
+          allowedOrigins.length === 0 ||
+          allowedOrigins.includes(refOrigin) ||
+          refOrigin.includes('run.app') ||
+          (process.env.NODE_ENV !== 'production' && (refOrigin.includes('localhost') || refOrigin.includes('127.0.0.1')));
+
+        if (!isAllowed) {
+          res.status(403).json({
+            success: false,
+            message: 'Access denied: Untrusted cross-site referer request rejected by backend security policy.'
+          });
+          return;
+        }
+      } catch {
+        // ignore malformed referer
+      }
+    }
+  }
+  next();
+});
 
 // Initialize Database connection / in-memory store
 getDbPool().catch((err) => {

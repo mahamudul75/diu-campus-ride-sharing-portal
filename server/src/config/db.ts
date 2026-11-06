@@ -18,7 +18,7 @@ const {
   DB_NAME = 'diu_campus_ride_sharing',
   DB_SSL_CA = '',
   ADMIN_EMAIL = 'admin@diu.edu.bd',
-  ADMIN_PASSWORD = 'Admin123!',
+  ADMIN_PASSWORD = '',
   ADMIN_NAME = 'DIU Transport Admin',
   ADMIN_STUDENT_ID = '000-00-001',
   ADMIN_PHONE = '01711000001'
@@ -100,7 +100,7 @@ export async function initMemoryStore() {
   if (memoryStore.initialized) return;
 
   const defaultUserHash = await bcrypt.hash('Password123!', 10);
-  const defaultAdminHash = await bcrypt.hash(ADMIN_PASSWORD || 'Admin123!', 10);
+  const defaultAdminHash = await bcrypt.hash(ADMIN_PASSWORD || 'LocalDevAdminSeedPassword123!', 10);
 
   memoryStore.users = [
     {

@@ -100,6 +100,16 @@ export const MapPicker: React.FC<MapPickerProps> = ({
     return Number((R * c * 1.25).toFixed(1));
   };
 
+  const createPopupEl = (title: string, value: string) => {
+    const div = document.createElement('div');
+    const strong = document.createElement('strong');
+    strong.textContent = title + ':';
+    div.appendChild(strong);
+    div.appendChild(document.createElement('br'));
+    div.appendChild(document.createTextNode(value));
+    return div;
+  };
+
   const updateMarkersAndRoute = async (currentPickup: LocationPoint | null, currentDest: LocationPoint | null) => {
     const map = mapInstanceRef.current;
     if (!map) return;
@@ -108,14 +118,14 @@ export const MapPicker: React.FC<MapPickerProps> = ({
     if (currentPickup) {
       if (pickupMarkerRef.current) {
         pickupMarkerRef.current.setLatLng([currentPickup.lat, currentPickup.lng]);
-        pickupMarkerRef.current.setPopupContent(`<strong>Pickup:</strong><br/>${currentPickup.name}`);
+        pickupMarkerRef.current.setPopupContent(createPopupEl('Pickup', currentPickup.name));
       } else {
         pickupMarkerRef.current = L.marker([currentPickup.lat, currentPickup.lng], {
           icon: createMarkerIcon('#0d9488', 'P'),
           draggable: true
         })
           .addTo(map)
-          .bindPopup(`<strong>Pickup:</strong><br/>${currentPickup.name}`);
+          .bindPopup(createPopupEl('Pickup', currentPickup.name));
 
         pickupMarkerRef.current.on('dragend', async (e: any) => {
           const { lat, lng } = e.target.getLatLng();
@@ -143,14 +153,14 @@ export const MapPicker: React.FC<MapPickerProps> = ({
     if (currentDest) {
       if (destMarkerRef.current) {
         destMarkerRef.current.setLatLng([currentDest.lat, currentDest.lng]);
-        destMarkerRef.current.setPopupContent(`<strong>Destination:</strong><br/>${currentDest.name}`);
+        destMarkerRef.current.setPopupContent(createPopupEl('Destination', currentDest.name));
       } else {
         destMarkerRef.current = L.marker([currentDest.lat, currentDest.lng], {
           icon: createMarkerIcon('#f97316', 'D'),
           draggable: true
         })
           .addTo(map)
-          .bindPopup(`<strong>Destination:</strong><br/>${currentDest.name}`);
+          .bindPopup(createPopupEl('Destination', currentDest.name));
 
         destMarkerRef.current.on('dragend', async (e: any) => {
           const { lat, lng } = e.target.getLatLng();

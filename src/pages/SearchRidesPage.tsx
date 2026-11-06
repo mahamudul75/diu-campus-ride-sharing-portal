@@ -162,10 +162,28 @@ export const SearchRidesPage: React.FC = () => {
         popupAnchor: [0, -30]
       });
 
+      const createCampusPopupEl = () => {
+        const div = document.createElement('div');
+        const strong = document.createElement('strong');
+        strong.textContent = 'DIU Daffodil Smart City';
+        div.appendChild(strong);
+        div.appendChild(document.createElement('br'));
+        const span1 = document.createElement('span');
+        span1.style.fontSize = '11px';
+        span1.style.color = '#64748b';
+        span1.textContent = 'Ashulia Campus Corridor';
+        div.appendChild(span1);
+        div.appendChild(document.createElement('br'));
+        const span2 = document.createElement('span');
+        span2.style.fontSize = '10px';
+        span2.style.color = '#0d9488';
+        span2.textContent = 'Main Transit Hub';
+        div.appendChild(span2);
+        return div;
+      };
+
       const campusMarker = L.marker([23.8768, 90.3202], { icon: diuIcon })
-        .bindPopup(
-          `<strong>DIU Daffodil Smart City</strong><br/><span style="font-size: 11px; color: #64748b;">Ashulia Campus Corridor</span><br/><span style="font-size: 10px; color: #0d9488;">Main Transit Hub</span>`
-        )
+        .bindPopup(createCampusPopupEl())
         .addTo(markersLayer);
 
       map.setView([23.8768, 90.3202], 12);
@@ -173,6 +191,20 @@ export const SearchRidesPage: React.FC = () => {
     }
 
     const bounds = L.latLngBounds([]);
+
+    const createRidePopupEl = (title: string, value: string, extra?: string) => {
+      const div = document.createElement('div');
+      const strong = document.createElement('strong');
+      strong.textContent = title + ':';
+      div.appendChild(strong);
+      div.appendChild(document.createElement('br'));
+      div.appendChild(document.createTextNode(value));
+      if (extra) {
+        div.appendChild(document.createElement('br'));
+        div.appendChild(document.createTextNode(extra));
+      }
+      return div;
+    };
 
     rides.forEach((r) => {
       const pLat = Number(r.pickup_lat);
@@ -209,10 +241,10 @@ export const SearchRidesPage: React.FC = () => {
       });
 
       const pMarker = L.marker([pLat, pLng], { icon: pickupIcon })
-        .bindPopup(`<strong>Pickup:</strong><br/>${r.pickup_name}<br/>৳${r.fare} | Driver: ${r.driver_name}`);
+        .bindPopup(createRidePopupEl('Pickup', r.pickup_name, `৳${r.fare} | Driver: ${r.driver_name}`));
 
       const dMarker = L.marker([dLat, dLng], { icon: destIcon })
-        .bindPopup(`<strong>Destination:</strong><br/>${r.dest_name}`);
+        .bindPopup(createRidePopupEl('Destination', r.dest_name));
 
       pMarker.on('click', () => setSelectedRide(r));
       dMarker.on('click', () => setSelectedRide(r));

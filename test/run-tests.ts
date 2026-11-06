@@ -37,8 +37,9 @@ async function runTests() {
 
   // Test 2: Student Registration
   console.log('\n[Phase 2: Registration & Duplicate Prevention Tests]');
-  const testStudentId = '223-15-999';
-  const testEmail = 'test.student@diu.edu.bd';
+  const randomSuffix = Math.floor(1000 + Math.random() * 9000);
+  const testStudentId = `223-15-${randomSuffix}`;
+  const testEmail = `test.student.${randomSuffix}@diu.edu.bd`;
   const hashed = await bcrypt.hash('Password123!', 10);
 
   const [insertRes] = await db.query(
@@ -93,7 +94,7 @@ async function runTests() {
     `INSERT INTO rides 
       (driver_id, pickup_name, pickup_lat, pickup_lng, dest_name, dest_lat, dest_lng, departure_time, fare, seats_total, seats_available, vehicle_type, note, status)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'bike', 'Test route', 'open')`,
-    [newUserId, 'DIU Gate 2', 23.8768, 90.3202, 'Dhanmondi 32', 23.7538, 90.377, depTime, 110, 1]
+    [newUserId, 'DIU Gate 2', 23.8768, 90.3202, 'Dhanmondi 32', 23.7538, 90.377, depTime, 110, 1, 1]
   );
   const testRideId = (rideInsert as any).insertId;
   assert(testRideId > 0, 'Approved student driver creates campus ride');
@@ -103,7 +104,15 @@ async function runTests() {
   assert((searchResults as any[]).length > 0, 'Searches and retrieves rides by destination');
 
   // Test 10: Passenger Booking Request
-  const passengerId = 5; // Sadia Afrin
+  const passengerStudentId = `224-15-${randomSuffix}`;
+  const passengerEmail = `test.passenger.${randomSuffix}@diu.edu.bd`;
+  const [passengerInsert] = await db.query(
+    `INSERT INTO users (student_id, name, email, phone, password_hash, role, driver_status)
+     VALUES (?, ?, ?, ?, ?, 'student', 'none')`,
+    [passengerStudentId, 'Test Passenger', passengerEmail, '01788888888', hashed]
+  );
+  const passengerId = (passengerInsert as any).insertId;
+
   const [reqInsert] = await db.query(
     "INSERT INTO ride_requests (ride_id, passenger_id, status) VALUES (?, ?, 'pending')",
     [testRideId, passengerId]
@@ -116,7 +125,7 @@ async function runTests() {
   const conn = await db.getConnection();
   await conn.beginTransaction();
   await conn.query("UPDATE ride_requests SET status = 'accepted' WHERE id = ?", [testReqId]);
-  await conn.query('UPDATE rides SET seats_available = seats_available - 1 WHERE id = ?', [testRideId]);
+  await conn.query("UPDATE rides SET seats_available = seats_available - 1, status = 'full' WHERE id = ?", [testRideId]);
   await conn.commit();
   conn.release();
 
@@ -130,7 +139,7 @@ async function runTests() {
   const conn2 = await db.getConnection();
   await conn2.beginTransaction();
   await conn2.query("UPDATE ride_requests SET status = 'cancelled' WHERE id = ?", [testReqId]);
-  await conn2.query('UPDATE rides SET seats_available = seats_available + 1 WHERE id = ?', [testRideId]);
+  await conn2.query("UPDATE rides SET seats_available = seats_available + 1, status = 'open' WHERE id = ?", [testRideId]);
   await conn2.commit();
   conn2.release();
 

@@ -117,22 +117,32 @@ export const MapView: React.FC<MapViewProps> = ({
     const pickupIcon = createCustomIcon('#0d9488', 'P');
     const destIcon = createCustomIcon('#f97316', 'D');
 
+    const createPopupEl = (title: string, value: string) => {
+      const div = document.createElement('div');
+      const strong = document.createElement('strong');
+      strong.textContent = title + ':';
+      div.appendChild(strong);
+      div.appendChild(document.createElement('br'));
+      div.appendChild(document.createTextNode(value));
+      return div;
+    };
+
     if (pickupMarkerRef.current) {
       pickupMarkerRef.current.setLatLng([pLat, pLng]);
-      pickupMarkerRef.current.setPopupContent(`<strong>Pickup:</strong><br/>${pickupName}`);
+      pickupMarkerRef.current.setPopupContent(createPopupEl('Pickup', pickupName));
     } else {
       pickupMarkerRef.current = L.marker([pLat, pLng], { icon: pickupIcon })
         .addTo(map)
-        .bindPopup(`<strong>Pickup:</strong><br/>${pickupName}`);
+        .bindPopup(createPopupEl('Pickup', pickupName));
     }
 
     if (destMarkerRef.current) {
       destMarkerRef.current.setLatLng([dLat, dLng]);
-      destMarkerRef.current.setPopupContent(`<strong>Destination:</strong><br/>${destName}`);
+      destMarkerRef.current.setPopupContent(createPopupEl('Destination', destName));
     } else {
       destMarkerRef.current = L.marker([dLat, dLng], { icon: destIcon })
         .addTo(map)
-        .bindPopup(`<strong>Destination:</strong><br/>${destName}`);
+        .bindPopup(createPopupEl('Destination', destName));
     }
 
     // Fetch OSRM Route

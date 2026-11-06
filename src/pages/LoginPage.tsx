@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
-import { LogIn, Mail, Lock, ShieldCheck, KeyRound, ArrowRight } from 'lucide-react';
+import { LogIn, Mail, Lock, ArrowRight } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.tsx';
 import Spinner from '../components/Spinner.tsx';
 
@@ -35,13 +35,6 @@ export const LoginPage: React.FC = () => {
     } else {
       setError(result.message || 'Login failed.');
     }
-  };
-
-  // Quick Account Switcher Helper for fast review/testing
-  const fillCredentials = (userEmail: string, userPass: string) => {
-    setEmail(userEmail);
-    setPassword(userPass);
-    setError(null);
   };
 
   return (
@@ -106,37 +99,7 @@ export const LoginPage: React.FC = () => {
           </button>
         </form>
 
-        {/* Quick Demo Switcher */}
-        <div className="pt-4 border-t border-slate-100 dark:border-slate-800 space-y-2">
-          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider text-center">
-            Demo Test Accounts
-          </p>
-          <div className="grid grid-cols-3 gap-2">
-            <button
-              type="button"
-              onClick={() => fillCredentials('tanvir.cse@diu.edu.bd', 'Password123!')}
-              className="px-2 py-1.5 text-[11px] font-bold bg-teal-50 dark:bg-teal-950/40 hover:bg-teal-100 dark:hover:bg-teal-900/60 text-teal-800 dark:text-teal-300 rounded-xl border border-teal-200 dark:border-teal-800 transition-colors cursor-pointer text-center"
-            >
-              Driver
-            </button>
-            <button
-              type="button"
-              onClick={() => fillCredentials('sadia.bba@diu.edu.bd', 'Password123!')}
-              className="px-2 py-1.5 text-[11px] font-bold bg-blue-50 dark:bg-blue-950/40 hover:bg-blue-100 dark:hover:bg-blue-900/60 text-blue-800 dark:text-blue-300 rounded-xl border border-blue-200 dark:border-blue-800 transition-colors cursor-pointer text-center"
-            >
-              Passenger
-            </button>
-            <button
-              type="button"
-              onClick={() => fillCredentials('admin@diu.edu.bd', 'Admin123!')}
-              className="px-2 py-1.5 text-[11px] font-bold bg-amber-50 dark:bg-amber-950/40 hover:bg-amber-100 dark:hover:bg-amber-900/60 text-amber-800 dark:text-amber-300 rounded-xl border border-amber-200 dark:border-amber-800 transition-colors cursor-pointer text-center"
-            >
-              Admin
-            </button>
-          </div>
-        </div>
-
-        <div className="text-center pt-1">
+        <div className="text-center pt-2 border-t border-slate-100 dark:border-slate-800">
           <p className="text-xs text-slate-500 dark:text-slate-400">
             Need an account?{' '}
             <Link to="/register" className="font-bold text-teal-600 dark:text-teal-400 hover:underline">
