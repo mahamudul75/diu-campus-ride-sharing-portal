@@ -12,14 +12,14 @@ import {
   createRideRequest,
   getRideRequests
 } from '../controllers/requestController.ts';
-import { authenticateToken, requireApprovedDriver } from '../middleware/auth.ts';
+import { authenticateToken, requireApprovedDriver, optionalAuthenticateToken } from '../middleware/auth.ts';
 
 const router = Router();
 
 // Publicly browseable or authenticated browse
 router.get('/', getRides);
 router.get('/mine', authenticateToken, getMyRides);
-router.get('/:id', getRideById);
+router.get('/:id', optionalAuthenticateToken, getRideById);
 
 // Driver ride operations
 router.post('/', authenticateToken, requireApprovedDriver, createRide);

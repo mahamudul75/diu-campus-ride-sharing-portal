@@ -17,6 +17,7 @@ import { Ride } from '../types/index.ts';
 import RideCard from '../components/RideCard.tsx';
 import Skeleton from '../components/Skeleton.tsx';
 import { useAuth } from '../context/AuthContext.tsx';
+import CampusMapPreview from '../components/CampusMapPreview.tsx';
 
 export const LandingPage: React.FC = () => {
   const navigate = useNavigate();
@@ -90,6 +91,9 @@ export const LandingPage: React.FC = () => {
           </div>
         </div>
       </section>
+
+      {/* Campus Transit Network Map Preview */}
+      <CampusMapPreview />
 
       {/* 3-Step How It Works Section */}
       <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">

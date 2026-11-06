@@ -86,6 +86,42 @@ export async function authenticateToken(
   }
 }
 
+export async function optionalAuthenticateToken(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const token =
+      req.cookies?.token ||
+      (req.headers.authorization?.startsWith('Bearer ')
+        ? req.headers.authorization.split(' ')[1]
+        : null);
+
+    if (!token) {
+      return next();
+    }
+
+    const decoded = verifyToken(token) as TokenPayload | null;
+    if (!decoded) {
+      return next();
+    }
+
+    const [rows] = await db.query(
+      'SELECT id, student_id, name, email, phone, role, driver_status, vehicle_type, vehicle_model, vehicle_plate, is_blocked FROM users WHERE id = ?',
+      [decoded.id]
+    );
+
+    const user = Array.isArray(rows) && rows.length > 0 ? (rows[0] as AuthenticatedUser) : null;
+    if (user && user.is_blocked !== 1 && !Boolean(user.is_blocked)) {
+      req.user = user;
+    }
+    next();
+  } catch {
+    next();
+  }
+}
+
 export function requireAdmin(
   req: AuthRequest,
   res: Response,

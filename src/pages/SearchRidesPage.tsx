@@ -106,8 +106,8 @@ export const SearchRidesPage: React.FC = () => {
     }
 
     const map = L.map(mapContainerRef.current, {
-      center: [23.8103, 90.35],
-      zoom: 11
+      center: [23.8768, 90.3202],
+      zoom: 12
     });
 
     tileLayerRef.current = createResilientTileLayer(map, isDark, (hasError) => {
@@ -131,7 +131,7 @@ export const SearchRidesPage: React.FC = () => {
         mapInstanceRef.current = null;
       }
     };
-  }, [viewMode, loading]);
+  }, [viewMode]);
 
   useEffect(() => {
     if (tileLayerRef.current) {
@@ -147,6 +147,31 @@ export const SearchRidesPage: React.FC = () => {
     if (!map || !markersLayer) return;
 
     markersLayer.clearLayers();
+
+    // Default state when no rides exist
+    if (rides.length === 0) {
+      const diuIcon = L.divIcon({
+        className: 'custom-map-marker',
+        html: `
+          <div style="background-color: #0d9488; width: 34px; height: 34px; border-radius: 50% 50% 50% 0; transform: rotate(-45deg); display: flex; align-items: center; justify-content: center; border: 2.5px solid white; box-shadow: 0 4px 10px rgba(0,0,0,0.35);">
+            <span style="transform: rotate(45deg); color: white; font-weight: 800; font-size: 11px;">DIU</span>
+          </div>
+        `,
+        iconSize: [34, 34],
+        iconAnchor: [17, 34],
+        popupAnchor: [0, -30]
+      });
+
+      const campusMarker = L.marker([23.8768, 90.3202], { icon: diuIcon })
+        .bindPopup(
+          `<strong>DIU Daffodil Smart City</strong><br/><span style="font-size: 11px; color: #64748b;">Ashulia Campus Corridor</span><br/><span style="font-size: 10px; color: #0d9488;">Main Transit Hub</span>`
+        )
+        .addTo(markersLayer);
+
+      map.setView([23.8768, 90.3202], 12);
+      return;
+    }
+
     const bounds = L.latLngBounds([]);
 
     rides.forEach((r) => {
@@ -365,79 +390,83 @@ export const SearchRidesPage: React.FC = () => {
       </div>
 
       {/* Main Content Layout */}
-      {loading ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          <Skeleton type="card" count={6} />
-        </div>
-      ) : rides.length === 0 ? (
-        <EmptyState
-          icon={Search}
-          title="No rides found"
-          description="Try broadening your search or clearing date and fare filters."
-          action={
-            <button
-              onClick={handleReset}
-              className="px-6 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-bold rounded-xl shadow-sm transition-all cursor-pointer"
-            >
-              Clear Filters
-            </button>
-          }
-        />
-      ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-          {/* Ride Cards Column */}
-          {viewMode !== 'map' && (
-            <div className={`${viewMode === 'split' ? 'lg:col-span-7' : 'lg:col-span-12'} space-y-4`}>
-              <div className="flex items-center justify-between px-1">
-                <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">
-                  {rides.length} results found
-                </span>
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+        {/* Left Column: Ride Cards, Skeletons, or Empty State */}
+        {viewMode !== 'map' && (
+          <div className={`${viewMode === 'split' ? 'lg:col-span-7' : 'lg:col-span-12'} space-y-4`}>
+            {loading ? (
+              <div className="space-y-4">
+                <Skeleton type="card" count={3} />
               </div>
-              {rides.map((ride) => (
-                <div
-                  key={ride.id}
-                  onMouseEnter={() => setSelectedRide(ride)}
-                  onClick={() => setSelectedRide(ride)}
-                  className={`transition-all rounded-2xl cursor-pointer ${
-                    selectedRide?.id === ride.id ? 'ring-2 ring-emerald-500 ring-offset-2 dark:ring-offset-slate-950' : ''
-                  }`}
-                >
-                  <RideCard ride={ride} />
+            ) : rides.length === 0 ? (
+              <EmptyState
+                icon={Search}
+                title="No rides found"
+                description="Try broadening your search or clearing date and fare filters."
+                action={
+                  <button
+                    onClick={handleReset}
+                    className="px-6 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-bold rounded-xl shadow-sm transition-all cursor-pointer"
+                  >
+                    Clear Filters
+                  </button>
+                }
+              />
+            ) : (
+              <>
+                <div className="flex items-center justify-between px-1">
+                  <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">
+                    {rides.length} results found
+                  </span>
                 </div>
-              ))}
-            </div>
-          )}
-
-          {/* Interactive Map Column */}
-          {viewMode !== 'list' && (
-            <div
-              className={`${
-                viewMode === 'split' ? 'lg:col-span-5 sticky top-24' : 'lg:col-span-12'
-              } rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden bg-white dark:bg-slate-900 p-2 space-y-2`}
-            >
-              <div className="flex items-center justify-between px-2 pt-1">
-                <span className="text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center gap-2">
-                  <MapIcon className="w-4 h-4 text-emerald-600" />
-                  Route Map
-                </span>
-                <span className="text-[10px] font-medium text-slate-400">Click markers for details</span>
-              </div>
-              <div className="relative rounded-xl overflow-hidden border border-slate-100 dark:border-slate-800">
-                <div
-                  ref={mapContainerRef}
-                  style={{ height: viewMode === 'split' ? '580px' : '650px', width: '100%' }}
-                />
-                {tileError && (
-                  <div className="absolute bottom-3 left-3 right-3 z-[400] bg-amber-50/95 dark:bg-amber-950/95 backdrop-blur-sm border border-amber-200 dark:border-amber-900 text-amber-900 dark:text-amber-200 text-[10px] px-3 py-2 rounded-lg shadow-lg flex items-center gap-2">
-                    <AlertCircle className="w-3.5 h-3.5 text-amber-600" />
-                    <span>Map tiles unavailable. Markers remain active.</span>
+                {rides.map((ride) => (
+                  <div
+                    key={ride.id}
+                    onMouseEnter={() => setSelectedRide(ride)}
+                    onClick={() => setSelectedRide(ride)}
+                    className={`transition-all rounded-2xl cursor-pointer ${
+                      selectedRide?.id === ride.id ? 'ring-2 ring-emerald-500 ring-offset-2 dark:ring-offset-slate-950' : ''
+                    }`}
+                  >
+                    <RideCard ride={ride} />
                   </div>
-                )}
-              </div>
+                ))}
+              </>
+            )}
+          </div>
+        )}
+
+        {/* Right Column: Permanent Interactive Leaflet Map */}
+        {viewMode !== 'list' && (
+          <div
+            className={`${
+              viewMode === 'split' ? 'lg:col-span-5 sticky top-24' : 'lg:col-span-12'
+            } rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden bg-white dark:bg-slate-900 p-2 space-y-2`}
+          >
+            <div className="flex items-center justify-between px-2 pt-1">
+              <span className="text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center gap-2">
+                <MapIcon className="w-4 h-4 text-emerald-600" />
+                Route Map
+              </span>
+              <span className="text-[10px] font-medium text-slate-400">
+                {rides.length === 0 ? 'DIU Smart City Campus' : 'Click markers for details'}
+              </span>
             </div>
-          )}
-        </div>
-      )}
+            <div className="relative rounded-xl overflow-hidden border border-slate-100 dark:border-slate-800">
+              <div
+                ref={mapContainerRef}
+                style={{ height: viewMode === 'split' ? '580px' : '650px', width: '100%' }}
+              />
+              {tileError && (
+                <div className="absolute bottom-3 left-3 right-3 z-[400] bg-amber-50/95 dark:bg-amber-950/95 backdrop-blur-sm border border-amber-200 dark:border-amber-900 text-amber-900 dark:text-amber-200 text-[10px] px-3 py-2 rounded-lg shadow-lg flex items-center gap-2">
+                  <AlertCircle className="w-3.5 h-3.5 text-amber-600" />
+                  <span>Map tiles unavailable. Markers remain active.</span>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 };

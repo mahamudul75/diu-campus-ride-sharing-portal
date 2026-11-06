@@ -6,15 +6,17 @@
 import mysql from 'mysql2/promise';
 import dotenv from 'dotenv';
 import bcrypt from 'bcryptjs';
+import fs from 'fs';
 
 dotenv.config();
 
 const {
-  DB_HOST = 'localhost',
-  DB_PORT = '3306',
+  DB_HOST = 'gateway01.ap-southeast-1.prod.aws.tidbcloud.com',
+  DB_PORT = '4000',
   DB_USER = 'root',
   DB_PASSWORD = '',
-  DB_NAME = 'diu_ride_sharing',
+  DB_NAME = 'diu_campus_ride_sharing',
+  DB_SSL_CA = '',
   ADMIN_EMAIL = 'admin@diu.edu.bd',
   ADMIN_PASSWORD = 'Admin123!',
   ADMIN_NAME = 'DIU Transport Admin',
@@ -794,6 +796,22 @@ export async function getDbPool() {
   }
 
   try {
+    const sslConfig: any = {
+      rejectUnauthorized: true,
+      minVersion: 'TLSv1.2'
+    };
+
+    if (DB_SSL_CA) {
+      if (DB_SSL_CA.startsWith('-----BEGIN CERTIFICATE-----')) {
+        sslConfig.ca = DB_SSL_CA;
+      } else if (fs.existsSync(DB_SSL_CA)) {
+        sslConfig.ca = fs.readFileSync(DB_SSL_CA).toString();
+      } else {
+        console.error('! FATAL: DB_SSL_CA provided but path is invalid or format is incorrect. Strict verification required.');
+        throw new Error('Invalid DB_SSL_CA configuration.');
+      }
+    }
+
     const pool = mysql.createPool({
       host: DB_HOST,
       port: Number(DB_PORT),
@@ -803,26 +821,43 @@ export async function getDbPool() {
       waitForConnections: true,
       connectionLimit: 10,
       queueLimit: 0,
-      decimalNumbers: true
+      decimalNumbers: true,
+      ssl: sslConfig
     });
 
     // Test connection with timeout
     const testPromise = pool.getConnection();
     const timeoutPromise = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error('MySQL connection timeout')), 1500)
+      setTimeout(() => reject(new Error('TiDB connection timeout')), 3000)
     );
 
     const conn = await Promise.race([testPromise, timeoutPromise]) as mysql.PoolConnection;
     conn.release();
     mysqlPool = pool;
-    console.log('✓ Successfully connected to MySQL database:', DB_NAME);
+    console.log('✓ Successfully connected to TiDB Cloud database:', DB_NAME);
     return mysqlPool;
   } catch (err: any) {
-    console.warn('! MySQL connection unavailable (' + (err?.message || 'cannot reach host') + ').');
-    console.log('✓ Switching seamlessly to transactional in-memory DIU database engine.');
+    let errorMessage = err?.message || 'cannot reach host';
+    
+    if (errorMessage.includes('Missing user name prefix')) {
+      errorMessage = 'TiDB Connection Error: Your DB_USER is missing the required cluster-ID prefix (e.g., should be "prefix.root" instead of just "root"). Check your TiDB Cloud console for the full username.';
+    }
+
+    console.warn('! TiDB connection failed (' + errorMessage + ').');
+    
+    // Only fallback if no host was provided or if we are explicitly on localhost
+    const isRemote = DB_HOST && !DB_HOST.includes('localhost') && !DB_HOST.includes('127.0.0.1');
+    if (isRemote) {
+       console.error('FATAL: Database connection failed for remote host: ' + DB_HOST);
+       console.error('Error details:', err);
+       throw err;
+    }
+
+    console.log('✓ Switching to transactional in-memory DIU database engine for local development.');
     useFallback = true;
     await initMemoryStore();
     return {
+      isFallback: true,
       query: executeMemoryQuery,
       execute: executeMemoryQuery,
       getConnection: async () => new TransactionConnection()
