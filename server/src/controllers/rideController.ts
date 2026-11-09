@@ -283,6 +283,7 @@ export async function updateRide(req: AuthRequest, res: Response): Promise<void>
 }
 
 export async function cancelRide(req: AuthRequest, res: Response): Promise<void> {
+  const conn = await db.getConnection();
   try {
     if (!req.user) {
       res.status(401).json({ success: false, message: 'Not authenticated.' });
@@ -290,34 +291,65 @@ export async function cancelRide(req: AuthRequest, res: Response): Promise<void>
     }
 
     const rideId = Number(req.params.id);
-    const [rows] = await db.query('SELECT * FROM rides WHERE id = ?', [rideId]);
+    if (!rideId || isNaN(rideId)) {
+      res.status(400).json({ success: false, message: 'Invalid ride ID.' });
+      return;
+    }
+
+    await conn.beginTransaction();
+
+    // 1. Lock and fetch target ride row using SELECT FOR UPDATE
+    const [rows] = await conn.query('SELECT * FROM rides WHERE id = ? FOR UPDATE', [rideId]);
     const ride = Array.isArray(rows) && rows.length > 0 ? (rows[0] as any) : null;
 
     if (!ride) {
+      await conn.rollback();
       res.status(404).json({ success: false, message: 'Ride not found.' });
       return;
     }
 
+    // 2. Authorization check
     if (ride.driver_id !== req.user.id && req.user.role !== 'admin') {
+      await conn.rollback();
       res.status(403).json({ success: false, message: 'You can only cancel your own rides.' });
       return;
     }
 
-    if (ride.status === 'cancelled' || ride.status === 'completed') {
-      res.status(400).json({ success: false, message: `Ride is already ${ride.status}.` });
+    // 3. Status check
+    if (ride.status === 'cancelled') {
+      await conn.rollback();
+      res.status(409).json({ success: false, message: 'Ride is already cancelled.' });
       return;
     }
 
-    // Set ride status to cancelled
-    await db.query("UPDATE rides SET status = 'cancelled' WHERE id = ?", [rideId]);
+    if (ride.status === 'completed') {
+      await conn.rollback();
+      res.status(409).json({ success: false, message: 'Cannot cancel a completed ride.' });
+      return;
+    }
+
+    // 4. Update ride status to cancelled
+    await conn.query("UPDATE rides SET status = 'cancelled' WHERE id = ?", [rideId]);
+
+    // 5. Cascade cancellation to all associated passenger requests that are still pending or accepted
+    await conn.query(
+      "UPDATE ride_requests SET status = 'cancelled', updated_at = NOW() WHERE ride_id = ? AND status IN ('pending', 'accepted')",
+      [rideId]
+    );
+
+    // 6. Commit transaction
+    await conn.commit();
 
     res.status(200).json({
       success: true,
-      message: 'Ride cancelled successfully. Passengers have been notified.'
+      message: 'Ride cancelled successfully. Associated booking requests have been cancelled.'
     });
   } catch (error: any) {
+    await conn.rollback();
     console.error('cancelRide error:', error);
     res.status(500).json({ success: false, message: 'Failed to cancel ride.' });
+  } finally {
+    conn.release();
   }
 }
 

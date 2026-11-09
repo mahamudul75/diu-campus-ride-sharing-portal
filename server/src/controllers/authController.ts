@@ -128,8 +128,7 @@ export async function register(req: AuthRequest, res: Response): Promise<void> {
     res.status(201).json({
       success: true,
       message: 'Student registration successful. Welcome to DIU Ride Sharing!',
-      user: userPayload,
-      token
+      user: userPayload
     });
   } catch (error: any) {
     console.error('Registration error:', error);
@@ -218,8 +217,7 @@ export async function login(req: AuthRequest, res: Response): Promise<void> {
     res.status(200).json({
       success: true,
       message: 'Login successful.',
-      user: safeUser,
-      token
+      user: safeUser
     });
   } catch (error: any) {
     console.error('Login error:', error);

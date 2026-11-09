@@ -17,6 +17,10 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const isProduction = process.env.NODE_ENV === 'production';
 
+// Configure reverse proxy trust: trust 1st upstream reverse proxy (Google Cloud Run / GFE / NGINX)
+// This ensures req.ip represents the genuine client IP rather than an attacker-manipulated X-Forwarded-For header
+app.set('trust proxy', 1);
+
 // Security headers with Helmet (configured for OpenStreetMap tiles and iframe preview)
 app.use(
   helmet({
@@ -49,9 +53,9 @@ app.use(
   })
 );
 
-// Body and cookie parsers
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// Body and cookie parsers with explicit size limits (100kb) and parameter limits to protect against memory exhaustion DOS
+app.use(express.json({ limit: '100kb' }));
+app.use(express.urlencoded({ extended: true, limit: '100kb', parameterLimit: 1000 }));
 app.use(cookieParser());
 
 // Backend Cross-Origin State-Changing Request Security Middleware (Defense-in-depth against CSRF)
@@ -132,10 +136,19 @@ async function setupFrontend() {
 
 // Global error handling middleware
 app.use((err: any, req: Request, res: Response, next: NextFunction) => {
-  console.error('Server Unhandled Error:', err);
-  res.status(err.status || 500).json({
+  const statusCode = err.status || err.statusCode || 500;
+  // Do not log full stack trace for expected client payload errors (413 Payload Too Large, 400 Bad Request / SyntaxError)
+  if (statusCode >= 500) {
+    console.error('Server Unhandled Error:', err);
+  }
+  
+  res.status(statusCode).json({
     success: false,
-    message: err.message || 'Internal server error occurred.'
+    message: statusCode === 413 
+      ? 'Request entity too large. Payload exceeds 100kb limit.' 
+      : statusCode === 400 
+      ? 'Bad request or malformed JSON payload.' 
+      : 'Internal server error occurred.'
   });
 });
 

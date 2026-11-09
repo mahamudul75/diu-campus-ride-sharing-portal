@@ -44,13 +44,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // Not logged in or expired
       setUser(null);
       localStorage.removeItem('diu_user');
-      localStorage.removeItem('diu_token');
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
+    // Sanitize any legacy tokens that may remain in localStorage from previous versions
+    localStorage.removeItem('diu_token');
     refreshUser();
   }, []);
 
@@ -59,9 +60,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const res = await api.post('/auth/login', { email, password });
       if (res.data.success) {
         setUser(res.data.user);
-        if (res.data.token) {
-          localStorage.setItem('diu_token', res.data.token);
-        }
         localStorage.setItem('diu_user', JSON.stringify(res.data.user));
         showToast(res.data.message || 'Login successful', 'success');
         return { success: true };
@@ -79,9 +77,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const res = await api.post('/auth/register', formData);
       if (res.data.success) {
         setUser(res.data.user);
-        if (res.data.token) {
-          localStorage.setItem('diu_token', res.data.token);
-        }
         localStorage.setItem('diu_user', JSON.stringify(res.data.user));
         showToast(res.data.message || 'Registration successful', 'success');
         return { success: true };

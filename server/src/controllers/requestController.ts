@@ -150,16 +150,16 @@ export async function acceptRequest(req: AuthRequest, res: Response): Promise<vo
     }
 
     const requestId = Number(req.params.id);
+    if (!requestId || isNaN(requestId)) {
+      res.status(400).json({ success: false, message: 'Invalid request ID.' });
+      return;
+    }
 
     await conn.beginTransaction();
 
-    // 1. Fetch request with ride info
+    // 1. Lock and fetch the ride request row to serialize concurrent operations on this request
     const [reqRows] = await conn.query(
-      `SELECT req.id, req.ride_id, req.passenger_id, req.status,
-              r.driver_id, r.seats_available, r.seats_total, r.status AS ride_status
-       FROM ride_requests req
-       JOIN rides r ON req.ride_id = r.id
-       WHERE req.id = ?`,
+      `SELECT id, ride_id, passenger_id, status FROM ride_requests WHERE id = ? FOR UPDATE`,
       [requestId]
     );
 
@@ -170,37 +170,91 @@ export async function acceptRequest(req: AuthRequest, res: Response): Promise<vo
       return;
     }
 
-    // 2. Authorization check
-    if (request.driver_id !== req.user.id && req.user.role !== 'admin') {
+    // 2. Lock and fetch the parent ride row to serialize concurrent seat allocations for this ride
+    const [rideRows] = await conn.query(
+      `SELECT id, driver_id, seats_total, seats_available, status FROM rides WHERE id = ? FOR UPDATE`,
+      [request.ride_id]
+    );
+
+    const ride = Array.isArray(rideRows) && rideRows.length > 0 ? (rideRows[0] as any) : null;
+    if (!ride) {
+      await conn.rollback();
+      res.status(404).json({ success: false, message: 'Associated ride not found.' });
+      return;
+    }
+
+    // 3. Authorization check: Driver of the ride or admin
+    if (ride.driver_id !== req.user.id && req.user.role !== 'admin') {
       await conn.rollback();
       res.status(403).json({ success: false, message: 'Only the driver can accept this request.' });
       return;
     }
 
+    // 4. Request status check: Only pending requests can be accepted
     if (request.status !== 'pending') {
       await conn.rollback();
-      res.status(400).json({
+      res.status(409).json({
         success: false,
         message: `Cannot accept a request that is already ${request.status}.`
       });
       return;
     }
 
-    if (request.seats_available <= 0) {
+    // 5. Ride availability checks
+    if (ride.status === 'cancelled' || ride.status === 'completed') {
       await conn.rollback();
-      res.status(400).json({
+      res.status(409).json({
+        success: false,
+        message: `Cannot accept request for a ride that is already ${ride.status}.`
+      });
+      return;
+    }
+
+    if (ride.seats_available <= 0) {
+      await conn.rollback();
+      res.status(409).json({
         success: false,
         message: 'No seats remaining on this ride to accept further passengers.'
       });
       return;
     }
 
-    // 3. Update request status to accepted
-    await conn.query("UPDATE ride_requests SET status = 'accepted', updated_at = NOW() WHERE id = ?", [requestId]);
+    // 6. Atomically update seat inventory with strict condition and update status to 'full' if seats reach 0
+    const [rideUpdateResult] = await conn.query(
+      `UPDATE rides 
+       SET seats_available = seats_available - 1,
+           status = IF(seats_available - 1 = 0, 'full', status)
+       WHERE id = ? AND seats_available > 0`,
+      [ride.id]
+    );
 
-    // 4. Decrease available seats
-    await conn.query('UPDATE rides SET seats_available = seats_available - 1 WHERE id = ?', [request.ride_id]);
+    const affectedRideRows = (rideUpdateResult as any)?.affectedRows;
+    if (!affectedRideRows || affectedRideRows !== 1) {
+      await conn.rollback();
+      res.status(409).json({
+        success: false,
+        message: 'Seat inventory conflict: all available seats have just been reserved.'
+      });
+      return;
+    }
 
+    // 7. Update the ride request status to accepted within the same transaction
+    const [reqUpdateResult] = await conn.query(
+      `UPDATE ride_requests SET status = 'accepted', updated_at = NOW() WHERE id = ? AND status = 'pending'`,
+      [requestId]
+    );
+
+    const affectedReqRows = (reqUpdateResult as any)?.affectedRows;
+    if (!affectedReqRows || affectedReqRows !== 1) {
+      await conn.rollback();
+      res.status(409).json({
+        success: false,
+        message: 'Request status conflict: request is no longer in pending status.'
+      });
+      return;
+    }
+
+    // 8. Commit transaction
     await conn.commit();
 
     res.status(200).json({
