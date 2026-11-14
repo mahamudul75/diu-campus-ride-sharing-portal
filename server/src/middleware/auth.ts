@@ -1,5 +1,6 @@
-import { Request, Response, NextFunction } from 'express';
-import { verifyToken, TokenPayload } from '../utils/jwt.ts';
+import type { Request, Response, NextFunction } from 'express';
+import { verifyToken } from '../utils/jwt.ts';
+import type { TokenPayload } from '../utils/jwt.ts';
 import { db } from '../config/db.ts';
 
 export interface AuthenticatedUser {

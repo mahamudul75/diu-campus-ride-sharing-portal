@@ -1,14 +1,13 @@
-import express, { Request, Response, NextFunction } from 'express';
+import 'dotenv/config';
+import express from 'express';
+import type { Request, Response, NextFunction } from 'express';
 import cookieParser from 'cookie-parser';
 import cors from 'cors';
 import helmet from 'helmet';
-import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import apiRouter from './server/src/routes/index.ts';
 import { getDbPool } from './server/src/config/db.ts';
-
-dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -29,29 +28,88 @@ app.use(
   })
 );
 
-// CORS configuration with explicit origin allowlist supporting credentials
-const allowedOrigins = process.env.CORS_ORIGINS
-  ? process.env.CORS_ORIGINS.split(',').map((s) => s.trim()).filter(Boolean)
-  : process.env.APP_URL
-  ? [process.env.APP_URL]
-  : [];
+function normalizeOrigin(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return null;
+    }
+    return parsed.origin;
+  } catch {
+    return null;
+  }
+}
+
+// Build strict, explicit trusted origin allowlist (never fail open)
+const trustedOrigins = new Set<string>();
+
+if (process.env.CORS_ORIGINS) {
+  for (const entry of process.env.CORS_ORIGINS.split(',')) {
+    const normalized = normalizeOrigin(entry);
+    if (normalized) {
+      trustedOrigins.add(normalized);
+    } else if (entry.trim()) {
+      console.warn(`Ignoring invalid CORS_ORIGINS entry: "${entry.trim()}"`);
+    }
+  }
+}
+
+if (process.env.APP_URL) {
+  const normalizedAppUrl = normalizeOrigin(process.env.APP_URL);
+  if (normalizedAppUrl) {
+    trustedOrigins.add(normalizedAppUrl);
+  } else {
+    console.warn(`Ignoring invalid APP_URL value: "${process.env.APP_URL}"`);
+  }
+}
+
+if (!isProduction) {
+  for (const devOrigin of [
+    `http://localhost:${PORT}`,
+    `http://127.0.0.1:${PORT}`,
+    'http://localhost:3000',
+    'http://127.0.0.1:3000'
+  ]) {
+    const normalized = normalizeOrigin(devOrigin);
+    if (normalized) trustedOrigins.add(normalized);
+  }
+}
+
+function isTrustedOrigin(rawOrigin: unknown): boolean {
+  const normalized = normalizeOrigin(rawOrigin);
+  return normalized !== null && trustedOrigins.has(normalized);
+}
 
 app.use(
   cors({
     origin: (origin, callback) => {
-      if (!origin) return callback(null, true);
-      if (allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
+      // Missing Origin (same-origin GETs, non-browser/healthcheck calls): emit no CORS headers
+      if (!origin) return callback(null, false);
+      // Only exact explicitly configured trusted origins receive CORS headers
+      if (isTrustedOrigin(origin)) {
         return callback(null, true);
       }
-      if (origin.includes('run.app') || (process.env.NODE_ENV !== 'production' && (origin.includes('localhost') || origin.includes('127.0.0.1')))) {
-        return callback(null, true);
-      }
-      callback(null, false);
+      return callback(null, false);
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']
   })
 );
+
+// Explicitly reject untrusted or malformed CORS preflight requests
+app.use((req: Request, res: Response, next: NextFunction) => {
+  if (req.method === 'OPTIONS' && req.headers.origin !== undefined && !isTrustedOrigin(req.headers.origin)) {
+    res.status(403).json({
+      success: false,
+      message: 'Access denied: Untrusted CORS preflight origin.'
+    });
+    return;
+  }
+  next();
+});
 
 // Body and cookie parsers with explicit size limits (100kb) and parameter limits to protect against memory exhaustion DOS
 app.use(express.json({ limit: '100kb' }));
@@ -62,43 +120,31 @@ app.use(cookieParser());
 app.use((req: Request, res: Response, next: NextFunction) => {
   const unsafeMethods = ['POST', 'PUT', 'PATCH', 'DELETE'];
   if (unsafeMethods.includes(req.method)) {
-    const origin = req.headers.origin;
-    const referer = req.headers.referer;
+    const hasOrigin = req.headers.origin !== undefined;
+    const hasReferer = req.headers.referer !== undefined;
 
-    if (origin) {
-      const isAllowed =
-        allowedOrigins.length === 0 ||
-        allowedOrigins.includes(origin) ||
-        origin.includes('run.app') ||
-        (process.env.NODE_ENV !== 'production' && (origin.includes('localhost') || origin.includes('127.0.0.1')));
+    if (!hasOrigin && !hasReferer) {
+      res.status(403).json({
+        success: false,
+        message: 'Access denied: Missing Origin or Referer header on state-changing request.'
+      });
+      return;
+    }
 
-      if (!isAllowed) {
-        res.status(403).json({
-          success: false,
-          message: 'Access denied: Untrusted cross-origin request rejected by backend security policy.'
-        });
-        return;
-      }
-    } else if (referer) {
-      try {
-        const refUrl = new URL(referer);
-        const refOrigin = refUrl.origin;
-        const isAllowed =
-          allowedOrigins.length === 0 ||
-          allowedOrigins.includes(refOrigin) ||
-          refOrigin.includes('run.app') ||
-          (process.env.NODE_ENV !== 'production' && (refOrigin.includes('localhost') || refOrigin.includes('127.0.0.1')));
+    if (hasOrigin && !isTrustedOrigin(req.headers.origin)) {
+      res.status(403).json({
+        success: false,
+        message: 'Access denied: Untrusted or malformed origin header rejected by backend security policy.'
+      });
+      return;
+    }
 
-        if (!isAllowed) {
-          res.status(403).json({
-            success: false,
-            message: 'Access denied: Untrusted cross-site referer request rejected by backend security policy.'
-          });
-          return;
-        }
-      } catch {
-        // ignore malformed referer
-      }
+    if (hasReferer && !isTrustedOrigin(req.headers.referer)) {
+      res.status(403).json({
+        success: false,
+        message: 'Access denied: Untrusted or malformed referer header rejected by backend security policy.'
+      });
+      return;
     }
   }
   next();

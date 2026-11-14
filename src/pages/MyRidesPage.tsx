@@ -40,17 +40,23 @@ export const MyRidesPage: React.FC = () => {
   const [cancelRideId, setCancelRideId] = useState<number | null>(null);
   const [cancellingRide, setCancellingRide] = useState(false);
 
-  const fetchMyRides = async () => {
+  const fetchMyRides = async (): Promise<Ride[]> => {
     try {
       const res = await api.get('/rides/mine');
       if (res.data?.success) {
-        setRides(res.data.rides || []);
+        const nextRides: Ride[] = res.data.rides || [];
+        setRides(nextRides);
+        setActiveRideForRequests((curr) =>
+          curr ? nextRides.find((r) => r.id === curr.id) || curr : null
+        );
+        return nextRides;
       }
     } catch (err) {
       console.warn('Failed to fetch my rides:', err);
     } finally {
       setLoading(false);
     }
+    return [];
   };
 
   useEffect(() => {
@@ -79,10 +85,11 @@ export const MyRidesPage: React.FC = () => {
       const res = await api.patch(`/requests/${requestId}/accept`);
       if (res.data?.success) {
         showToast(res.data.message || 'Request accepted!', 'success');
+        const updatedRides = await fetchMyRides();
         if (activeRideForRequests) {
-          openRequestsModal(activeRideForRequests);
+          const updatedRide = updatedRides.find((r) => r.id === activeRideForRequests.id) || activeRideForRequests;
+          openRequestsModal(updatedRide);
         }
-        fetchMyRides();
       }
     } catch (err: any) {
       showToast(err.response?.data?.message || 'Failed to accept request.', 'error');
@@ -95,10 +102,11 @@ export const MyRidesPage: React.FC = () => {
       const res = await api.patch(`/requests/${requestId}/reject`);
       if (res.data?.success) {
         showToast(res.data.message || 'Request rejected.', 'info');
+        const updatedRides = await fetchMyRides();
         if (activeRideForRequests) {
-          openRequestsModal(activeRideForRequests);
+          const updatedRide = updatedRides.find((r) => r.id === activeRideForRequests.id) || activeRideForRequests;
+          openRequestsModal(updatedRide);
         }
-        fetchMyRides();
       }
     } catch (err: any) {
       showToast(err.response?.data?.message || 'Failed to reject request.', 'error');

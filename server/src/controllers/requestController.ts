@@ -1,31 +1,38 @@
-import { Response } from 'express';
-import { AuthRequest } from '../middleware/auth.ts';
+import type { Response } from 'express';
+import type { AuthRequest } from '../middleware/auth.ts';
 import { db } from '../config/db.ts';
+import { parseRideDateTime, toUtcIsoString } from '../utils/dateTime.ts';
+import { isPositiveIntId } from '../utils/validators.ts';
 
 export async function createRideRequest(req: AuthRequest, res: Response): Promise<void> {
+  const conn = await db.getConnection();
   try {
     if (!req.user) {
       res.status(401).json({ success: false, message: 'Not authenticated.' });
       return;
     }
 
-    const rideId = Number(req.params.id);
-    if (!rideId || isNaN(rideId)) {
+    const rideId = isPositiveIntId(req.params.id);
+    if (!rideId) {
       res.status(400).json({ success: false, message: 'Invalid ride ID.' });
       return;
     }
 
-    // 1. Fetch ride
-    const [rideRows] = await db.query('SELECT * FROM rides WHERE id = ?', [rideId]);
+    await conn.beginTransaction();
+
+    // 1. Lock and fetch ride
+    const [rideRows] = await conn.query('SELECT * FROM rides WHERE id = ? FOR UPDATE', [rideId]);
     const ride = Array.isArray(rideRows) && rideRows.length > 0 ? (rideRows[0] as any) : null;
 
     if (!ride) {
+      await conn.rollback();
       res.status(404).json({ success: false, message: 'Ride not found.' });
       return;
     }
 
     // 2. Prevent driver from requesting their own ride
     if (ride.driver_id === req.user.id) {
+      await conn.rollback();
       res.status(400).json({
         success: false,
         message: 'You cannot request your own ride.'
@@ -33,29 +40,41 @@ export async function createRideRequest(req: AuthRequest, res: Response): Promis
       return;
     }
 
-    // 3. Prevent requesting for full, completed, or cancelled rides
+    // 3. Prevent requesting for cancelled, completed, expired, or full rides
     if (ride.status === 'cancelled') {
+      await conn.rollback();
       res.status(400).json({ success: false, message: 'This ride has been cancelled.' });
       return;
     }
     if (ride.status === 'completed') {
+      await conn.rollback();
       res.status(400).json({ success: false, message: 'This ride is already completed.' });
       return;
     }
+
+    const depDate = parseRideDateTime(ride.departure_time);
+    if (!depDate || depDate.getTime() <= Date.now()) {
+      await conn.rollback();
+      res.status(400).json({ success: false, message: 'This ride has already departed.' });
+      return;
+    }
+
     if (ride.status === 'full' || ride.seats_available <= 0) {
+      await conn.rollback();
       res.status(400).json({ success: false, message: 'This ride is currently full.' });
       return;
     }
 
-    // 4. One request per student per ride
-    const [existingReq] = await db.query(
-      'SELECT id, status FROM ride_requests WHERE ride_id = ? AND passenger_id = ?',
+    // 4. One request per student per ride (locked for concurrency safety)
+    const [existingReq] = await conn.query(
+      'SELECT id, status FROM ride_requests WHERE ride_id = ? AND passenger_id = ? FOR UPDATE',
       [rideId, req.user.id]
     );
 
     if (Array.isArray(existingReq) && existingReq.length > 0) {
       const prev = existingReq[0] as any;
       if (prev.status === 'pending') {
+        await conn.rollback();
         res.status(409).json({
           success: false,
           message: 'You already have a pending request for this ride.'
@@ -63,6 +82,7 @@ export async function createRideRequest(req: AuthRequest, res: Response): Promis
         return;
       }
       if (prev.status === 'accepted') {
+        await conn.rollback();
         res.status(409).json({
           success: false,
           message: 'You are already an accepted passenger for this ride.'
@@ -70,10 +90,11 @@ export async function createRideRequest(req: AuthRequest, res: Response): Promis
         return;
       }
       // If previous was rejected or cancelled, allow re-requesting by updating status to pending
-      await db.query(
+      await conn.query(
         "UPDATE ride_requests SET status = 'pending', updated_at = NOW() WHERE id = ?",
         [prev.id]
       );
+      await conn.commit();
       res.status(200).json({
         success: true,
         message: 'Your ride request has been re-submitted to the driver.',
@@ -83,10 +104,12 @@ export async function createRideRequest(req: AuthRequest, res: Response): Promis
     }
 
     // 5. Insert new request
-    const [result] = await db.query(
+    const [result] = await conn.query(
       "INSERT INTO ride_requests (ride_id, passenger_id, status) VALUES (?, ?, 'pending')",
       [rideId, req.user.id]
     );
+
+    await conn.commit();
 
     res.status(201).json({
       success: true,
@@ -94,8 +117,15 @@ export async function createRideRequest(req: AuthRequest, res: Response): Promis
       requestId: (result as any).insertId
     });
   } catch (error: any) {
+    await conn.rollback();
+    if (error?.code === 'ER_DUP_ENTRY') {
+      res.status(409).json({ success: false, message: 'A request for this ride already exists.' });
+      return;
+    }
     console.error('createRideRequest error:', error);
     res.status(500).json({ success: false, message: 'Failed to submit ride request.' });
+  } finally {
+    conn.release();
   }
 }
 
@@ -106,7 +136,12 @@ export async function getRideRequests(req: AuthRequest, res: Response): Promise<
       return;
     }
 
-    const rideId = Number(req.params.id);
+    const rideId = isPositiveIntId(req.params.id);
+    if (!rideId) {
+      res.status(400).json({ success: false, message: 'Invalid ride ID.' });
+      return;
+    }
+
     const [rideRows] = await db.query('SELECT driver_id FROM rides WHERE id = ?', [rideId]);
     const ride = Array.isArray(rideRows) && rideRows.length > 0 ? (rideRows[0] as any) : null;
 
@@ -149,8 +184,8 @@ export async function acceptRequest(req: AuthRequest, res: Response): Promise<vo
       return;
     }
 
-    const requestId = Number(req.params.id);
-    if (!requestId || isNaN(requestId)) {
+    const requestId = isPositiveIntId(req.params.id);
+    if (!requestId) {
       res.status(400).json({ success: false, message: 'Invalid request ID.' });
       return;
     }
@@ -172,7 +207,7 @@ export async function acceptRequest(req: AuthRequest, res: Response): Promise<vo
 
     // 2. Lock and fetch the parent ride row to serialize concurrent seat allocations for this ride
     const [rideRows] = await conn.query(
-      `SELECT id, driver_id, seats_total, seats_available, status FROM rides WHERE id = ? FOR UPDATE`,
+      `SELECT id, driver_id, seats_total, seats_available, departure_time, status FROM rides WHERE id = ? FOR UPDATE`,
       [request.ride_id]
     );
 
@@ -200,12 +235,22 @@ export async function acceptRequest(req: AuthRequest, res: Response): Promise<vo
       return;
     }
 
-    // 5. Ride availability checks
+    // 5. Ride availability & expiry checks
     if (ride.status === 'cancelled' || ride.status === 'completed') {
       await conn.rollback();
       res.status(409).json({
         success: false,
         message: `Cannot accept request for a ride that is already ${ride.status}.`
+      });
+      return;
+    }
+
+    const depDate = parseRideDateTime(ride.departure_time);
+    if (!depDate || depDate.getTime() <= Date.now()) {
+      await conn.rollback();
+      res.status(409).json({
+        success: false,
+        message: 'Cannot accept a request after the ride departure time has passed.'
       });
       return;
     }
@@ -271,50 +316,74 @@ export async function acceptRequest(req: AuthRequest, res: Response): Promise<vo
 }
 
 export async function rejectRequest(req: AuthRequest, res: Response): Promise<void> {
+  const conn = await db.getConnection();
   try {
     if (!req.user) {
       res.status(401).json({ success: false, message: 'Not authenticated.' });
       return;
     }
 
-    const requestId = Number(req.params.id);
+    const requestId = isPositiveIntId(req.params.id);
+    if (!requestId) {
+      res.status(400).json({ success: false, message: 'Invalid request ID.' });
+      return;
+    }
 
-    const [reqRows] = await db.query(
+    await conn.beginTransaction();
+
+    const [reqRows] = await conn.query(
       `SELECT req.id, req.ride_id, req.status, r.driver_id
        FROM ride_requests req
        JOIN rides r ON req.ride_id = r.id
-       WHERE req.id = ?`,
+       WHERE req.id = ? FOR UPDATE`,
       [requestId]
     );
 
     const request = Array.isArray(reqRows) && reqRows.length > 0 ? (reqRows[0] as any) : null;
     if (!request) {
+      await conn.rollback();
       res.status(404).json({ success: false, message: 'Request not found.' });
       return;
     }
 
     if (request.driver_id !== req.user.id && req.user.role !== 'admin') {
+      await conn.rollback();
       res.status(403).json({ success: false, message: 'Only the driver can reject this request.' });
       return;
     }
 
     if (request.status !== 'pending') {
-      res.status(400).json({
+      await conn.rollback();
+      res.status(409).json({
         success: false,
         message: `Cannot reject a request that is already ${request.status}.`
       });
       return;
     }
 
-    await db.query("UPDATE ride_requests SET status = 'rejected', updated_at = NOW() WHERE id = ?", [requestId]);
+    const [updateResult] = await conn.query(
+      "UPDATE ride_requests SET status = 'rejected', updated_at = NOW() WHERE id = ? AND status = 'pending'",
+      [requestId]
+    );
+
+    if ((updateResult as any)?.affectedRows !== 1) {
+      await conn.rollback();
+      res.status(409).json({ success: false, message: 'Request is no longer in pending status.' });
+      return;
+    }
+
+    await conn.commit();
 
     res.status(200).json({
       success: true,
       message: 'Ride request rejected.'
     });
   } catch (error: any) {
+    await conn.rollback();
     console.error('rejectRequest error:', error);
     res.status(500).json({ success: false, message: 'Failed to reject request.' });
+  } finally {
+    conn.release();
   }
 }
 
@@ -326,16 +395,17 @@ export async function cancelRequest(req: AuthRequest, res: Response): Promise<vo
       return;
     }
 
-    const requestId = Number(req.params.id);
+    const requestId = isPositiveIntId(req.params.id);
+    if (!requestId) {
+      res.status(400).json({ success: false, message: 'Invalid request ID.' });
+      return;
+    }
 
     await conn.beginTransaction();
 
+    // Lock the request row first
     const [reqRows] = await conn.query(
-      `SELECT req.id, req.ride_id, req.passenger_id, req.status,
-              r.seats_available, r.seats_total, r.status AS ride_status
-       FROM ride_requests req
-       JOIN rides r ON req.ride_id = r.id
-       WHERE req.id = ?`,
+      `SELECT id, ride_id, passenger_id, status FROM ride_requests WHERE id = ? FOR UPDATE`,
       [requestId]
     );
 
@@ -352,9 +422,30 @@ export async function cancelRequest(req: AuthRequest, res: Response): Promise<vo
       return;
     }
 
+    // Lock parent ride row
+    const [rideRows] = await conn.query(
+      `SELECT id, seats_available, seats_total, status FROM rides WHERE id = ? FOR UPDATE`,
+      [request.ride_id]
+    );
+    const ride = Array.isArray(rideRows) && rideRows.length > 0 ? (rideRows[0] as any) : null;
+    if (!ride) {
+      await conn.rollback();
+      res.status(404).json({ success: false, message: 'Associated ride not found.' });
+      return;
+    }
+
+    if (ride.status === 'completed' || ride.status === 'cancelled') {
+      await conn.rollback();
+      res.status(409).json({
+        success: false,
+        message: `Cannot cancel booking for a ride that is already ${ride.status}.`
+      });
+      return;
+    }
+
     if (request.status === 'cancelled' || request.status === 'rejected') {
       await conn.rollback();
-      res.status(400).json({
+      res.status(409).json({
         success: false,
         message: `Request is already ${request.status}.`
       });
@@ -363,12 +454,26 @@ export async function cancelRequest(req: AuthRequest, res: Response): Promise<vo
 
     const wasAccepted = request.status === 'accepted';
 
-    // Update request to cancelled
-    await conn.query("UPDATE ride_requests SET status = 'cancelled', updated_at = NOW() WHERE id = ?", [requestId]);
+    // Atomically transition request status to cancelled
+    const [reqUpdateResult] = await conn.query(
+      "UPDATE ride_requests SET status = 'cancelled', updated_at = NOW() WHERE id = ? AND status IN ('pending', 'accepted')",
+      [requestId]
+    );
+    if ((reqUpdateResult as any)?.affectedRows !== 1) {
+      await conn.rollback();
+      res.status(409).json({ success: false, message: 'Booking status conflict during cancellation.' });
+      return;
+    }
 
-    // If request was accepted, restore seat count exactly once
+    // If request was accepted, restore seat count atomically and re-open a 'full' ride
     if (wasAccepted) {
-      await conn.query('UPDATE rides SET seats_available = seats_available + 1 WHERE id = ?', [request.ride_id]);
+      await conn.query(
+        `UPDATE rides
+         SET seats_available = LEAST(seats_total, seats_available + 1),
+             status = IF(status = 'full', 'open', status)
+         WHERE id = ? AND seats_available < seats_total`,
+        [request.ride_id]
+      );
     }
 
     await conn.commit();
@@ -416,6 +521,7 @@ export async function getMyRequests(req: AuthRequest, res: Response): Promise<vo
     // Apply privacy rule F17: only show driver phone and vehicle plate if status === 'accepted'
     const safeRequests = (rows as any[]).map(r => ({
       ...r,
+      departure_time: r.departure_time ? toUtcIsoString(r.departure_time) : r.departure_time,
       driver_phone: r.status === 'accepted' ? r.driver_phone : null,
       driver_vehicle_plate: r.status === 'accepted' ? r.driver_vehicle_plate : null
     }));

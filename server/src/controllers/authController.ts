@@ -1,19 +1,26 @@
-import { Response } from 'express';
+import type { Response } from 'express';
 import bcrypt from 'bcryptjs';
-import { AuthRequest } from '../middleware/auth.ts';
+import type { AuthRequest } from '../middleware/auth.ts';
 import { db } from '../config/db.ts';
 import { generateToken, setAuthCookie, clearAuthCookie } from '../utils/jwt.ts';
-import { isValidStudentId, isValidDiuEmail, isValidPhone, sanitizePhone } from '../utils/validators.ts';
+import { isValidStudentId, isValidDiuEmail, isValidPhone, sanitizePhone, isNonEmptyString } from '../utils/validators.ts';
 
 export async function register(req: AuthRequest, res: Response): Promise<void> {
   try {
-    const { name, student_id, email, phone, password, confirm_password } = req.body;
+    const { name, student_id, email, phone, password, confirm_password } = req.body ?? {};
 
-    // 1. Validation checks
-    if (!name || !student_id || !email || !phone || !password) {
+    // 1. Strict type & presence checks
+    if (
+      !isNonEmptyString(name, 2, 100) ||
+      !isNonEmptyString(student_id, 5, 20) ||
+      !isNonEmptyString(email, 5, 100) ||
+      !isNonEmptyString(phone, 8, 25) ||
+      typeof password !== 'string' ||
+      typeof confirm_password !== 'string'
+    ) {
       res.status(400).json({
         success: false,
-        message: 'All fields are required.'
+        message: 'All fields are required with valid text lengths.'
       });
       return;
     }
@@ -26,10 +33,10 @@ export async function register(req: AuthRequest, res: Response): Promise<void> {
       return;
     }
 
-    if (password.length < 6) {
+    if (password.length < 6 || password.length > 128) {
       res.status(400).json({
         success: false,
-        message: 'Password must be at least 6 characters.'
+        message: 'Password must be between 6 and 128 characters.'
       });
       return;
     }
@@ -131,6 +138,13 @@ export async function register(req: AuthRequest, res: Response): Promise<void> {
       user: userPayload
     });
   } catch (error: any) {
+    if (error?.code === 'ER_DUP_ENTRY') {
+      res.status(409).json({
+        success: false,
+        message: 'An account with this DIU email or Student ID already exists.'
+      });
+      return;
+    }
     console.error('Registration error:', error);
     res.status(500).json({
       success: false,
@@ -141,12 +155,12 @@ export async function register(req: AuthRequest, res: Response): Promise<void> {
 
 export async function login(req: AuthRequest, res: Response): Promise<void> {
   try {
-    const { email, password } = req.body;
+    const { email, password } = req.body ?? {};
 
-    if (!email || !password) {
+    if (!isNonEmptyString(email, 3, 120) || typeof password !== 'string' || password.length === 0 || password.length > 128) {
       res.status(400).json({
         success: false,
-        message: 'Email and password are required.'
+        message: 'Valid email and password are required.'
       });
       return;
     }
@@ -166,7 +180,7 @@ export async function login(req: AuthRequest, res: Response): Promise<void> {
     if (!user) {
       res.status(401).json({
         success: false,
-        message: 'Invalid DIU credentials. Account not found.'
+        message: 'Invalid DIU credentials.'
       });
       return;
     }
@@ -185,7 +199,7 @@ export async function login(req: AuthRequest, res: Response): Promise<void> {
     if (!isPasswordValid) {
       res.status(401).json({
         success: false,
-        message: 'Invalid DIU credentials. Please check your password.'
+        message: 'Invalid DIU credentials.'
       });
       return;
     }

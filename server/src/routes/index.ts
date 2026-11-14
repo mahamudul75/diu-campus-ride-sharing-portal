@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import express from 'express';
 import authRoutes from './authRoutes.ts';
 import userRoutes from './userRoutes.ts';
 import driverRoutes from './driverRoutes.ts';
@@ -8,7 +8,7 @@ import adminRoutes from './adminRoutes.ts';
 import { db, getDbPool } from '../config/db.ts';
 import { apiGeneralLimiter } from '../middleware/rateLimiter.ts';
 
-const apiRouter = Router();
+const apiRouter = express.Router();
 
 // 1. Health check endpoint with DB verification (does not require DB to be up to respond)
 apiRouter.get('/health', async (req, res) => {

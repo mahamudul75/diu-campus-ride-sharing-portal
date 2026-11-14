@@ -49,7 +49,17 @@ export const SearchRidesPage: React.FC = () => {
       const params: any = {};
       if (pickup.trim()) params.pickup = pickup.trim();
       if (destination.trim()) params.destination = destination.trim();
-      if (date) params.date = date;
+      if (date) {
+        params.date = date;
+        const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+        if (match) {
+          const y = Number(match[1]);
+          const m = Number(match[2]);
+          const d = Number(match[3]);
+          params.date_start = new Date(y, m - 1, d, 0, 0, 0, 0).toISOString();
+          params.date_end = new Date(y, m - 1, d + 1, 0, 0, 0, 0).toISOString();
+        }
+      }
       if (maxFare) params.max_fare = maxFare;
       if (vehicleType) params.vehicle_type = vehicleType;
 
@@ -359,7 +369,7 @@ export const SearchRidesPage: React.FC = () => {
               />
             </div>
           </div>
-          <div className="lg:col-span-3">
+          <div className="lg:col-span-2">
             <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 ml-1">Destination</label>
             <div className="relative">
               <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
@@ -384,7 +394,7 @@ export const SearchRidesPage: React.FC = () => {
               />
             </div>
           </div>
-          <div className="lg:col-span-1.5">
+          <div className="lg:col-span-2">
             <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 ml-1">Max Fare</label>
             <div className="relative">
               <span className="absolute left-3 top-2.5 text-xs text-slate-400 font-bold">৳</span>
@@ -397,7 +407,7 @@ export const SearchRidesPage: React.FC = () => {
               />
             </div>
           </div>
-          <div className="lg:col-span-1.5">
+          <div className="lg:col-span-2">
             <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 ml-1">Vehicle</label>
             <select 
               value={vehicleType} 

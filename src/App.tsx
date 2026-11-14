@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { Suspense, lazy } from 'react';
 import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom';
 import { ThemeProvider } from './context/ThemeContext.tsx';
 import { ToastProvider } from './context/ToastContext.tsx';
@@ -6,23 +6,24 @@ import { AuthProvider } from './context/AuthContext.tsx';
 import Navbar from './components/Navbar.tsx';
 import Footer from './components/Footer.tsx';
 import ProtectedRoute from './components/ProtectedRoute.tsx';
+import Spinner from './components/Spinner.tsx';
 
-// Pages
-import LandingPage from './pages/LandingPage.tsx';
-import RegisterPage from './pages/RegisterPage.tsx';
-import LoginPage from './pages/LoginPage.tsx';
-import DashboardPage from './pages/DashboardPage.tsx';
-import SearchRidesPage from './pages/SearchRidesPage.tsx';
-import RideDetailsPage from './pages/RideDetailsPage.tsx';
-import PostRidePage from './pages/PostRidePage.tsx';
-import MyRidesPage from './pages/MyRidesPage.tsx';
-import MyRequestsPage from './pages/MyRequestsPage.tsx';
-import BecomeDriverPage from './pages/BecomeDriverPage.tsx';
-import ProfilePage from './pages/ProfilePage.tsx';
-import AdminDashboardPage from './pages/AdminDashboardPage.tsx';
-import AdminUsersPage from './pages/AdminUsersPage.tsx';
-import AdminDriverApprovalsPage from './pages/AdminDriverApprovalsPage.tsx';
-import NotFoundPage from './pages/NotFoundPage.tsx';
+// Code-split Pages
+const LandingPage = lazy(() => import('./pages/LandingPage.tsx'));
+const RegisterPage = lazy(() => import('./pages/RegisterPage.tsx'));
+const LoginPage = lazy(() => import('./pages/LoginPage.tsx'));
+const DashboardPage = lazy(() => import('./pages/DashboardPage.tsx'));
+const SearchRidesPage = lazy(() => import('./pages/SearchRidesPage.tsx'));
+const RideDetailsPage = lazy(() => import('./pages/RideDetailsPage.tsx'));
+const PostRidePage = lazy(() => import('./pages/PostRidePage.tsx'));
+const MyRidesPage = lazy(() => import('./pages/MyRidesPage.tsx'));
+const MyRequestsPage = lazy(() => import('./pages/MyRequestsPage.tsx'));
+const BecomeDriverPage = lazy(() => import('./pages/BecomeDriverPage.tsx'));
+const ProfilePage = lazy(() => import('./pages/ProfilePage.tsx'));
+const AdminDashboardPage = lazy(() => import('./pages/AdminDashboardPage.tsx'));
+const AdminUsersPage = lazy(() => import('./pages/AdminUsersPage.tsx'));
+const AdminDriverApprovalsPage = lazy(() => import('./pages/AdminDriverApprovalsPage.tsx'));
+const NotFoundPage = lazy(() => import('./pages/NotFoundPage.tsx'));
 
 const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const location = useLocation();
@@ -55,7 +56,14 @@ export default function App() {
         <AuthProvider>
           <BrowserRouter>
             <AppLayout>
-              <Routes>
+              <Suspense
+                fallback={
+                  <div className="min-h-[60vh] flex items-center justify-center">
+                    <Spinner size="lg" />
+                  </div>
+                }
+              >
+                <Routes>
                 {/* Public Routes */}
                 <Route path="/" element={<LandingPage />} />
                 <Route path="/register" element={<RegisterPage />} />
@@ -144,6 +152,7 @@ export default function App() {
                 {/* 404 Route */}
                 <Route path="*" element={<NotFoundPage />} />
               </Routes>
+              </Suspense>
             </AppLayout>
           </BrowserRouter>
         </AuthProvider>

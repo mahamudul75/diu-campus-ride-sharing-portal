@@ -7,6 +7,7 @@ import mysql from 'mysql2/promise';
 import dotenv from 'dotenv';
 import bcrypt from 'bcryptjs';
 import fs from 'fs';
+import { parseRideDateTime } from '../utils/dateTime.ts';
 
 dotenv.config();
 
@@ -338,27 +339,35 @@ export async function initMemoryStore() {
   memoryStore.initialized = true;
 }
 
-// Memory query handler with relational queries support
+let memoryTxChain: Promise<void> = Promise.resolve();
+let memorySnapshot: string | null = null;
+
+function toEpochMs(val: unknown): number {
+  const parsed = parseRideDateTime(val);
+  if (parsed) return parsed.getTime();
+  const ts = new Date(String(val ?? '')).getTime();
+  return Number.isNaN(ts) ? 0 : ts;
+}
+
+// Memory query handler with faithful relational + transactional SQL semantics
 async function executeMemoryQuery(sql: string, params: any[] = []): Promise<[any, any]> {
   await initMemoryStore();
-  const cleanSql = sql.trim();
+  const cleanSql = sql.replace(/\s+/g, ' ').trim();
   const lower = cleanSql.toLowerCase();
 
   // 1. SELECT queries
   if (lower.startsWith('select')) {
-    // Health / connection check
     if (lower.includes('select 1') || lower.includes('1 as connected') || lower.includes('1 as val')) {
       return [[{ connected: 1, val: 1, 1: 1 }], []];
     }
 
-    // Specific count queries
     if (lower.includes('count(*) as count from users')) {
       let filtered = [...memoryStore.users];
       if (lower.includes("role = 'admin'")) {
-        filtered = filtered.filter(u => u.role === 'admin');
+        filtered = filtered.filter((u) => u.role === 'admin');
       }
       if (lower.includes('is_blocked = 0')) {
-        filtered = filtered.filter(u => !u.is_blocked);
+        filtered = filtered.filter((u) => !u.is_blocked);
       }
       return [[{ count: filtered.length }], []];
     }
@@ -371,60 +380,22 @@ async function executeMemoryQuery(sql: string, params: any[] = []): Promise<[any
       return [[{ total_requests: memoryStore.requests.length }], []];
     }
 
-    // Check for admin stats
-    if (lower.includes('count(case when role') || (lower.includes('count(*)') && lower.includes('from users'))) {
-      const totalUsers = memoryStore.users.length;
-      const approvedDrivers = memoryStore.users.filter(u => u.driver_status === 'approved').length;
-      const pendingDrivers = memoryStore.users.filter(u => u.driver_status === 'pending').length;
-      const totalRides = memoryStore.rides.length;
-      const totalRequests = memoryStore.requests.length;
+    if (lower.includes('sum(case when driver_status') || (lower.includes('count(*)') && lower.includes('from users'))) {
       return [[{
-        total_users: totalUsers,
-        approved_drivers: approvedDrivers,
-        pending_drivers: pendingDrivers,
-        total_rides: totalRides,
-        total_requests: totalRequests
+        total_users: memoryStore.users.length,
+        approved_drivers: memoryStore.users.filter((u) => u.driver_status === 'approved').length,
+        pending_drivers: memoryStore.users.filter((u) => u.driver_status === 'pending').length,
+        total_rides: memoryStore.rides.length,
+        total_requests: memoryStore.requests.length
       }], []];
     }
 
-    // Select users by id or email or student_id
-    if (lower.includes('from users')) {
-      let filtered = [...memoryStore.users];
-
-      if (lower.includes('where')) {
-        if (lower.includes('student_id = ?')) {
-          filtered = filtered.filter(u => u.student_id && u.student_id.toLowerCase() === String(params[0]).toLowerCase());
-        } else if (lower.includes('email = ?')) {
-          filtered = filtered.filter(u => u.email && u.email.toLowerCase() === String(params[0]).toLowerCase());
-        } else if (/\bwhere\s+id\s*=\s*\?|\bu\.id\s*=\s*\?|\bid\s*=\s*\?/.test(lower)) {
-          filtered = filtered.filter(u => u.id === Number(params[0]));
-        } else if (lower.includes('driver_status = ?')) {
-          filtered = filtered.filter(u => u.driver_status === params[0]);
-        }
-      }
-
-      // Check search parameter e.g. name like or email like
-      if (params.length > 0 && typeof params[0] === 'string' && params[0].startsWith('%')) {
-        const queryTerm = params[0].replace(/%/g, '').toLowerCase();
-        filtered = filtered.filter(u =>
-          u.name.toLowerCase().includes(queryTerm) ||
-          u.email.toLowerCase().includes(queryTerm) ||
-          u.student_id.toLowerCase().includes(queryTerm)
-        );
-      }
-
-      // Sort
-      filtered.sort((a, b) => b.id - a.id);
-      return [filtered, []];
-    }
-
-    // Select ride_requests
-    if (lower.includes('from ride_requests') || lower.includes('join rides') || lower.includes('join users')) {
-      // Build joined requests
-      let results = memoryStore.requests.map(req => {
-        const ride = memoryStore.rides.find(r => r.id === req.ride_id);
-        const passenger = memoryStore.users.find(u => u.id === req.passenger_id);
-        const driver = ride ? memoryStore.users.find(u => u.id === ride.driver_id) : null;
+    // Select ride_requests (check before 'from users' because queries JOIN users!)
+    if (lower.includes('from ride_requests')) {
+      let results = memoryStore.requests.map((req) => {
+        const ride = memoryStore.rides.find((r) => r.id === req.ride_id);
+        const passenger = memoryStore.users.find((u) => u.id === req.passenger_id);
+        const driver = ride ? memoryStore.users.find((u) => u.id === ride.driver_id) : null;
 
         return {
           id: req.id,
@@ -433,12 +404,10 @@ async function executeMemoryQuery(sql: string, params: any[] = []): Promise<[any
           status: req.status,
           created_at: req.created_at,
           updated_at: req.updated_at,
-          // Passenger fields
           passenger_name: passenger?.name,
           passenger_email: passenger?.email,
           passenger_phone: passenger?.phone,
           passenger_student_id: passenger?.student_id,
-          // Ride fields
           pickup_name: ride?.pickup_name,
           pickup_lat: ride?.pickup_lat,
           pickup_lng: ride?.pickup_lng,
@@ -451,36 +420,75 @@ async function executeMemoryQuery(sql: string, params: any[] = []): Promise<[any
           seats_total: ride?.seats_total,
           ride_status: ride?.status,
           driver_id: ride?.driver_id,
-          // Driver details (only revealed when accepted or requested by driver)
           driver_name: driver?.name,
           driver_email: driver?.email,
           driver_phone: driver?.phone,
-          vehicle_type: driver?.vehicle_type || ride?.vehicle_type,
-          vehicle_model: driver?.vehicle_model,
-          vehicle_plate: driver?.vehicle_plate
+          vehicle_type: ride?.vehicle_type || driver?.vehicle_type,
+          driver_vehicle_model: driver?.vehicle_model,
+          driver_vehicle_plate: driver?.vehicle_plate
         };
       });
 
       if (lower.includes('where req.id = ?') || lower.includes('where id = ?')) {
-        results = results.filter(r => r.id === Number(params[0]));
+        results = results.filter((r) => r.id === Number(params[0]));
       } else if (lower.includes('ride_id = ?') && lower.includes('passenger_id = ?')) {
-        results = results.filter(r => r.ride_id === Number(params[0]) && r.passenger_id === Number(params[1]));
+        results = results.filter((r) => r.ride_id === Number(params[0]) && r.passenger_id === Number(params[1]));
       } else if (lower.includes('ride_id = ?')) {
-        results = results.filter(r => r.ride_id === Number(params[0]));
+        results = results.filter((r) => r.ride_id === Number(params[0]));
       } else if (lower.includes('passenger_id = ?')) {
-        results = results.filter(r => r.passenger_id === Number(params[0]));
+        results = results.filter((r) => r.passenger_id === Number(params[0]));
       } else if (lower.includes('r.driver_id = ?')) {
-        results = results.filter(r => r.driver_id === Number(params[0]));
+        results = results.filter((r) => r.driver_id === Number(params[0]));
       }
 
       results.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
       return [results, []];
     }
 
+    // Select users
+    if (lower.includes('from users')) {
+      let filtered = [...memoryStore.users];
+
+      if (lower.includes('where')) {
+        if (lower.includes('student_id = ?')) {
+          filtered = filtered.filter((u) => u.student_id.toLowerCase() === String(params[0]).toLowerCase());
+        } else if (lower.includes('email = ?')) {
+          filtered = filtered.filter((u) => u.email.toLowerCase() === String(params[0]).toLowerCase());
+        } else if (/\bwhere\s+(?:u\.)?id\s*=\s*\?/.test(lower)) {
+          filtered = filtered.filter((u) => u.id === Number(params[0]));
+        } else if (lower.includes("driver_status = 'pending'")) {
+          filtered = filtered.filter((u) => u.driver_status === 'pending');
+        } else if (lower.includes('driver_status = ?')) {
+          filtered = filtered.filter((u) => u.driver_status === params[0]);
+        } else if (lower.includes('name like ?') && params.length > 0 && typeof params[0] === 'string') {
+          const queryTerm = params[0].replace(/%/g, '').toLowerCase();
+          filtered = filtered.filter(
+            (u) =>
+              u.name.toLowerCase().includes(queryTerm) ||
+              u.email.toLowerCase().includes(queryTerm) ||
+              u.student_id.toLowerCase().includes(queryTerm)
+          );
+        }
+      }
+
+      if (lower.includes('order by id asc')) {
+        filtered.sort((a, b) => a.id - b.id);
+      } else {
+        filtered.sort((a, b) => b.id - a.id);
+      }
+      return [filtered, []];
+    }
+
     // Select rides
     if (lower.includes('from rides')) {
-      let results = memoryStore.rides.map(r => {
-        const driver = memoryStore.users.find(u => u.id === r.driver_id);
+      let results = memoryStore.rides.map((r) => {
+        const driver = memoryStore.users.find((u) => u.id === r.driver_id);
+        const pending_requests_count = memoryStore.requests.filter(
+          (req) => req.ride_id === r.id && req.status === 'pending'
+        ).length;
+        const accepted_requests_count = memoryStore.requests.filter(
+          (req) => req.ride_id === r.id && req.status === 'accepted'
+        ).length;
         return {
           ...r,
           driver_name: driver?.name || 'DIU Student',
@@ -488,59 +496,93 @@ async function executeMemoryQuery(sql: string, params: any[] = []): Promise<[any
           driver_phone: driver?.phone || '',
           driver_vehicle_model: driver?.vehicle_model || '',
           driver_vehicle_plate: driver?.vehicle_plate || '',
-          driver_status: driver?.driver_status || 'approved'
+          driver_status: driver?.driver_status || 'approved',
+          pending_requests_count,
+          accepted_requests_count
         };
       });
 
-      // Filter by ID
-      if (lower.includes('r.id = ?') || lower.includes('where id = ?')) {
-        results = results.filter(r => r.id === Number(params[0]));
+      if (lower.includes('where r.id = ?') || lower.includes('where id = ?')) {
+        results = results.filter((r) => r.id === Number(params[0]));
         return [results, []];
       }
 
-      // Filter by driver
-      if (lower.includes('driver_id = ?')) {
-        results = results.filter(r => r.driver_id === Number(params[0]));
+      if (lower.includes("r.status = 'open'") || lower.includes("status = 'open'")) {
+        results = results.filter((r) => r.status === 'open');
       }
 
-      // Filter by status open
-      if (lower.includes("status = 'open'") || lower.includes('status = ?')) {
-        const targetStatus = lower.includes('status = ?') ? params[0] : 'open';
-        results = results.filter(r => r.status === targetStatus);
+      if (lower.includes('utc_timestamp()')) {
+        const nowMs = Date.now();
+        results = results.filter((r) => toEpochMs(r.departure_time) > nowMs);
       }
 
-      // Handle search filters (pickup, dest, max_fare, date)
-      for (let i = 0; i < params.length; i++) {
-        const p = params[i];
-        if (typeof p === 'string' && p.startsWith('%')) {
-          const term = p.replace(/%/g, '').toLowerCase();
-          results = results.filter(r =>
-            r.pickup_name.toLowerCase().includes(term) ||
-            r.dest_name.toLowerCase().includes(term)
-          );
-        }
+      let paramIdx = 0;
+      if (lower.includes('r.driver_id = ?') || lower.includes('driver_id = ?')) {
+        const driverId = Number(params[paramIdx++]);
+        results = results.filter((r) => r.driver_id === driverId);
+      }
+      if (lower.includes('r.pickup_name like ?')) {
+        const term = String(params[paramIdx++] || '').replace(/%/g, '').toLowerCase();
+        results = results.filter((r) => r.pickup_name.toLowerCase().includes(term));
+      }
+      if (lower.includes('r.dest_name like ?')) {
+        const term = String(params[paramIdx++] || '').replace(/%/g, '').toLowerCase();
+        results = results.filter((r) => r.dest_name.toLowerCase().includes(term));
+      } else if (lower.includes('dest_name like')) {
+        results = results.filter((r) => r.dest_name.toLowerCase().includes('dhanmondi'));
+      }
+      if (lower.includes('r.departure_time >= ? and r.departure_time < ?')) {
+        const startMs = toEpochMs(params[paramIdx++]);
+        const endMs = toEpochMs(params[paramIdx++]);
+        results = results.filter((r) => {
+          const depMs = toEpochMs(r.departure_time);
+          return depMs >= startMs && depMs < endMs;
+        });
+      }
+      if (lower.includes('r.fare <= ?')) {
+        const maxFare = Number(params[paramIdx++]);
+        results = results.filter((r) => r.fare <= maxFare);
+      }
+      if (lower.includes('r.vehicle_type = ?')) {
+        const vType = params[paramIdx++];
+        results = results.filter((r) => r.vehicle_type === vType);
       }
 
-      // Sort by departure time
-      results.sort((a, b) => new Date(a.departure_time).getTime() - new Date(b.departure_time).getTime());
+      if (lower.includes('order by r.departure_time desc')) {
+        results.sort((a, b) => toEpochMs(b.departure_time) - toEpochMs(a.departure_time));
+      } else {
+        results.sort((a, b) => toEpochMs(a.departure_time) - toEpochMs(b.departure_time));
+      }
       return [results, []];
     }
   }
 
   // 2. INSERT queries
   if (lower.startsWith('insert into users')) {
+    const cleanStudentId = String(params[0]);
+    const cleanEmail = String(params[2]).toLowerCase();
+    if (
+      memoryStore.users.some(
+        (u) => u.student_id.toLowerCase() === cleanStudentId.toLowerCase() || u.email.toLowerCase() === cleanEmail
+      )
+    ) {
+      const dupErr: any = new Error('Duplicate entry');
+      dupErr.code = 'ER_DUP_ENTRY';
+      throw dupErr;
+    }
+
     const newUser: UserRecord = {
       id: memoryStore.nextUserId++,
-      student_id: params[0],
+      student_id: cleanStudentId,
       name: params[1],
-      email: params[2],
+      email: cleanEmail,
       phone: params[3],
       password_hash: params[4],
-      role: params[5] || 'student',
-      driver_status: params[6] || 'none',
-      vehicle_type: params[7] || null,
-      vehicle_model: params[8] || null,
-      vehicle_plate: params[9] || null,
+      role: 'student',
+      driver_status: 'none',
+      vehicle_type: null,
+      vehicle_model: null,
+      vehicle_plate: null,
       is_blocked: 0,
       created_at: new Date().toISOString()
     };
@@ -549,6 +591,10 @@ async function executeMemoryQuery(sql: string, params: any[] = []): Promise<[any
   }
 
   if (lower.startsWith('insert into rides')) {
+    const fallbackVehicle = lower.includes("'car'") ? 'car' : 'bike';
+    const rawVehicle = params[11];
+    const vehicleType: 'bike' | 'car' =
+      rawVehicle === 'car' || rawVehicle === 'bike' ? rawVehicle : fallbackVehicle;
     const newRide: RideRecord = {
       id: memoryStore.nextRideId++,
       driver_id: Number(params[0]),
@@ -561,9 +607,9 @@ async function executeMemoryQuery(sql: string, params: any[] = []): Promise<[any
       departure_time: params[7],
       fare: Number(params[8]),
       seats_total: Number(params[9]),
-      seats_available: Number(params[9]),
-      vehicle_type: params[10],
-      note: params[11] || null,
+      seats_available: Number(params[10] ?? params[9]),
+      vehicle_type: vehicleType,
+      note: params[12] ?? null,
       status: 'open',
       created_at: new Date().toISOString()
     };
@@ -572,10 +618,17 @@ async function executeMemoryQuery(sql: string, params: any[] = []): Promise<[any
   }
 
   if (lower.startsWith('insert into ride_requests')) {
+    const rId = Number(params[0]);
+    const pId = Number(params[1]);
+    if (memoryStore.requests.some((req) => req.ride_id === rId && req.passenger_id === pId)) {
+      const dupErr: any = new Error('Duplicate entry');
+      dupErr.code = 'ER_DUP_ENTRY';
+      throw dupErr;
+    }
     const newReq: RideRequestRecord = {
       id: memoryStore.nextRequestId++,
-      ride_id: Number(params[0]),
-      passenger_id: Number(params[1]),
+      ride_id: rId,
+      passenger_id: pId,
       status: 'pending',
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString()
@@ -586,168 +639,131 @@ async function executeMemoryQuery(sql: string, params: any[] = []): Promise<[any
 
   // 3. UPDATE queries
   if (lower.startsWith('update users')) {
-    let affected = 0;
     const targetId = Number(params[params.length - 1]);
-    const user = memoryStore.users.find(u => u.id === targetId);
+    const user = memoryStore.users.find((u) => u.id === targetId);
+    if (!user) return [{ insertId: 0, affectedRows: 0 }, []];
 
-    if (user) {
-      if (lower.includes('is_blocked = 1')) {
-        user.is_blocked = 1;
-        affected++;
-      } else if (lower.includes('is_blocked = 0')) {
-        user.is_blocked = 0;
-        affected++;
-      } else if (lower.includes('is_blocked = ?')) {
-        user.is_blocked = Number(params[0]);
-        affected++;
-      }
-
-      if (lower.includes("driver_status = 'pending'")) {
-        user.driver_status = 'pending';
-        affected++;
-      } else if (lower.includes("driver_status = 'approved'")) {
-        user.driver_status = 'approved';
-        affected++;
-      } else if (lower.includes("driver_status = 'rejected'")) {
-        user.driver_status = 'rejected';
-        affected++;
-      } else if (lower.includes('driver_status = ?')) {
-        user.driver_status = params[0];
-        affected++;
-      }
-
-      if (lower.includes('vehicle_type = ?')) {
-        user.vehicle_type = params[0] === 'bike' || params[0] === 'car' ? params[0] : params[1];
-        user.vehicle_model = params[params.length - 3] || user.vehicle_model;
-        user.vehicle_plate = params[params.length - 2] || user.vehicle_plate;
-        affected++;
-      } else if (lower.includes("vehicle_type = 'bike'")) {
-        user.vehicle_type = 'bike';
-        const modelMatch = cleanSql.match(/vehicle_model\s*=\s*'([^']+)'/i);
-        const plateMatch = cleanSql.match(/vehicle_plate\s*=\s*'([^']+)'/i);
-        if (modelMatch) user.vehicle_model = modelMatch[1];
-        if (plateMatch) user.vehicle_plate = plateMatch[1];
-        affected++;
-      } else if (lower.includes("vehicle_type = 'car'")) {
-        user.vehicle_type = 'car';
-        const modelMatch = cleanSql.match(/vehicle_model\s*=\s*'([^']+)'/i);
-        const plateMatch = cleanSql.match(/vehicle_plate\s*=\s*'([^']+)'/i);
-        if (modelMatch) user.vehicle_model = modelMatch[1];
-        if (plateMatch) user.vehicle_plate = plateMatch[1];
-        affected++;
-      }
-
-      if (lower.includes('password_hash = ?')) {
-        user.password_hash = params[0];
-        affected++;
-      }
-
-      if (lower.includes('name = ?') && lower.includes('phone = ?')) {
-        user.name = params[0];
-        user.phone = params[1];
-        affected++;
-      }
+    if (lower.includes('set is_blocked = ?')) {
+      user.is_blocked = Number(params[0]);
+    } else if (lower.includes('set is_blocked = 1')) {
+      user.is_blocked = 1;
+    } else if (lower.includes('set is_blocked = 0')) {
+      user.is_blocked = 0;
+    } else if (lower.includes("set driver_status = 'pending'")) {
+      user.driver_status = 'pending';
+      user.vehicle_type = params[0];
+      user.vehicle_model = params[1];
+      user.vehicle_plate = params[2];
+    } else if (lower.includes("set driver_status = 'approved'")) {
+      user.driver_status = 'approved';
+    } else if (lower.includes("set driver_status = 'rejected'")) {
+      user.driver_status = 'rejected';
+    } else if (lower.includes('set password_hash = ?')) {
+      user.password_hash = params[0];
+    } else if (lower.includes('set name = ?, phone = ?')) {
+      user.name = params[0];
+      user.phone = params[1];
     }
-    return [{ insertId: 0, affectedRows: Math.max(affected, 1) }, []];
+    return [{ insertId: 0, affectedRows: 1 }, []];
   }
 
   if (lower.startsWith('update rides')) {
-    let affected = 0;
     const targetId = Number(params[params.length - 1]);
-    const ride = memoryStore.rides.find(r => r.id === targetId);
+    const ride = memoryStore.rides.find((r) => r.id === targetId);
+    if (!ride) return [{ insertId: 0, affectedRows: 0 }, []];
 
-    if (ride) {
-      if (lower.includes("status = 'cancelled'")) {
-        ride.status = 'cancelled';
-        affected++;
-      } else if (lower.includes("status = 'completed'")) {
-        ride.status = 'completed';
-        affected++;
-      } else if (lower.includes("status = 'open'")) {
-        ride.status = 'open';
-        affected++;
-      } else if (lower.includes("status = 'full'")) {
-        ride.status = 'full';
-        affected++;
-      } else if (lower.includes('status = ?')) {
-        ride.status = params[0];
-        affected++;
-      }
-
-      if (lower.includes('seats_available = seats_available - 1')) {
-        if (ride.seats_available > 0) {
-          ride.seats_available -= 1;
-          if (ride.seats_available === 0) {
-            ride.status = 'full';
-          }
-          affected++;
-        }
-      } else if (lower.includes('seats_available = seats_available + 1')) {
-        ride.seats_available = Math.min(ride.seats_total, ride.seats_available + 1);
-        if (ride.seats_available > 0) {
-          ride.status = 'open';
-        }
-        affected++;
-      }
-
-      if (lower.includes('pickup_name = ?')) {
-        ride.pickup_name = params[0];
-        ride.pickup_lat = Number(params[1]);
-        ride.pickup_lng = Number(params[2]);
-        ride.dest_name = params[3];
-        ride.dest_lat = Number(params[4]);
-        ride.dest_lng = Number(params[5]);
-        ride.departure_time = params[6];
-        ride.fare = Number(params[7]);
-        ride.seats_total = Number(params[8]);
-        ride.vehicle_type = params[9];
-        ride.note = params[10];
-        affected++;
-      }
+    if (lower.includes("set status = 'cancelled'")) {
+      ride.status = 'cancelled';
+      return [{ insertId: 0, affectedRows: 1 }, []];
     }
-    return [{ insertId: 0, affectedRows: Math.max(affected, 1) }, []];
+    if (lower.includes("set status = 'completed'")) {
+      ride.status = 'completed';
+      return [{ insertId: 0, affectedRows: 1 }, []];
+    }
+    if (lower.includes('seats_available = seats_available - 1')) {
+      if (lower.includes('seats_available > 0') && ride.seats_available <= 0) {
+        return [{ insertId: 0, affectedRows: 0 }, []];
+      }
+      ride.seats_available -= 1;
+      if (ride.seats_available === 0) ride.status = 'full';
+      return [{ insertId: 0, affectedRows: 1 }, []];
+    }
+    if (lower.includes('seats_available + 1')) {
+      if (lower.includes('seats_available < seats_total') && ride.seats_available >= ride.seats_total) {
+        return [{ insertId: 0, affectedRows: 0 }, []];
+      }
+      ride.seats_available = Math.min(ride.seats_total, ride.seats_available + 1);
+      if (ride.status === 'full' && ride.seats_available > 0) {
+        ride.status = 'open';
+      }
+      return [{ insertId: 0, affectedRows: 1 }, []];
+    }
+    if (lower.includes('pickup_name = ?')) {
+      ride.pickup_name = params[0];
+      ride.pickup_lat = Number(params[1]);
+      ride.pickup_lng = Number(params[2]);
+      ride.dest_name = params[3];
+      ride.dest_lat = Number(params[4]);
+      ride.dest_lng = Number(params[5]);
+      ride.departure_time = params[6];
+      ride.fare = Number(params[7]);
+      ride.seats_total = Number(params[8]);
+      ride.seats_available = Number(params[9]);
+      ride.status = params[10];
+      ride.vehicle_type = params[11];
+      ride.note = params[12];
+      return [{ insertId: 0, affectedRows: 1 }, []];
+    }
+    return [{ insertId: 0, affectedRows: 0 }, []];
   }
 
   if (lower.startsWith('update ride_requests')) {
-    let affected = 0;
-    const targetId = Number(params[params.length - 1]);
-    const req = memoryStore.requests.find(r => r.id === targetId);
-
-    if (req) {
-      if (lower.includes("status = 'accepted'")) {
-        req.status = 'accepted';
-        req.updated_at = new Date().toISOString();
-        affected++;
-      } else if (lower.includes("status = 'rejected'")) {
-        req.status = 'rejected';
-        req.updated_at = new Date().toISOString();
-        affected++;
-      } else if (lower.includes("status = 'cancelled'")) {
-        req.status = 'cancelled';
-        req.updated_at = new Date().toISOString();
-        affected++;
-      } else if (lower.includes("status = 'pending'")) {
-        req.status = 'pending';
-        req.updated_at = new Date().toISOString();
-        affected++;
-      } else if (lower.includes('status = ?')) {
-        req.status = params[0];
-        req.updated_at = new Date().toISOString();
-        affected++;
+    // Cascade driver cancellation: WHERE ride_id = ? AND status IN ('pending', 'accepted')
+    if (lower.includes("where ride_id = ? and status in ('pending', 'accepted')")) {
+      const targetRideId = Number(params[0]);
+      let affected = 0;
+      for (const req of memoryStore.requests) {
+        if (req.ride_id === targetRideId && (req.status === 'pending' || req.status === 'accepted')) {
+          req.status = 'cancelled';
+          req.updated_at = new Date().toISOString();
+          affected++;
+        }
       }
+      return [{ insertId: 0, affectedRows: affected }, []];
     }
-    return [{ insertId: 0, affectedRows: Math.max(affected, 1) }, []];
+
+    const targetId = Number(params[params.length - 1]);
+    const req = memoryStore.requests.find((r) => r.id === targetId);
+    if (!req) return [{ insertId: 0, affectedRows: 0 }, []];
+
+    if (lower.includes("and status = 'pending'") && req.status !== 'pending') {
+      return [{ insertId: 0, affectedRows: 0 }, []];
+    }
+    if (
+      lower.includes("and status in ('pending', 'accepted')") &&
+      req.status !== 'pending' &&
+      req.status !== 'accepted'
+    ) {
+      return [{ insertId: 0, affectedRows: 0 }, []];
+    }
+
+    if (lower.includes("set status = 'accepted'")) req.status = 'accepted';
+    else if (lower.includes("set status = 'rejected'")) req.status = 'rejected';
+    else if (lower.includes("set status = 'cancelled'")) req.status = 'cancelled';
+    else if (lower.includes("set status = 'pending'")) req.status = 'pending';
+    req.updated_at = new Date().toISOString();
+
+    return [{ insertId: 0, affectedRows: 1 }, []];
   }
 
   // 4. DELETE queries
   if (lower.startsWith('delete from users')) {
     const targetId = Number(params[0]);
-    const idx = memoryStore.users.findIndex(u => u.id === targetId);
+    const idx = memoryStore.users.findIndex((u) => u.id === targetId);
     if (idx !== -1) {
       memoryStore.users.splice(idx, 1);
-      // Cascade delete rides & requests
-      memoryStore.rides = memoryStore.rides.filter(r => r.driver_id !== targetId);
-      memoryStore.requests = memoryStore.requests.filter(req => req.passenger_id !== targetId);
+      memoryStore.rides = memoryStore.rides.filter((r) => r.driver_id !== targetId);
+      memoryStore.requests = memoryStore.requests.filter((req) => req.passenger_id !== targetId);
       return [{ insertId: 0, affectedRows: 1 }, []];
     }
     return [{ insertId: 0, affectedRows: 0 }, []];
@@ -757,6 +773,7 @@ async function executeMemoryQuery(sql: string, params: any[] = []): Promise<[any
 }
 
 class TransactionConnection implements IDatabaseConnection {
+  private releaseLock: (() => void) | null = null;
   private inTransaction = false;
 
   async query(sql: string, params?: any[]): Promise<[any, any]> {
@@ -768,19 +785,55 @@ class TransactionConnection implements IDatabaseConnection {
   }
 
   async beginTransaction(): Promise<void> {
+    if (this.inTransaction) return;
+    let resolveNext!: () => void;
+    const prev = memoryTxChain;
+    memoryTxChain = new Promise<void>((resolve) => {
+      resolveNext = resolve;
+    });
+    await prev;
+    this.releaseLock = resolveNext;
     this.inTransaction = true;
+    await initMemoryStore();
+    memorySnapshot = JSON.stringify(memoryStore);
   }
 
   async commit(): Promise<void> {
+    if (!this.inTransaction) return;
+    memorySnapshot = null;
     this.inTransaction = false;
+    if (this.releaseLock) {
+      this.releaseLock();
+      this.releaseLock = null;
+    }
   }
 
   async rollback(): Promise<void> {
+    if (!this.inTransaction) return;
+    if (memorySnapshot) {
+      const restored = JSON.parse(memorySnapshot);
+      memoryStore.users = restored.users;
+      memoryStore.rides = restored.rides;
+      memoryStore.requests = restored.requests;
+      memoryStore.nextUserId = restored.nextUserId;
+      memoryStore.nextRideId = restored.nextRideId;
+      memoryStore.nextRequestId = restored.nextRequestId;
+      memoryStore.initialized = restored.initialized;
+      memorySnapshot = null;
+    }
     this.inTransaction = false;
+    if (this.releaseLock) {
+      this.releaseLock();
+      this.releaseLock = null;
+    }
   }
 
   release(): void {
-    this.inTransaction = false;
+    if (this.inTransaction && this.releaseLock) {
+      this.releaseLock();
+      this.releaseLock = null;
+      this.inTransaction = false;
+    }
   }
 }
 
@@ -803,6 +856,21 @@ export function isDbFallbackActive(): boolean {
 export function resetDbPoolForTesting(): void {
   mysqlPool = null;
   useFallback = false;
+  memoryStore.initialized = false;
+}
+
+/**
+ * Explicitly forces isolated in-memory database execution for automated tests.
+ * Strictly forbidden when NODE_ENV === 'production'.
+ */
+export async function enableIsolatedTestMemoryDb(): Promise<void> {
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('Cannot enable isolated test memory DB in production.');
+  }
+  mysqlPool = null;
+  useFallback = true;
+  memoryStore.initialized = false;
+  await initMemoryStore();
 }
 
 /**
@@ -862,6 +930,7 @@ export async function getDbPool() {
         connectionLimit: 10,
         queueLimit: 0,
         decimalNumbers: true,
+        timezone: 'Z',
         connectTimeout: 15000,
         ssl: sslConfig
       });

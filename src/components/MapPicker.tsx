@@ -4,6 +4,7 @@ import { Search, MapPin, AlertCircle, Navigation, Car, Clock } from 'lucide-reac
 import axios from 'axios';
 import { createResilientTileLayer, ResilientTileLayerHandle } from '../utils/mapConfig.ts';
 import { useTheme } from '../context/ThemeContext.tsx';
+import { useToast } from '../context/ToastContext.tsx';
 
 export interface LocationPoint {
   name: string;
@@ -54,6 +55,7 @@ export const MapPicker: React.FC<MapPickerProps> = ({
   height = '380px'
 }) => {
   const { isDark } = useTheme();
+  const { showToast } = useToast();
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
   const tileLayerRef = useRef<ResilientTileLayerHandle | null>(null);
@@ -381,7 +383,7 @@ export const MapPicker: React.FC<MapPickerProps> = ({
 
   const handleUseCurrentLocation = () => {
     if (!navigator.geolocation) {
-      alert('Geolocation is not supported by your browser.');
+      showToast('Geolocation is not supported by your browser.', 'error');
       return;
     }
 
@@ -412,7 +414,7 @@ export const MapPicker: React.FC<MapPickerProps> = ({
           mapInstanceRef.current.flyTo([lat, lng], 15, { animate: true });
         }
       },
-      () => alert('Unable to retrieve current location.')
+      () => showToast('Unable to retrieve your current location. Please select a point on the map.', 'error')
     );
   };
 

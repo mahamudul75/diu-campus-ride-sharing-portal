@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import express from 'express';
 import {
   getRides,
   getRideById,
@@ -15,7 +15,7 @@ import {
 import { authenticateToken, requireApprovedDriver, optionalAuthenticateToken } from '../middleware/auth.ts';
 import { sensitiveWriteLimiter } from '../middleware/rateLimiter.ts';
 
-const router = Router();
+const router = express.Router();
 
 // Publicly browseable or authenticated browse
 router.get('/', getRides);

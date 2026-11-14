@@ -1,6 +1,7 @@
-import { Response } from 'express';
-import { AuthRequest } from '../middleware/auth.ts';
+import type { Response } from 'express';
+import type { AuthRequest } from '../middleware/auth.ts';
 import { db } from '../config/db.ts';
+import { isPositiveIntId } from '../utils/validators.ts';
 
 export async function getAdminStats(req: AuthRequest, res: Response): Promise<void> {
   try {
@@ -47,7 +48,7 @@ export async function getUsers(req: AuthRequest, res: Response): Promise<void> {
     const params: any[] = [];
 
     if (search && typeof search === 'string' && search.trim()) {
-      const term = `%${search.trim()}%`;
+      const term = `%${search.trim().slice(0, 100)}%`;
       query += ` WHERE name LIKE ? OR email LIKE ? OR student_id LIKE ?`;
       params.push(term, term, term);
     }
@@ -68,8 +69,13 @@ export async function getUsers(req: AuthRequest, res: Response): Promise<void> {
 
 export async function toggleBlockUser(req: AuthRequest, res: Response): Promise<void> {
   try {
-    const targetUserId = Number(req.params.id);
-    const { is_blocked } = req.body;
+    const targetUserId = isPositiveIntId(req.params.id);
+    if (!targetUserId) {
+      res.status(400).json({ success: false, message: 'Invalid user ID.' });
+      return;
+    }
+
+    const { is_blocked } = req.body ?? {};
 
     // Safety rule: Prevent blocking oneself or the last admin
     if (req.user && req.user.id === targetUserId) {
@@ -88,9 +94,12 @@ export async function toggleBlockUser(req: AuthRequest, res: Response): Promise<
       return;
     }
 
-    if (targetUser.role === 'admin' && Number(is_blocked) === 1) {
+    const newBlockedState =
+      is_blocked !== undefined ? (is_blocked === true || is_blocked === 1 ? 1 : 0) : targetUser.is_blocked ? 0 : 1;
+
+    if (targetUser.role === 'admin' && newBlockedState === 1) {
       const [adminCount] = await db.query("SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND is_blocked = 0");
-      const activeAdmins = Array.isArray(adminCount) && adminCount.length > 0 ? (adminCount[0] as any).count : 0;
+      const activeAdmins = Array.isArray(adminCount) && adminCount.length > 0 ? Number((adminCount[0] as any).count) : 0;
       if (activeAdmins <= 1) {
         res.status(400).json({
           success: false,
@@ -99,8 +108,6 @@ export async function toggleBlockUser(req: AuthRequest, res: Response): Promise<
         return;
       }
     }
-
-    const newBlockedState = is_blocked !== undefined ? (is_blocked ? 1 : 0) : targetUser.is_blocked ? 0 : 1;
 
     await db.query('UPDATE users SET is_blocked = ? WHERE id = ?', [newBlockedState, targetUserId]);
 
@@ -117,7 +124,11 @@ export async function toggleBlockUser(req: AuthRequest, res: Response): Promise<
 
 export async function deleteUser(req: AuthRequest, res: Response): Promise<void> {
   try {
-    const targetUserId = Number(req.params.id);
+    const targetUserId = isPositiveIntId(req.params.id);
+    if (!targetUserId) {
+      res.status(400).json({ success: false, message: 'Invalid user ID.' });
+      return;
+    }
 
     // Prevent deleting oneself
     if (req.user && req.user.id === targetUserId) {
@@ -138,7 +149,7 @@ export async function deleteUser(req: AuthRequest, res: Response): Promise<void>
 
     if (targetUser.role === 'admin') {
       const [adminCount] = await db.query("SELECT COUNT(*) AS count FROM users WHERE role = 'admin'");
-      const count = Array.isArray(adminCount) && adminCount.length > 0 ? (adminCount[0] as any).count : 0;
+      const count = Array.isArray(adminCount) && adminCount.length > 0 ? Number((adminCount[0] as any).count) : 0;
       if (count <= 1) {
         res.status(400).json({
           success: false,
@@ -182,13 +193,28 @@ export async function getPendingDrivers(req: AuthRequest, res: Response): Promis
 
 export async function approveDriver(req: AuthRequest, res: Response): Promise<void> {
   try {
-    const targetUserId = Number(req.params.id);
+    const targetUserId = isPositiveIntId(req.params.id);
+    if (!targetUserId) {
+      res.status(400).json({ success: false, message: 'Invalid user ID.' });
+      return;
+    }
 
-    const [userRows] = await db.query('SELECT id, driver_status FROM users WHERE id = ?', [targetUserId]);
+    const [userRows] = await db.query(
+      'SELECT id, driver_status, vehicle_type, vehicle_model, vehicle_plate FROM users WHERE id = ?',
+      [targetUserId]
+    );
     const targetUser = Array.isArray(userRows) && userRows.length > 0 ? (userRows[0] as any) : null;
 
     if (!targetUser) {
       res.status(404).json({ success: false, message: 'Student not found.' });
+      return;
+    }
+
+    if (!targetUser.vehicle_type || !targetUser.vehicle_model || !targetUser.vehicle_plate) {
+      res.status(400).json({
+        success: false,
+        message: 'Cannot approve driver: student has not submitted valid vehicle details.'
+      });
       return;
     }
 
@@ -206,13 +232,22 @@ export async function approveDriver(req: AuthRequest, res: Response): Promise<vo
 
 export async function rejectDriver(req: AuthRequest, res: Response): Promise<void> {
   try {
-    const targetUserId = Number(req.params.id);
+    const targetUserId = isPositiveIntId(req.params.id);
+    if (!targetUserId) {
+      res.status(400).json({ success: false, message: 'Invalid user ID.' });
+      return;
+    }
 
     const [userRows] = await db.query('SELECT id, driver_status FROM users WHERE id = ?', [targetUserId]);
     const targetUser = Array.isArray(userRows) && userRows.length > 0 ? (userRows[0] as any) : null;
 
     if (!targetUser) {
       res.status(404).json({ success: false, message: 'Student not found.' });
+      return;
+    }
+
+    if (targetUser.driver_status === 'none') {
+      res.status(400).json({ success: false, message: 'Student has no driver application to reject.' });
       return;
     }
 

@@ -35,3 +35,31 @@ export function sanitizePhone(phone: string): string {
   if (digits.startsWith('8801')) return digits.slice(2);
   return digits;
 }
+
+export function isNonEmptyString(val: unknown, minLen = 1, maxLen = 500): val is string {
+  if (typeof val !== 'string') return false;
+  const trimmed = val.trim();
+  return trimmed.length >= minLen && trimmed.length <= maxLen;
+}
+
+export function isPositiveIntId(val: unknown): number | null {
+  if (typeof val === 'number') {
+    return Number.isInteger(val) && val > 0 ? val : null;
+  }
+  if (typeof val === 'string') {
+    const trimmed = val.trim();
+    if (!/^\d+$/.test(trimmed)) return null;
+    const parsed = Number(trimmed);
+    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+  }
+  return null;
+}
+
+export function isValidCoordinate(lat: unknown, lng: unknown): { lat: number; lng: number } | null {
+  const nLat = typeof lat === 'number' || typeof lat === 'string' ? Number(lat) : NaN;
+  const nLng = typeof lng === 'number' || typeof lng === 'string' ? Number(lng) : NaN;
+  if (!Number.isFinite(nLat) || !Number.isFinite(nLng)) return null;
+  if (nLat < -90 || nLat > 90 || nLng < -180 || nLng > 180) return null;
+  return { lat: nLat, lng: nLng };
+}
+

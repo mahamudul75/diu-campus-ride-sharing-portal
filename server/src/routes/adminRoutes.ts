@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import express from 'express';
 import {
   getAdminStats,
   getUsers,
@@ -10,7 +10,7 @@ import {
 } from '../controllers/adminController.ts';
 import { authenticateToken, requireAdmin } from '../middleware/auth.ts';
 
-const router = Router();
+const router = express.Router();
 
 // Protect all admin routes with authentication and requireAdmin
 router.use(authenticateToken, requireAdmin);

@@ -1,8 +1,8 @@
-import { Response } from 'express';
+import type { Response } from 'express';
 import bcrypt from 'bcryptjs';
-import { AuthRequest } from '../middleware/auth.ts';
+import type { AuthRequest } from '../middleware/auth.ts';
 import { db } from '../config/db.ts';
-import { isValidPhone, sanitizePhone } from '../utils/validators.ts';
+import { isValidPhone, sanitizePhone, isNonEmptyString } from '../utils/validators.ts';
 
 export async function getProfile(req: AuthRequest, res: Response): Promise<void> {
   try {
@@ -40,10 +40,10 @@ export async function updateProfile(req: AuthRequest, res: Response): Promise<vo
       return;
     }
 
-    const { name, phone, vehicle_type, vehicle_model, vehicle_plate } = req.body;
+    const { name, phone, vehicle_type, vehicle_model, vehicle_plate } = req.body ?? {};
 
-    if (!name || !phone) {
-      res.status(400).json({ success: false, message: 'Name and phone are required.' });
+    if (!isNonEmptyString(name, 2, 100) || !isNonEmptyString(phone, 8, 25)) {
+      res.status(400).json({ success: false, message: 'Valid name (2-100 chars) and phone are required.' });
       return;
     }
 
@@ -56,20 +56,30 @@ export async function updateProfile(req: AuthRequest, res: Response): Promise<vo
       return;
     }
 
-    const validVehicleType = vehicle_type === 'bike' || vehicle_type === 'car' ? vehicle_type : null;
+    // Prevent unauthorized modification of verified vehicle credentials or driver_status via profile updates
+    if (vehicle_type !== undefined || vehicle_model !== undefined || vehicle_plate !== undefined) {
+      const requestedType = vehicle_type ?? null;
+      const requestedModel = typeof vehicle_model === 'string' ? vehicle_model.trim() || null : vehicle_model ?? null;
+      const requestedPlate = typeof vehicle_plate === 'string' ? vehicle_plate.trim() || null : vehicle_plate ?? null;
+      const hasChangedVehicle =
+        requestedType !== req.user.vehicle_type ||
+        requestedModel !== req.user.vehicle_model ||
+        requestedPlate !== req.user.vehicle_plate;
+
+      if (hasChangedVehicle) {
+        res.status(403).json({
+          success: false,
+          message: 'Vehicle credentials require admin verification. Please submit or update them via the Driver Application page.'
+        });
+        return;
+      }
+    }
 
     await db.query(
       `UPDATE users 
-       SET name = ?, phone = ?, vehicle_type = ?, vehicle_model = ?, vehicle_plate = ? 
+       SET name = ?, phone = ? 
        WHERE id = ?`,
-      [
-        name.trim(),
-        cleanPhone,
-        validVehicleType,
-        vehicle_model ? vehicle_model.trim() : null,
-        vehicle_plate ? vehicle_plate.trim() : null,
-        req.user.id
-      ]
+      [name.trim(), cleanPhone, req.user.id]
     );
 
     // Fetch updated user
@@ -98,9 +108,15 @@ export async function updatePassword(req: AuthRequest, res: Response): Promise<v
       return;
     }
 
-    const { current_password, new_password, confirm_new_password } = req.body;
+    const { current_password, new_password, confirm_new_password } = req.body ?? {};
 
-    if (!current_password || !new_password) {
+    if (
+      typeof current_password !== 'string' ||
+      current_password.length === 0 ||
+      current_password.length > 128 ||
+      typeof new_password !== 'string' ||
+      typeof confirm_new_password !== 'string'
+    ) {
       res.status(400).json({ success: false, message: 'Current and new password are required.' });
       return;
     }
@@ -110,8 +126,8 @@ export async function updatePassword(req: AuthRequest, res: Response): Promise<v
       return;
     }
 
-    if (new_password.length < 6) {
-      res.status(400).json({ success: false, message: 'New password must be at least 6 characters.' });
+    if (new_password.length < 6 || new_password.length > 128) {
+      res.status(400).json({ success: false, message: 'New password must be between 6 and 128 characters.' });
       return;
     }
 

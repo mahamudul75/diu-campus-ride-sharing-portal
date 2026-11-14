@@ -134,12 +134,14 @@ export const RideDetailsPage: React.FC = () => {
   });
 
   const isBike = ride.vehicle_type === 'bike';
+  const isExpired = depDate.getTime() <= Date.now();
   const isAccepted = userRequest?.status === 'accepted';
   const isPending = userRequest?.status === 'pending';
   const canRequest =
     !isDriver &&
     ride.status === 'open' &&
     ride.seats_available > 0 &&
+    !isExpired &&
     !isAccepted &&
     !isPending;
 
@@ -308,6 +310,15 @@ export const RideDetailsPage: React.FC = () => {
                     <XCircle className="w-4 h-4" /> Cancel Booking
                   </button>
                 )}
+
+                {!isPending && !isAccepted && canRequest && (
+                  <button
+                    onClick={() => setShowConfirmModal(true)}
+                    className="w-full py-3 px-4 bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs rounded-xl shadow-md transition-all cursor-pointer flex items-center justify-center gap-2"
+                  >
+                    <CheckCircle2 className="w-4 h-4" /> Request Seat Again
+                  </button>
+                )}
               </div>
             ) : (
               <div className="space-y-4">
@@ -342,7 +353,11 @@ export const RideDetailsPage: React.FC = () => {
                     disabled
                     className="w-full py-3 px-4 bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-500 font-bold text-xs rounded-xl cursor-not-allowed"
                   >
-                    {ride.status === 'full' || ride.seats_available === 0 ? 'Ride Full' : `Ride ${ride.status}`}
+                    {isExpired
+                      ? 'Ride Departed'
+                      : ride.status === 'full' || ride.seats_available === 0
+                      ? 'Ride Full'
+                      : `Ride ${ride.status}`}
                   </button>
                 )}
               </div>

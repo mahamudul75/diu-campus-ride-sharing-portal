@@ -52,8 +52,32 @@ export const PostRidePage: React.FC = () => {
       return;
     }
 
-    const depDateTime = new Date(`${departureDate}T${departureTime}`);
-    if (isNaN(depDateTime.getTime()) || depDateTime.getTime() < Date.now()) {
+    const dateMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(departureDate);
+    const timeMatch = /^(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(departureTime);
+    if (!dateMatch || !timeMatch) {
+      setError('Please choose a valid departure date and time.');
+      return;
+    }
+
+    const year = Number(dateMatch[1]);
+    const month = Number(dateMatch[2]);
+    const day = Number(dateMatch[3]);
+    const hours = Number(timeMatch[1]);
+    const minutes = Number(timeMatch[2]);
+    const seconds = timeMatch[3] ? Number(timeMatch[3]) : 0;
+
+    const depDateTime = new Date(year, month - 1, day, hours, minutes, seconds, 0);
+    if (
+      isNaN(depDateTime.getTime()) ||
+      depDateTime.getFullYear() !== year ||
+      depDateTime.getMonth() !== month - 1 ||
+      depDateTime.getDate() !== day
+    ) {
+      setError('Please choose a valid departure date and time.');
+      return;
+    }
+
+    if (depDateTime.getTime() < Date.now()) {
       setError('Departure time must be in the future.');
       return;
     }

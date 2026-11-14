@@ -1,5 +1,5 @@
 import jwt from 'jsonwebtoken';
-import { Response } from 'express';
+import type { Response } from 'express';
 
 const JWT_SECRET: string = process.env.JWT_SECRET!;
 if (!JWT_SECRET || typeof JWT_SECRET !== 'string' || JWT_SECRET.trim() === '') {

@@ -1,6 +1,7 @@
-import { Response } from 'express';
-import { AuthRequest } from '../middleware/auth.ts';
+import type { Response } from 'express';
+import type { AuthRequest } from '../middleware/auth.ts';
 import { db } from '../config/db.ts';
+import { isNonEmptyString } from '../utils/validators.ts';
 
 export async function applyForDriver(req: AuthRequest, res: Response): Promise<void> {
   try {
@@ -9,12 +10,12 @@ export async function applyForDriver(req: AuthRequest, res: Response): Promise<v
       return;
     }
 
-    const { vehicle_type, vehicle_model, vehicle_plate } = req.body;
+    const { vehicle_type, vehicle_model, vehicle_plate } = req.body ?? {};
 
-    if (!vehicle_type || !vehicle_model || !vehicle_plate) {
+    if (!isNonEmptyString(vehicle_model, 2, 100) || !isNonEmptyString(vehicle_plate, 3, 50)) {
       res.status(400).json({
         success: false,
-        message: 'Vehicle type (bike/car), vehicle model, and registration plate are required.'
+        message: 'Vehicle model (2-100 chars) and registration plate (3-50 chars) are required.'
       });
       return;
     }
