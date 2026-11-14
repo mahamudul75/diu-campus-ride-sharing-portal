@@ -36,16 +36,16 @@ export const Modal: React.FC<ModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 dark:bg-slate-950/80 backdrop-blur-xs animate-fade-in">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#222B42]/50 dark:bg-[#111827]/80 backdrop-blur-xs animate-fade-in">
       <div
-        className={`w-full ${maxWidthMap[maxWidth]} bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200/80 dark:border-slate-800 overflow-hidden transform transition-all animate-scale-up text-slate-800 dark:text-slate-100`}
+        className={`w-full ${maxWidthMap[maxWidth]} bg-[#F5F7FC] dark:bg-[#1C2A40] rounded-2xl shadow-2xl border border-[#D4DAE7] dark:border-[#34445E] overflow-hidden transform transition-all animate-scale-up text-[#222B42] dark:text-[#F1F4FC]`}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/40">
-          <h3 className="font-bold text-slate-900 dark:text-slate-100 text-base">{title}</h3>
+        <div className="flex items-center justify-between px-6 py-4 border-b border-[#D4DAE7] dark:border-[#34445E] bg-[#F0F2F8] dark:bg-[#151F32]">
+          <h3 className="font-bold text-[#222B42] dark:text-[#F1F4FC] text-base">{title}</h3>
           <button
             onClick={onClose}
-            className="p-1 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+            className="p-1 rounded-lg text-[#626E86] hover:text-[#222B42] dark:text-[#B0BCD0] dark:hover:text-[#F1F4FC] hover:bg-[#E1E6F0] dark:hover:bg-[#24334B] transition-colors cursor-pointer"
             aria-label="Close dialog"
           >
             <X className="w-5 h-5" />

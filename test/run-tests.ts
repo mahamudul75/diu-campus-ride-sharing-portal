@@ -11,10 +11,12 @@ import cors from 'cors';
 import helmet from 'helmet';
 import http from 'http';
 import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
 import { db, enableIsolatedTestMemoryDb, resetDbPoolForTesting } from '../server/src/config/db.ts';
 import apiRouter from '../server/src/routes/index.ts';
 import { generateToken } from '../server/src/utils/jwt.ts';
 import { isValidStudentId, isValidDiuEmail } from '../server/src/utils/validators.ts';
+import { validateAvatarDataUrl } from '../server/src/utils/avatar.ts';
 import {
   parseRideDateTime,
   formatDateToMySqlUtc,
@@ -488,6 +490,469 @@ async function runTests() {
       headers: { Origin: trustedOrigin, Cookie: rahatLogin.cookie }
     });
     assert(reqPastRes.status === 400, 'Blocks passenger request for already-departed ride (400)');
+
+    // =========================================================================
+    // Phase 12: Auth Tokens, Avatar Magic-Byte Validation & Privacy Controls
+    // =========================================================================
+    console.log('\n[Phase 12: Auth Tokens, Avatar Validation & Privacy Controls]');
+    const forgotRes = await fetch(`${baseUrl}/auth/forgot-password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin },
+      body: JSON.stringify({ email: 'sadia.bba@diu.edu.bd' })
+    });
+    const forgotJson: any = await forgotRes.json();
+    assert(
+      forgotRes.status === 200 && forgotJson.configured === false && forgotJson.delivered === false,
+      'Forgot-password honestly reports unconfigured SMTP when env vars absent'
+    );
+
+    const rawResetToken = crypto.randomBytes(32).toString('hex');
+    const resetHash = crypto.createHash('sha256').update(rawResetToken).digest('hex');
+    await db.query(
+      'INSERT INTO auth_tokens (user_id, purpose, token_hash, expires_at) VALUES (?, ?, ?, ?)',
+      [5, 'password_reset', resetHash, formatDateToMySqlUtc(new Date(Date.now() + 30 * 60 * 1000))]
+    );
+
+    const resetOk = await fetch(`${baseUrl}/auth/reset-password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin },
+      body: JSON.stringify({
+        token: rawResetToken,
+        new_password: 'NewPassword123!',
+        confirm_new_password: 'NewPassword123!'
+      })
+    });
+    assert(resetOk.status === 200, 'Resets password with valid reset token');
+
+    const resetReplay = await fetch(`${baseUrl}/auth/reset-password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin },
+      body: JSON.stringify({
+        token: rawResetToken,
+        new_password: 'AnotherPassword1!',
+        confirm_new_password: 'AnotherPassword1!'
+      })
+    });
+    assert(resetReplay.status === 400, 'Rejects reused password reset token (400)');
+
+    const expiredVerifyRaw = crypto.randomBytes(32).toString('hex');
+    const expiredVerifyHash = crypto.createHash('sha256').update(expiredVerifyRaw).digest('hex');
+    await db.query(
+      'INSERT INTO auth_tokens (user_id, purpose, token_hash, expires_at) VALUES (?, ?, ?, ?)',
+      [4, 'email_verify', expiredVerifyHash, formatDateToMySqlUtc(new Date(Date.now() - 60000))]
+    );
+    const verifyExpiredRes = await fetch(`${baseUrl}/auth/verify-email`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin },
+      body: JSON.stringify({ token: expiredVerifyRaw })
+    });
+    assert(verifyExpiredRes.status === 400, 'Rejects expired email verification token (400)');
+
+    const validVerifyRaw = crypto.randomBytes(32).toString('hex');
+    const validVerifyHash = crypto.createHash('sha256').update(validVerifyRaw).digest('hex');
+    await db.query(
+      'INSERT INTO auth_tokens (user_id, purpose, token_hash, expires_at) VALUES (?, ?, ?, ?)',
+      [4, 'email_verify', validVerifyHash, formatDateToMySqlUtc(new Date(Date.now() + 3600000))]
+    );
+    const verifyOkRes = await fetch(`${baseUrl}/auth/verify-email`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin },
+      body: JSON.stringify({ token: validVerifyRaw })
+    });
+    assert(verifyOkRes.status === 200, 'Verifies email with valid token');
+
+    const sadiaNewLogin = await loginUser('sadia.bba@diu.edu.bd', 'NewPassword123!');
+    assert(sadiaNewLogin.res.status === 200, 'Sadia signs in using newly reset password');
+
+    // Avatar validator unit & HTTP checks
+    const fakePngBase64 = Buffer.from('not-actually-a-png-file').toString('base64');
+    const validPngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d]);
+    const validPngDataUrl = `data:image/png;base64,${validPngBytes.toString('base64')}`;
+    const oversizedPng = `data:image/png;base64,${Buffer.concat([validPngBytes, Buffer.alloc(520 * 1024)]).toString('base64')}`;
+    assert(validateAvatarDataUrl(`data:image/png;base64,${fakePngBase64}`).valid === false, 'Rejects spoofed MIME image without PNG magic bytes');
+    assert(validateAvatarDataUrl(oversizedPng).valid === false, 'Rejects avatar image larger than 512 KB');
+    assert(validateAvatarDataUrl(validPngDataUrl).valid === true, 'Accepts valid PNG magic-byte avatar image');
+
+    const avatarBadRes = await fetch(`${baseUrl}/users/avatar`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie },
+      body: JSON.stringify({ avatar_url: `data:image/png;base64,${fakePngBase64}` })
+    });
+    assert(avatarBadRes.status === 400, 'POST /api/users/avatar rejects spoofed magic bytes (400)');
+
+    const avatarOkRes = await fetch(`${baseUrl}/users/avatar`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie },
+      body: JSON.stringify({ avatar_url: validPngDataUrl })
+    });
+    const avatarOkJson: any = await avatarOkRes.json();
+    assert(avatarOkRes.status === 200 && Boolean(avatarOkJson.user?.avatar_url), 'Uploads valid PNG avatar via API');
+
+    const avatarDelRes = await fetch(`${baseUrl}/users/avatar`, {
+      method: 'DELETE',
+      headers: { Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie }
+    });
+    const avatarDelJson: any = await avatarDelRes.json();
+    assert(avatarDelRes.status === 200 && avatarDelJson.user?.avatar_url === null, 'Removes avatar via DELETE /api/users/avatar');
+
+    // Privacy toggle & bio
+    const privacyRes = await fetch(`${baseUrl}/users/profile`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: driverLogin.cookie },
+      body: JSON.stringify({
+        name: 'Tanvir Ahmed',
+        phone: '01812345678',
+        bio: 'Senior CSE rider',
+        show_phone_to_accepted: 0
+      })
+    });
+    const privacyJson: any = await privacyRes.json();
+    assert(
+      privacyRes.status === 200 && privacyJson.user?.bio === 'Senior CSE rider' && privacyJson.user?.show_phone_to_accepted === 0,
+      'Updates bio and show_phone_to_accepted privacy flag cleanly'
+    );
+
+    const hiddenPhoneRideView = await (await fetch(`${baseUrl}/rides/5`, { headers: { Cookie: sadiaNewLogin.cookie } })).json();
+    assert(
+      hiddenPhoneRideView.ride?.driver_phone === null && hiddenPhoneRideView.ride?.driver_vehicle_plate !== null,
+      'Respects show_phone_to_accepted = 0 while still showing plate to accepted passenger'
+    );
+
+    // Restore driver phone visibility for later checks
+    await fetch(`${baseUrl}/users/profile`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: driverLogin.cookie },
+      body: JSON.stringify({ name: 'Tanvir Ahmed', phone: '01812345678', show_phone_to_accepted: 1 })
+    });
+
+    // =========================================================================
+    // Phase 13: Ride Lifecycle, min_seats, Full Edit & Driver History
+    // =========================================================================
+    console.log('\n[Phase 13: Ride Lifecycle, min_seats Filter & Driver History]');
+    const schedCreateRes = await fetch(`${baseUrl}/rides`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: driverLogin.cookie },
+      body: JSON.stringify({
+        pickup_name: 'DIU Gate 2 Scheduled',
+        pickup_lat: 23.8768,
+        pickup_lng: 90.3202,
+        dest_name: 'Banani Road 11',
+        dest_lat: 23.7937,
+        dest_lng: 90.4066,
+        departure_time: new Date(Date.now() + 12 * 3600000).toISOString(),
+        fare: 150,
+        seats_total: 4,
+        vehicle_type: 'car',
+        status: 'scheduled'
+      })
+    });
+    const { rideId: schedRideId }: any = await schedCreateRes.json();
+    assert(schedCreateRes.status === 201 && schedRideId > 0, 'Creates scheduled ride cleanly');
+
+    const minSeats3 = await (await fetch(`${baseUrl}/rides?min_seats=3`)).json();
+    assert(
+      minSeats3.rides.some((r: any) => r.id === schedRideId) &&
+        minSeats3.rides.every((r: any) => Number(r.seats_available) >= 3),
+      'GET /api/rides?min_seats=3 filters to rides with >= 3 seats available'
+    );
+
+    // Full edit on scheduled ride
+    const fullEditRes = await fetch(`${baseUrl}/rides/${schedRideId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: driverLogin.cookie },
+      body: JSON.stringify({
+        pickup_name: 'DIU Smart City Main Gate',
+        dest_name: 'Banani Chairman Bari',
+        seats_total: 3,
+        fare: 170,
+        vehicle_type: 'car',
+        note: 'Updated pickup gate'
+      })
+    });
+    assert(fullEditRes.status === 200, 'Full PUT /api/rides/:id updates pickup, dest, seats, fare, vehicle, note');
+
+    // Passenger books & driver accepts scheduled ride
+    const schedBookRes = await fetch(`${baseUrl}/rides/${schedRideId}/requests`, {
+      method: 'POST',
+      headers: { Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie }
+    });
+    const { requestId: schedReqId }: any = await schedBookRes.json();
+    assert(schedBookRes.status === 201, 'Passenger books seat on scheduled ride');
+
+    const schedAcceptRes = await fetch(`${baseUrl}/requests/${schedReqId}/accept`, {
+      method: 'PATCH',
+      headers: { Origin: trustedOrigin, Cookie: driverLogin.cookie }
+    });
+    assert(schedAcceptRes.status === 200, 'Driver accepts passenger request on scheduled ride');
+
+    // Status transitions: scheduled -> open -> in_progress -> completed, invalid reverse rejected (409)
+    const toOpen = await fetch(`${baseUrl}/rides/${schedRideId}/status`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: driverLogin.cookie },
+      body: JSON.stringify({ status: 'open' })
+    });
+    const toProgress = await fetch(`${baseUrl}/rides/${schedRideId}/status`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: driverLogin.cookie },
+      body: JSON.stringify({ status: 'in_progress' })
+    });
+    const invalidReverse = await fetch(`${baseUrl}/rides/${schedRideId}/status`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: driverLogin.cookie },
+      body: JSON.stringify({ status: 'open' })
+    });
+    const toComplete = await fetch(`${baseUrl}/rides/${schedRideId}/status`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: driverLogin.cookie },
+      body: JSON.stringify({ status: 'completed' })
+    });
+    assert(
+      toOpen.status === 200 && toProgress.status === 200 && invalidReverse.status === 409 && toComplete.status === 200,
+      'Ride lifecycle transitions (scheduled -> open -> in_progress -> completed) & invalid transition guard (409)'
+    );
+
+    const drvHistRes = await fetch(`${baseUrl}/drivers/history`, { headers: { Cookie: rahatLogin.cookie } });
+    const drvHistJson: any = await drvHistRes.json();
+    assert(
+      drvHistRes.status === 200 && Array.isArray(drvHistJson.applications) && drvHistJson.applications.length >= 1,
+      'GET /api/drivers/history returns student driver application timeline'
+    );
+
+    // =========================================================================
+    // Phase 14: Ratings & Reviews System
+    // =========================================================================
+    console.log('\n[Phase 14: Ratings & Reviews System]');
+    const uncompletedReview = await fetch(`${baseUrl}/reviews`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie },
+      body: JSON.stringify({ ride_id: 3, reviewee_id: 3, rating: 5, comment: 'Too early' })
+    });
+    assert(uncompletedReview.status === 409, 'Rejects review on uncompleted ride (409)');
+
+    const uninvolvedReview = await fetch(`${baseUrl}/reviews`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: rahatLogin.cookie },
+      body: JSON.stringify({ ride_id: schedRideId, reviewee_id: 2, rating: 1, comment: 'Not on this ride' })
+    });
+    assert(uninvolvedReview.status === 403, 'Rejects review from uninvolved student (403)');
+
+    const passengerReview = await fetch(`${baseUrl}/reviews`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie },
+      body: JSON.stringify({ ride_id: schedRideId, reviewee_id: 2, rating: 5, comment: 'Safe and punctual drive!' })
+    });
+    assert(passengerReview.status === 201, 'Accepted passenger submits rating for driver on completed ride');
+
+    const dupReview = await fetch(`${baseUrl}/reviews`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie },
+      body: JSON.stringify({ ride_id: schedRideId, reviewee_id: 2, rating: 4, comment: 'Second try' })
+    });
+    assert(dupReview.status === 409, 'Rejects duplicate review for same ride/user (409)');
+
+    const driverReviewPassenger = await fetch(`${baseUrl}/reviews`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: driverLogin.cookie },
+      body: JSON.stringify({ ride_id: schedRideId, reviewee_id: 5, rating: 4, comment: 'Great passenger!' })
+    });
+    assert(driverReviewPassenger.status === 201, 'Driver rates accepted passenger on completed ride');
+
+    const driverRatingSummary: any = await (await fetch(`${baseUrl}/reviews/user/2`)).json();
+    const rideReviewList: any = await (
+      await fetch(`${baseUrl}/reviews/ride/${schedRideId}`, { headers: { Cookie: sadiaNewLogin.cookie } })
+    ).json();
+    assert(
+      driverRatingSummary.avg_rating === 5 &&
+        driverRatingSummary.review_count === 1 &&
+        rideReviewList.reviews.length === 2,
+      'Computes driver rating summary & ride review breakdown accurately'
+    );
+
+    // =========================================================================
+    // Phase 15: Notifications & In-App Chat
+    // =========================================================================
+    console.log('\n[Phase 15: Notifications & Ride Chat]');
+    const driverNotifsRes = await fetch(`${baseUrl}/notifications`, { headers: { Cookie: driverLogin.cookie } });
+    const driverNotifs: any = await driverNotifsRes.json();
+    assert(
+      driverNotifsRes.status === 200 && driverNotifs.notifications.length >= 2 && driverNotifs.unread_count >= 2,
+      'Notifications auto-created for driver (booking/review) with accurate unread count'
+    );
+
+    const firstNotifId = driverNotifs.notifications[0].id;
+    const crossUserRead = await fetch(`${baseUrl}/notifications/${firstNotifId}/read`, {
+      method: 'PATCH',
+      headers: { Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie }
+    });
+    assert(crossUserRead.status === 403, 'Rejects cross-user notification read attempt (403)');
+
+    const markOneRead = await fetch(`${baseUrl}/notifications/${firstNotifId}/read`, {
+      method: 'PATCH',
+      headers: { Origin: trustedOrigin, Cookie: driverLogin.cookie }
+    });
+    const markAllRead = await fetch(`${baseUrl}/notifications/read-all`, {
+      method: 'PATCH',
+      headers: { Origin: trustedOrigin, Cookie: driverLogin.cookie }
+    });
+    const afterReadAll: any = await (await fetch(`${baseUrl}/notifications`, { headers: { Cookie: driverLogin.cookie } })).json();
+    assert(
+      markOneRead.status === 200 && markAllRead.status === 200 && afterReadAll.unread_count === 0,
+      'Marks individual and all notifications read cleanly'
+    );
+
+    const delNotif = await fetch(`${baseUrl}/notifications/${firstNotifId}`, {
+      method: 'DELETE',
+      headers: { Origin: trustedOrigin, Cookie: driverLogin.cookie }
+    });
+    assert(delNotif.status === 200, 'Deletes user own notification cleanly');
+
+    // Chat tests on ride 1 (pending booking between Rahat id=4 & Driver Tanvir id=2)
+    const uninvolvedChat = await fetch(`${baseUrl}/chat/conversations`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie },
+      body: JSON.stringify({ ride_id: schedRideId }) // schedRideId is valid for Sadia, use ride 1 where Sadia has NO request
+    });
+    assert(uninvolvedChat.status === 200 || uninvolvedChat.status === 201, 'Participant opens ride conversation cleanly');
+
+    const blockedChatRes = await fetch(`${baseUrl}/chat/conversations`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie },
+      body: JSON.stringify({ ride_id: 1 })
+    });
+    assert(blockedChatRes.status === 403, 'Rejects chat creation by student without booking on ride 1 (403)');
+
+    const { conversation: activeConv }: any = await uninvolvedChat.json();
+    const msgSend = await fetch(`${baseUrl}/chat/conversations/${activeConv.id}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie },
+      body: JSON.stringify({ content: 'Thanks for the safe ride!' })
+    });
+    assert(msgSend.status === 201, 'Participant sends chat message cleanly');
+
+    const intruderMsg = await fetch(`${baseUrl}/chat/conversations/${activeConv.id}/messages`, {
+      headers: { Cookie: rahatLogin.cookie }
+    });
+    assert(intruderMsg.status === 403, 'Blocks non-participant from reading conversation messages (403)');
+
+    const driverReadChat: any = await (
+      await fetch(`${baseUrl}/chat/conversations/${activeConv.id}/messages`, { headers: { Cookie: driverLogin.cookie } })
+    ).json();
+    assert(driverReadChat.messages?.length === 1 && driverReadChat.messages[0].content === 'Thanks for the safe ride!', 'Driver reads chat messages cleanly');
+
+    // =========================================================================
+    // Phase 16: Safety Center, User Blocking & Admin Moderation
+    // =========================================================================
+    console.log('\n[Phase 16: Safety Center, User Blocks & Admin Moderation]');
+    const ecAdd = await fetch(`${baseUrl}/safety/emergency-contacts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie },
+      body: JSON.stringify({ name: 'Kamrul Hasan', relationship: 'Brother', phone: '01711223344' })
+    });
+    const ecJson: any = await ecAdd.json();
+    assert(ecAdd.status === 201 && ecJson.contact?.id > 0, 'Saves emergency contact cleanly');
+
+    const ecOtherDel = await fetch(`${baseUrl}/safety/emergency-contacts/${ecJson.contact.id}`, {
+      method: 'DELETE',
+      headers: { Origin: trustedOrigin, Cookie: rahatLogin.cookie }
+    });
+    assert(ecOtherDel.status === 403, 'Prevents another student from deleting emergency contact (403)');
+
+    const ecOwnDel = await fetch(`${baseUrl}/safety/emergency-contacts/${ecJson.contact.id}`, {
+      method: 'DELETE',
+      headers: { Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie }
+    });
+    assert(ecOwnDel.status === 200, 'Owner deletes emergency contact cleanly');
+
+    // Block driver (id=2) from Sadia (id=5) -> hides rides & blocks chat & ride requests
+    const blockDriverRes = await fetch(`${baseUrl}/safety/blocks`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie },
+      body: JSON.stringify({ blocked_id: 2 })
+    });
+    assert(blockDriverRes.status === 200, 'Blocks user cleanly via Safety API');
+
+    const blockedRideSearch: any = await (
+      await fetch(`${baseUrl}/rides`, { headers: { Cookie: sadiaNewLogin.cookie } })
+    ).json();
+    assert(
+      blockedRideSearch.rides.every((r: any) => Number(r.driver_id) !== 2),
+      'Hides rides offered by blocked driver from blocker search results'
+    );
+
+    const reqBlockedRide = await fetch(`${baseUrl}/rides/1/requests`, {
+      method: 'POST',
+      headers: { Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie }
+    });
+    assert(reqBlockedRide.status === 403, 'Prevents requesting ride with blocked driver (403)');
+
+    const msgBlockedChat = await fetch(`${baseUrl}/chat/conversations/${activeConv.id}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie },
+      body: JSON.stringify({ content: 'Blocked check' })
+    });
+    assert(msgBlockedChat.status === 403, 'Blocks sending chat messages when users are blocked (403)');
+
+    const unblockRes = await fetch(`${baseUrl}/safety/blocks/2`, {
+      method: 'DELETE',
+      headers: { Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie }
+    });
+    assert(unblockRes.status === 200, 'Unblocks user cleanly');
+
+    // Safety report workflow & admin resolution
+    const reportSub = await fetch(`${baseUrl}/safety/reports`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie },
+      body: JSON.stringify({
+        reported_user_id: 4,
+        ride_id: 1,
+        reason: 'no_show',
+        description: 'Did not arrive at pickup point after confirming.'
+      })
+    });
+    const reportSubJson: any = await reportSub.json();
+    assert(reportSub.status === 201 && reportSubJson.reportId > 0, 'Submits safety report and notifies admin');
+
+    const adminVerifyStudent = await fetch(`${baseUrl}/admin/users/5/verify`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: adminLogin.cookie },
+      body: JSON.stringify({ student_verified: 1 })
+    });
+    assert(adminVerifyStudent.status === 200, 'Admin verifies DIU student identity');
+
+    const adminRides: any = await (
+      await fetch(`${baseUrl}/admin/rides`, { headers: { Cookie: adminLogin.cookie } })
+    ).json();
+    const adminBookings: any = await (
+      await fetch(`${baseUrl}/admin/bookings`, { headers: { Cookie: adminLogin.cookie } })
+    ).json();
+    const adminReports: any = await (
+      await fetch(`${baseUrl}/admin/reports`, { headers: { Cookie: adminLogin.cookie } })
+    ).json();
+    assert(
+      adminRides.rides?.length > 0 && adminBookings.bookings?.length > 0 && adminReports.reports?.length === 1,
+      'Admin endpoints return all rides, bookings, and safety reports'
+    );
+
+    const resolveReportRes = await fetch(`${baseUrl}/admin/reports/${reportSubJson.reportId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: adminLogin.cookie },
+      body: JSON.stringify({ status: 'resolved', admin_note: 'Reviewed and warning issued.' })
+    });
+    const moderateRideRes = await fetch(`${baseUrl}/admin/rides/2/moderate`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: adminLogin.cookie },
+      body: JSON.stringify({ reason: 'Schedule conflict notice' })
+    });
+    const adminStatsExpanded: any = await (
+      await fetch(`${baseUrl}/admin/stats`, { headers: { Cookie: adminLogin.cookie } })
+    ).json();
+    assert(
+      resolveReportRes.status === 200 &&
+        moderateRideRes.status === 200 &&
+        typeof adminStatsExpanded.stats?.ride_completion_rate === 'number' &&
+        adminStatsExpanded.stats?.verified_students >= 1,
+      'Admin report resolution, ride moderation & expanded analytics KPIs succeed'
+    );
 
     // Production guard
     const origEnv = process.env.NODE_ENV;

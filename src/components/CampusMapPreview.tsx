@@ -7,7 +7,6 @@ import {
   MapPin,
   Car,
   Clock,
-  Layers,
   AlertCircle
 } from 'lucide-react';
 import { createResilientTileLayer, ResilientTileLayerHandle } from '../utils/mapConfig.ts';
@@ -27,48 +26,48 @@ interface VerifiedCampusCorridor {
 
 const VERIFIED_CORRIDORS: VerifiedCampusCorridor[] = [
   {
-    id: 'ashulia-dhanmondi',
-    name: 'Ashulia ⇄ Dhanmondi',
-    pickupName: 'DIU Daffodil Smart City (Ashulia)',
-    destName: 'DIU Dhanmondi 27 (Sobhanbag)',
-    pickupCoords: [23.8768, 90.3202],
-    destCoords: [23.7538, 90.377],
-    estDistanceKm: 22.5,
-    estDurationMin: 45,
-    color: '#0d9488'
-  },
-  {
-    id: 'ashulia-mirpur',
-    name: 'Ashulia ⇄ Mirpur 10',
-    pickupName: 'DIU Daffodil Smart City (Ashulia)',
-    destName: 'Mirpur 10 Circle',
+    id: 'corridor-metro',
+    name: 'Campus ⇄ Metro Transit Link',
+    pickupName: 'Campus Transit Hub',
+    destName: 'Metro Transit Station',
     pickupCoords: [23.8768, 90.3202],
     destCoords: [23.8069, 90.3687],
     estDistanceKm: 14.8,
     estDurationMin: 30,
-    color: '#059669'
+    color: '#515FC5'
   },
   {
-    id: 'ashulia-uttara',
-    name: 'Ashulia ⇄ Uttara',
-    pickupName: 'DIU Daffodil Smart City (Ashulia)',
-    destName: 'Uttara Sector 11 (House Building)',
+    id: 'corridor-academic',
+    name: 'Campus ⇄ Academic Hub Connector',
+    pickupName: 'Campus Transit Hub',
+    destName: 'City Academic Zone',
+    pickupCoords: [23.8768, 90.3202],
+    destCoords: [23.7538, 90.377],
+    estDistanceKm: 22.5,
+    estDurationMin: 45,
+    color: '#8175D5'
+  },
+  {
+    id: 'corridor-express',
+    name: 'Campus ⇄ City Express Line',
+    pickupName: 'Campus Transit Hub',
+    destName: 'Urban Transit Center',
     pickupCoords: [23.8768, 90.3202],
     destCoords: [23.8742, 90.398],
     estDistanceKm: 12.2,
     estDurationMin: 25,
-    color: '#2563eb'
+    color: '#344269'
   },
   {
-    id: 'ashulia-savar',
-    name: 'Ashulia ⇄ Savar',
-    pickupName: 'DIU Daffodil Smart City (Ashulia)',
-    destName: 'Savar Thana Stand',
+    id: 'corridor-shuttle',
+    name: 'Campus ⇄ Residential Shuttle',
+    pickupName: 'Campus Transit Hub',
+    destName: 'Residential Transit Hub',
     pickupCoords: [23.8768, 90.3202],
     destCoords: [23.8583, 90.2667],
     estDistanceKm: 7.5,
     estDurationMin: 18,
-    color: '#ea580c'
+    color: '#67D5DF'
   }
 ];
 
@@ -79,7 +78,7 @@ export const CampusMapPreview: React.FC = () => {
   const tileLayerRef = useRef<ResilientTileLayerHandle | null>(null);
   const layersGroupRef = useRef<L.LayerGroup | null>(null);
 
-  const [activeCorridorId, setActiveCorridorId] = useState<string>('ashulia-dhanmondi');
+  const [activeCorridorId, setActiveCorridorId] = useState<string>('corridor-metro');
   const [tileError, setTileError] = useState(false);
 
   const activeCorridor =
@@ -144,11 +143,13 @@ export const CampusMapPreview: React.FC = () => {
     const diuCoords: [number, number] = [23.8768, 90.3202];
     const destCoords: [number, number] = activeCorridor.destCoords;
 
+    const diuColor = isDark ? '#818CF8' : '#515FC5';
+
     // Custom DIU Campus Hub Marker
     const diuIcon = L.divIcon({
       className: 'custom-map-marker',
       html: `
-        <div style="background-color: #0d9488; width: 34px; height: 34px; border-radius: 50% 50% 50% 0; transform: rotate(-45deg); display: flex; align-items: center; justify-content: center; border: 2.5px solid white; box-shadow: 0 4px 10px rgba(0,0,0,0.35); z-index: 500;">
+        <div style="background-color: ${diuColor}; width: 34px; height: 34px; border-radius: 50% 50% 50% 0; transform: rotate(-45deg); display: flex; align-items: center; justify-content: center; border: 2.5px solid white; box-shadow: 0 4px 10px rgba(0,0,0,0.35); z-index: 500;">
           <span style="transform: rotate(45deg); color: white; font-weight: 800; font-size: 11px;">DIU</span>
         </div>
       `,
@@ -170,17 +171,17 @@ export const CampusMapPreview: React.FC = () => {
       popupAnchor: [0, -28]
     });
 
-    const diuMarker = L.marker(diuCoords, { icon: diuIcon })
-      .bindPopup(`<strong>DIU Daffodil Smart City</strong><br/><span style="font-size: 11px; color: #64748b;">Ashulia Campus Corridor</span>`)
+    L.marker(diuCoords, { icon: diuIcon })
+      .bindPopup(`<strong>${activeCorridor.pickupName}</strong><br/><span style="font-size: 11px; color: #626E86;">Primary Departure Hub</span>`)
       .addTo(group);
 
-    const destMarker = L.marker(destCoords, { icon: destIcon })
-      .bindPopup(`<strong>${activeCorridor.destName}</strong><br/><span style="font-size: 11px; color: #64748b;">${activeCorridor.name}</span>`)
+    L.marker(destCoords, { icon: destIcon })
+      .bindPopup(`<strong>${activeCorridor.destName}</strong><br/><span style="font-size: 11px; color: #626E86;">${activeCorridor.name}</span>`)
       .addTo(group);
 
     // Corridor connection line
-    const corridorLine = L.polyline([diuCoords, destCoords], {
-      color: activeCorridor.color,
+    L.polyline([diuCoords, destCoords], {
+      color: isDark ? '#818CF8' : '#515FC5',
       weight: 4,
       opacity: 0.85,
       dashArray: '8, 8'
@@ -189,49 +190,26 @@ export const CampusMapPreview: React.FC = () => {
     // Fit bounds smoothly with generous padding
     const bounds = L.latLngBounds([diuCoords, destCoords]);
     map.fitBounds(bounds, { padding: [50, 50], maxZoom: 13 });
-  }, [activeCorridorId, activeCorridor]);
+  }, [activeCorridorId, activeCorridor, isDark]);
 
   return (
     <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-      {/* Section Header */}
-      <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 mb-8">
-        <div>
-          <span className="text-xs font-bold text-teal-600 dark:text-teal-400 uppercase tracking-wider block mb-1">
-            Campus Transit Network
-          </span>
-          <h2 className="text-2xl sm:text-3xl font-black text-slate-900 dark:text-slate-100 tracking-tight">
-            Explore Your Campus Routes
-          </h2>
-          <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 mt-1 max-w-xl">
-            Discover convenient routes connecting DIU with popular destinations.
-          </p>
-        </div>
-
-        <Link
-          to="/search"
-          className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 dark:bg-teal-600 dark:hover:bg-teal-500 text-white font-bold text-xs sm:text-sm shadow-md transition-all self-start md:self-auto cursor-pointer"
-        >
-          <span>Explore All Routes</span>
-          <ArrowRight className="w-4 h-4" />
-        </Link>
-      </div>
-
       {/* Main Interactive Preview Card */}
-      <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden p-3 sm:p-5">
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch">
+      <div className="bg-[#F5F7FC] dark:bg-[#1C2A40] rounded-3xl border border-[#D4DAE7] dark:border-[#34445E] shadow-sm overflow-hidden p-4 sm:p-6">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
           {/* Corridor Selection Column (4 cols) */}
-          <div className="lg:col-span-4 flex flex-col justify-between space-y-3">
+          <div className="lg:col-span-4 flex flex-col justify-between space-y-4">
             <div>
               <div className="flex items-center justify-between px-1 mb-3">
-                <span className="text-[11px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider">
-                  Popular Corridors
+                <span className="text-[11px] font-bold text-[#626E86] dark:text-[#B0BCD0] uppercase tracking-wider">
+                  Verified Campus Corridors
                 </span>
-                <span className="text-[10px] text-teal-600 dark:text-teal-400 font-semibold flex items-center gap-1">
+                <span className="text-[10px] text-[#515FC5] dark:text-[#818CF8] font-semibold flex items-center gap-1">
                   <Compass className="w-3 h-3" /> Select Route
                 </span>
               </div>
 
-              <div className="space-y-2">
+              <div className="space-y-2.5">
                 {VERIFIED_CORRIDORS.map((corridor) => {
                   const isSelected = corridor.id === activeCorridorId;
                   return (
@@ -240,8 +218,8 @@ export const CampusMapPreview: React.FC = () => {
                       onClick={() => setActiveCorridorId(corridor.id)}
                       className={`w-full text-left p-3.5 rounded-2xl border transition-all cursor-pointer flex items-center justify-between ${
                         isSelected
-                          ? 'bg-teal-50/80 dark:bg-teal-950/40 border-teal-500/40 shadow-xs'
-                          : 'bg-slate-50 dark:bg-slate-950/40 border-slate-200/80 dark:border-slate-800/80 hover:border-slate-300 dark:hover:border-slate-700'
+                          ? 'bg-[#DDE2FA] dark:bg-[#818CF8]/15 border-[#515FC5]/40 dark:border-[#818CF8]/40 shadow-xs ring-1 ring-[#515FC5]/20 dark:ring-[#818CF8]/20'
+                          : 'bg-[#FFFFFF] dark:bg-[#24334B] border-[#D4DAE7] dark:border-[#34445E] hover:border-[#515FC5]/30 dark:hover:border-[#818CF8]/30'
                       }`}
                     >
                       <div className="space-y-1 min-w-0 pr-2">
@@ -253,23 +231,23 @@ export const CampusMapPreview: React.FC = () => {
                           <span
                             className={`text-xs font-bold truncate ${
                               isSelected
-                                ? 'text-teal-950 dark:text-teal-200 font-black'
-                                : 'text-slate-800 dark:text-slate-200'
+                                ? 'text-[#515FC5] dark:text-[#818CF8] font-black'
+                                : 'text-[#222B42] dark:text-[#F1F4FC]'
                             }`}
                           >
                             {corridor.name}
                           </span>
                         </div>
-                        <p className="text-[10px] text-slate-500 dark:text-slate-400 truncate pl-4.5">
+                        <p className="text-[10px] text-[#626E86] dark:text-[#B0BCD0] truncate pl-4.5">
                           {corridor.destName}
                         </p>
                       </div>
 
                       <div className="text-right shrink-0">
-                        <span className="text-[11px] font-bold text-slate-700 dark:text-slate-300 block">
+                        <span className="text-[11px] font-bold text-[#222B42] dark:text-[#F1F4FC] block tabular-nums">
                           ~{corridor.estDistanceKm} km
                         </span>
-                        <span className="text-[10px] text-slate-400 dark:text-slate-500">
+                        <span className="text-[10px] text-[#626E86] dark:text-[#B0BCD0] tabular-nums">
                           {corridor.estDurationMin} min
                         </span>
                       </div>
@@ -279,22 +257,22 @@ export const CampusMapPreview: React.FC = () => {
               </div>
             </div>
 
-            {/* Active Corridor Summary Pill */}
-            <div className="p-3.5 rounded-2xl bg-slate-950 text-white border border-slate-800 space-y-2 mt-2">
+            {/* Active Corridor Summary Card */}
+            <div className="p-4 rounded-2xl bg-[#FFFFFF] dark:bg-[#24334B] border border-[#D4DAE7] dark:border-[#34445E] space-y-2 mt-2">
               <div className="flex items-center justify-between text-[11px]">
-                <span className="text-slate-400 flex items-center gap-1.5">
-                  <MapPin className="w-3.5 h-3.5 text-teal-400" />
-                  Primary Campus Hub
+                <span className="text-[#626E86] dark:text-[#B0BCD0] flex items-center gap-1.5">
+                  <MapPin className="w-3.5 h-3.5 text-[#515FC5] dark:text-[#818CF8]" />
+                  Hub Point
                 </span>
-                <span className="font-bold text-teal-400">Ashulia Gate 1</span>
+                <span className="font-bold text-[#515FC5] dark:text-[#818CF8]">Campus Transit Hub</span>
               </div>
-              <div className="flex items-center justify-between pt-1 border-t border-slate-800 text-[11px]">
-                <span className="text-slate-400 flex items-center gap-1.5">
-                  <Car className="w-3.5 h-3.5 text-slate-400" />
-                  Transit Estimate
+              <div className="flex items-center justify-between pt-1 border-t border-[#D4DAE7]/60 dark:border-[#34445E]/60 text-[11px]">
+                <span className="text-[#626E86] dark:text-[#B0BCD0] flex items-center gap-1.5">
+                  <Car className="w-3.5 h-3.5 text-[#626E86] dark:text-[#B0BCD0]" />
+                  Estimated Time
                 </span>
-                <span className="font-semibold text-slate-200 flex items-center gap-1.5">
-                  <Clock className="w-3 h-3 text-slate-500" />
+                <span className="font-semibold text-[#222B42] dark:text-[#F1F4FC] flex items-center gap-1.5 tabular-nums">
+                  <Clock className="w-3 h-3 text-[#626E86] dark:text-[#B0BCD0]" />
                   ~{activeCorridor.estDurationMin} mins
                 </span>
               </div>
@@ -302,18 +280,18 @@ export const CampusMapPreview: React.FC = () => {
           </div>
 
           {/* Interactive Map Column (8 cols) */}
-          <div className="lg:col-span-8 relative rounded-2xl overflow-hidden border border-slate-200 dark:border-slate-800 bg-slate-900 min-h-[340px] sm:min-h-[400px]">
+          <div className="lg:col-span-8 relative rounded-2xl overflow-hidden border border-[#D4DAE7] dark:border-[#34445E] bg-[#E8ECF4] dark:bg-[#111827] min-h-[360px] sm:min-h-[420px]">
             <div
               ref={mapContainerRef}
-              className="w-full h-full min-h-[340px] sm:min-h-[400px]"
+              className="w-full h-full min-h-[360px] sm:min-h-[420px]"
               style={{ width: '100%' }}
             />
 
-            {/* Uber-inspired Floating Badge */}
-            <div className="absolute top-3 left-3 z-[400] bg-white/95 dark:bg-slate-900/95 backdrop-blur-md px-3.5 py-1.5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-md flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-              <span className="text-[11px] font-bold text-slate-800 dark:text-slate-200">
-                DIU Transit Corridor: <span className="text-teal-600 dark:text-teal-400">{activeCorridor.name}</span>
+            {/* Floating Route Info Badge */}
+            <div className="absolute top-3 left-3 z-[400] bg-[#FFFFFF]/95 dark:bg-[#1C2A40]/95 backdrop-blur-md px-3.5 py-1.5 rounded-xl border border-[#D4DAE7] dark:border-[#34445E] shadow-md flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-[#515FC5] dark:bg-[#818CF8] animate-pulse"></span>
+              <span className="text-[11px] font-bold text-[#222B42] dark:text-[#F1F4FC]">
+                Active Transit Route: <span className="text-[#515FC5] dark:text-[#818CF8]">{activeCorridor.name}</span>
               </span>
             </div>
 

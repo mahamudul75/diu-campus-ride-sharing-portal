@@ -2,11 +2,77 @@
 
 @custom-variant dark (&:where(.dark, .dark *));
 
+:root {
+  --bg-main: #F1F3F8;
+  --bg-secondary: #E9EDF5;
+  --bg-card: #FFFFFF;
+  --bg-card-elevated: #F8F9FD;
+  --bg-hover: #EEF0FA;
+  --bg-nav: #FFFFFF;
+  --color-primary: #4F5FC9;
+  --color-primary-hover: #404EB2;
+  --color-secondary: #777DE0;
+  --color-accent: #299E9A;
+  --color-soft-accent: #EEF0FA;
+  --text-primary: #253149;
+  --text-secondary: #66738A;
+  --color-border: #DCE2EC;
+  --color-border-subtle: #E9EDF5;
+}
+
+.dark {
+  --bg-main: #111827;
+  --bg-secondary: #172338;
+  --bg-card: #1B2940;
+  --bg-card-elevated: #243750;
+  --bg-hover: #2B3B56;
+  --bg-nav: #151F32;
+  --color-primary: #818CF8;
+  --color-primary-hover: #6B79F2;
+  --color-secondary: #A5A6F6;
+  --color-accent: #54C5C0;
+  --color-soft-accent: rgba(129, 140, 248, 0.15);
+  --text-primary: #F1F5FC;
+  --text-secondary: #B4C0D3;
+  --color-border: #34445D;
+  --color-border-subtle: #243750;
+}
+
 @layer base {
-  html {
-    font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+  html, body {
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
     letter-spacing: -0.011em;
+    background-color: var(--bg-main);
+    color: var(--text-primary);
+    transition: background-color 0.2s ease, color 0.2s ease;
   }
+}
+
+/* Custom Scrollbars */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #DCE2EC;
+  border-radius: 4px;
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  background: #34445D;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #66738A;
+}
+
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: #818CF8;
 }
 
 /* Leaflet Custom Marker & Layer Resets */
@@ -16,35 +82,29 @@
 }
 
 .leaflet-popup-content-wrapper {
+  background-color: var(--bg-card) !important;
+  color: var(--text-primary) !important;
+  border: 1px solid var(--color-border) !important;
   border-radius: 0.75rem !important;
-  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.2), 0 8px 10px -6px rgba(0, 0, 0, 0.15) !important;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.25), 0 8px 10px -6px rgba(0, 0, 0, 0.15) !important;
   padding: 2px !important;
   font-family: inherit !important;
 }
 
-.dark .leaflet-popup-content-wrapper {
-  background-color: #0f172a !important;
-  color: #f1f5f9 !important;
-  border: 1px solid #334155 !important;
+.leaflet-popup-tip {
+  background-color: var(--bg-card) !important;
 }
 
 .leaflet-popup-content {
   margin: 10px 14px !important;
   line-height: 1.5 !important;
   font-size: 12px !important;
-  color: #1e293b !important;
-}
-
-.dark .leaflet-popup-content {
-  color: #f1f5f9 !important;
-}
-
-.dark .leaflet-popup-tip {
-  background-color: #0f172a !important;
+  color: var(--text-primary) !important;
 }
 
 .leaflet-container {
   font-family: inherit !important;
+  background-color: var(--bg-card) !important;
 }
 
 /* Animations */

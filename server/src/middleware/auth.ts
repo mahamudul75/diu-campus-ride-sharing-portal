@@ -2,6 +2,7 @@ import type { Request, Response, NextFunction } from 'express';
 import { verifyToken } from '../utils/jwt.ts';
 import type { TokenPayload } from '../utils/jwt.ts';
 import { db } from '../config/db.ts';
+import { getUserExtendedFields } from '../utils/dbHelpers.ts';
 
 export interface AuthenticatedUser {
   id: number;
@@ -15,6 +16,11 @@ export interface AuthenticatedUser {
   vehicle_model: string | null;
   vehicle_plate: string | null;
   is_blocked: number;
+  email_verified?: number;
+  student_verified?: number;
+  avatar_url?: string | null;
+  show_phone_to_accepted?: number;
+  bio?: string | null;
 }
 
 export interface AuthRequest extends Request {
@@ -27,7 +33,6 @@ export async function authenticateToken(
   next: NextFunction
 ): Promise<void> {
   try {
-    // Check cookie first (for Axios withCredentials), then Authorization header
     const token =
       req.cookies?.token ||
       (req.headers.authorization?.startsWith('Bearer ')
@@ -51,7 +56,6 @@ export async function authenticateToken(
       return;
     }
 
-    // Verify user still exists in database and check blocked status
     const [rows] = await db.query(
       'SELECT id, student_id, name, email, phone, role, driver_status, vehicle_type, vehicle_model, vehicle_plate, is_blocked FROM users WHERE id = ?',
       [decoded.id]
@@ -67,7 +71,6 @@ export async function authenticateToken(
       return;
     }
 
-    // Blocked check
     if (user.is_blocked === 1 || Boolean(user.is_blocked)) {
       res.status(403).json({
         success: false,
@@ -76,7 +79,8 @@ export async function authenticateToken(
       return;
     }
 
-    req.user = user;
+    const ext = await getUserExtendedFields(user.id);
+    req.user = { ...user, ...ext };
     next();
   } catch (error: any) {
     console.error('Auth middleware error:', error);
@@ -115,7 +119,8 @@ export async function optionalAuthenticateToken(
 
     const user = Array.isArray(rows) && rows.length > 0 ? (rows[0] as AuthenticatedUser) : null;
     if (user && user.is_blocked !== 1 && !Boolean(user.is_blocked)) {
-      req.user = user;
+      const ext = await getUserExtendedFields(user.id);
+      req.user = { ...user, ...ext };
     }
     next();
   } catch {

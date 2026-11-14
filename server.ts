@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import http from 'http';
 import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
 import cookieParser from 'cookie-parser';
@@ -8,6 +9,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import apiRouter from './server/src/routes/index.ts';
 import { getDbPool } from './server/src/config/db.ts';
+import { initWebSocketServer } from './server/src/realtime/wsServer.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -16,11 +18,10 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const isProduction = process.env.NODE_ENV === 'production';
 
-// Configure reverse proxy trust: trust 1st upstream reverse proxy (Google Cloud Run / GFE / NGINX)
-// This ensures req.ip represents the genuine client IP rather than an attacker-manipulated X-Forwarded-For header
+// Configure reverse proxy trust: trust 1st upstream reverse proxy
 app.set('trust proxy', 1);
 
-// Security headers with Helmet (configured for OpenStreetMap tiles and iframe preview)
+// Security headers with Helmet
 app.use(
   helmet({
     contentSecurityPolicy: false,
@@ -78,7 +79,7 @@ if (!isProduction) {
   }
 }
 
-function isTrustedOrigin(rawOrigin: unknown): boolean {
+export function isTrustedOrigin(rawOrigin: unknown): boolean {
   const normalized = normalizeOrigin(rawOrigin);
   return normalized !== null && trustedOrigins.has(normalized);
 }
@@ -86,9 +87,7 @@ function isTrustedOrigin(rawOrigin: unknown): boolean {
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Missing Origin (same-origin GETs, non-browser/healthcheck calls): emit no CORS headers
       if (!origin) return callback(null, false);
-      // Only exact explicitly configured trusted origins receive CORS headers
       if (isTrustedOrigin(origin)) {
         return callback(null, true);
       }
@@ -111,7 +110,10 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   next();
 });
 
-// Body and cookie parsers with explicit size limits (100kb) and parameter limits to protect against memory exhaustion DOS
+// Dedicated 1MB JSON parser strictly for validated profile avatar uploads (max 512KB image binary)
+app.use('/api/users/avatar', express.json({ limit: '1mb' }));
+
+// Global 100kb JSON & URL-encoded payload limit everywhere else (DoS protection)
 app.use(express.json({ limit: '100kb' }));
 app.use(express.urlencoded({ extended: true, limit: '100kb', parameterLimit: 1000 }));
 app.use(cookieParser());
@@ -183,27 +185,31 @@ async function setupFrontend() {
 // Global error handling middleware
 app.use((err: any, req: Request, res: Response, next: NextFunction) => {
   const statusCode = err.status || err.statusCode || 500;
-  // Do not log full stack trace for expected client payload errors (413 Payload Too Large, 400 Bad Request / SyntaxError)
   if (statusCode >= 500) {
     console.error('Server Unhandled Error:', err);
   }
-  
+
   res.status(statusCode).json({
     success: false,
-    message: statusCode === 413 
-      ? 'Request entity too large. Payload exceeds 100kb limit.' 
-      : statusCode === 400 
-      ? 'Bad request or malformed JSON payload.' 
-      : 'Internal server error occurred.'
+    message:
+      statusCode === 413
+        ? 'Request entity too large. Payload exceeds allowed size limit.'
+        : statusCode === 400
+        ? 'Bad request or malformed JSON payload.'
+        : 'Internal server error occurred.'
   });
 });
 
+const httpServer = http.createServer(app);
+initWebSocketServer(httpServer, isTrustedOrigin);
+
 setupFrontend().then(() => {
-  app.listen(PORT, () => {
+  httpServer.listen(PORT, () => {
     console.log(`=======================================================`);
     console.log(` DIU CAMPUS RIDE SHARING PORTAL`);
     console.log(` Server active on http://0.0.0.0:${PORT}`);
     console.log(` REST API Base: http://0.0.0.0:${PORT}/api`);
+    console.log(` WebSocket Endpoint: ws://0.0.0.0:${PORT}/ws`);
     console.log(` Environment: ${process.env.NODE_ENV || 'development'}`);
     console.log(`=======================================================`);
   });

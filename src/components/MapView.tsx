@@ -23,7 +23,7 @@ export const MapView: React.FC<MapViewProps> = ({
   destLat,
   destLng,
   destName,
-  height = '320px',
+  height = '480px',
   className = ''
 }) => {
   const { isDark } = useTheme();
@@ -114,8 +114,11 @@ export const MapView: React.FC<MapViewProps> = ({
     const dLat = Number(destLat) || 23.7538;
     const dLng = Number(destLng) || 90.377;
 
-    const pickupIcon = createCustomIcon('#0d9488', 'P');
-    const destIcon = createCustomIcon('#f97316', 'D');
+    const pickupColor = isDark ? '#818CF8' : '#515FC5';
+    const destColor = isDark ? '#67D5DF' : '#8175D5';
+
+    const pickupIcon = createCustomIcon(pickupColor, 'P');
+    const destIcon = createCustomIcon(destColor, 'D');
 
     const createPopupEl = (title: string, value: string) => {
       const div = document.createElement('div');
@@ -163,7 +166,7 @@ export const MapView: React.FC<MapViewProps> = ({
             polylineRef.current.setLatLngs(coords);
           } else {
             polylineRef.current = L.polyline(coords, {
-              color: '#0d9488',
+              color: isDark ? '#818CF8' : '#515FC5',
               weight: 6,
               opacity: 0.9,
               lineJoin: 'round'
@@ -186,7 +189,7 @@ export const MapView: React.FC<MapViewProps> = ({
           polylineRef.current.setLatLngs(latlngs);
         } else {
           polylineRef.current = L.polyline(latlngs, {
-            color: '#0d9488',
+            color: isDark ? '#818CF8' : '#515FC5',
             weight: 4,
             opacity: 0.7,
             dashArray: '8, 12'
@@ -202,30 +205,30 @@ export const MapView: React.FC<MapViewProps> = ({
         setIsRouting(false);
       });
 
-  }, [pickupLat, pickupLng, pickupName, destLat, destLng, destName]);
+  }, [pickupLat, pickupLng, pickupName, destLat, destLng, destName, isDark]);
 
   return (
-    <div className={`relative rounded-3xl overflow-hidden border border-slate-200 dark:border-slate-800 shadow-sm ${className}`}>
+    <div className={`relative rounded-3xl overflow-hidden border border-[#D4DAE7] dark:border-[#34445E] shadow-sm ${className}`}>
       <div ref={mapContainerRef} style={{ height, width: '100%' }} />
 
       {/* Info Badge */}
       {(distanceKm !== null || isRouting) && (
-        <div className="absolute top-4 right-4 z-[400] bg-white/90 dark:bg-slate-900/90 backdrop-blur-md px-4 py-2 rounded-2xl border border-teal-100 dark:border-teal-900 shadow-lg text-[11px] font-bold text-slate-800 dark:text-slate-100 flex items-center gap-3">
-          <span className="flex items-center gap-1.5 text-teal-700 dark:text-teal-400">
+        <div className="absolute top-4 right-4 z-[400] bg-[#FFFFFF]/90 dark:bg-[#1C2A40]/90 backdrop-blur-md px-4 py-2 rounded-2xl border border-[#D4DAE7] dark:border-[#34445E] shadow-lg text-[11px] font-bold text-[#222B42] dark:text-[#F1F4FC] flex items-center gap-3">
+          <span className="flex items-center gap-1.5 text-[#515FC5] dark:text-[#818CF8]">
             <Car className="w-3.5 h-3.5" /> {distanceKm || '--'} km
           </span>
-          <span className="w-px h-3 bg-slate-200 dark:bg-slate-700"></span>
-          <span className="flex items-center gap-1.5 text-slate-600 dark:text-slate-300">
+          <span className="w-px h-3 bg-[#D4DAE7] dark:bg-[#34445E]"></span>
+          <span className="flex items-center gap-1.5 text-[#626E86] dark:text-[#B0BCD0]">
             <Clock className="w-3.5 h-3.5" /> ~{durationMin || '--'} mins
           </span>
           {isRouting && (
-            <div className="w-3 h-3 border-2 border-teal-500 border-t-transparent rounded-full animate-spin"></div>
+            <div className="w-3 h-3 border-2 border-[#515FC5] dark:border-[#818CF8] border-t-transparent rounded-full animate-spin"></div>
           )}
         </div>
       )}
 
       {tileError && (
-        <div className="absolute inset-0 z-30 bg-slate-900/40 backdrop-blur-[2px] flex items-center justify-center p-6">
+        <div className="absolute inset-0 z-30 bg-[#111827]/40 backdrop-blur-[2px] flex items-center justify-center p-6">
           <div className="bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 p-3 rounded-2xl shadow-xl max-w-xs text-center space-y-1">
             <AlertCircle className="w-6 h-6 text-amber-600 mx-auto" />
             <p className="text-[10px] font-bold text-amber-900 dark:text-amber-200 uppercase tracking-widest">Connectivity Warning</p>

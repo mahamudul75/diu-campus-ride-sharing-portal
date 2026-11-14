@@ -4,6 +4,7 @@ import {
   getRideById,
   createRide,
   updateRide,
+  updateRideStatus,
   cancelRide,
   completeRide,
   getMyRides
@@ -17,14 +18,15 @@ import { sensitiveWriteLimiter } from '../middleware/rateLimiter.ts';
 
 const router = express.Router();
 
-// Publicly browseable or authenticated browse
-router.get('/', getRides);
+// Publicly browseable or authenticated browse (optionalAuthenticateToken applies user block-filtering when signed in)
+router.get('/', optionalAuthenticateToken, getRides);
 router.get('/mine', authenticateToken, getMyRides);
 router.get('/:id', optionalAuthenticateToken, getRideById);
 
 // Driver ride operations
 router.post('/', authenticateToken, requireApprovedDriver, sensitiveWriteLimiter, createRide);
 router.put('/:id', authenticateToken, updateRide);
+router.patch('/:id/status', authenticateToken, updateRideStatus);
 router.patch('/:id/cancel', authenticateToken, cancelRide);
 router.patch('/:id/complete', authenticateToken, completeRide);
 

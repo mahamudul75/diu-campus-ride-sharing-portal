@@ -7,7 +7,9 @@ import {
   Clock,
   Compass,
   FileCheck,
-  ArrowRight
+  ArrowRight,
+  Star,
+  BadgeCheck
 } from 'lucide-react';
 import api from '../services/api.ts';
 import { AdminStats } from '../types/index.ts';
@@ -48,159 +50,316 @@ export const AdminDashboardPage: React.FC = () => {
     );
   }
 
+  const totalRides = stats?.total_rides || 0;
+  const bikePct = totalRides > 0 ? Math.round(((stats?.bike_rides || 0) / totalRides) * 100) : 0;
+  const carPct = totalRides > 0 ? Math.round(((stats?.car_rides || 0) / totalRides) * 100) : 0;
+
+  const totalReqs = stats?.total_requests || 0;
+  const acceptedPct = totalReqs > 0 ? Math.round(((stats?.accepted_requests || 0) / totalReqs) * 100) : 0;
+
   return (
     <DashboardLayout
       breadcrumbs={[{ label: 'Admin', path: '/admin' }, { label: 'Overview' }]}
       title="Admin Control"
-      subtitle="University metrics, driver verifications, and account governance."
+      subtitle="University metrics, driver verifications, ride moderation, and safety governance."
       actions={
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Link
             to="/admin/drivers"
-            className="px-3.5 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5"
+            className="px-3.5 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5 whitespace-nowrap"
           >
             <Clock className="w-3.5 h-3.5" />
             Approvals ({stats?.pending_drivers || 0})
           </Link>
           <Link
-            to="/admin/users"
-            className="px-3.5 py-1.5 bg-slate-800 dark:bg-slate-700 hover:bg-slate-700 dark:hover:bg-slate-600 text-white rounded-xl text-xs font-bold transition-all flex items-center gap-1.5"
+            to="/admin/reports"
+            className="px-3.5 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5 whitespace-nowrap"
           >
-            <Users className="w-3.5 h-3.5" />
-            Students
+            <ShieldAlert className="w-3.5 h-3.5" />
+            Reports ({stats?.pending_reports || 0})
           </Link>
         </div>
       }
     >
       <div className="space-y-6">
-        {/* Statistics Grid */}
-        <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
-          {/* Total Users */}
-          <div className="p-5 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-xs space-y-1">
-            <div className="w-9 h-9 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 flex items-center justify-center font-bold mb-3">
+        {/* Primary KPI Grid */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="p-5 bg-[#F5F7FC] dark:bg-[#1C2A40] rounded-2xl border border-[#D4DAE7] dark:border-[#34445E] shadow-xs space-y-1">
+            <div className="w-9 h-9 rounded-xl bg-white dark:bg-[#24334B] text-[#515FC5] dark:text-[#818CF8] flex items-center justify-center mb-3 border border-[#D4DAE7] dark:border-[#34445E]">
               <Users className="w-4 h-4" />
             </div>
-            <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider">
+            <p className="text-[10px] font-bold text-[#626E86] dark:text-[#B0BCD0] uppercase tracking-wider">
               Students
             </p>
-            <p className="text-2xl font-black text-slate-900 dark:text-slate-100 font-mono">
+            <p className="text-2xl font-black text-[#222B42] dark:text-[#F1F4FC] font-mono tabular-nums">
               {stats?.total_users || 0}
             </p>
-            <p className="text-[11px] text-slate-500 dark:text-slate-400">Registered users</p>
+            <p className="text-[11px] text-[#626E86] dark:text-[#B0BCD0] tabular-nums">
+              {stats?.verified_students || 0} verified badges
+            </p>
           </div>
 
-          {/* Approved Drivers */}
-          <div className="p-5 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-xs space-y-1">
-            <div className="w-9 h-9 rounded-xl bg-teal-50 dark:bg-teal-950/50 text-teal-700 dark:text-teal-300 flex items-center justify-center font-bold mb-3">
+          <div className="p-5 bg-[#F5F7FC] dark:bg-[#1C2A40] rounded-2xl border border-[#D4DAE7] dark:border-[#34445E] shadow-xs space-y-1">
+            <div className="w-9 h-9 rounded-xl bg-[#DDE2FA]/70 dark:bg-[#24334B] text-[#515FC5] dark:text-[#818CF8] flex items-center justify-center mb-3 border border-[#515FC5]/20 dark:border-[#818CF8]/30">
               <Car className="w-4 h-4" />
             </div>
-            <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider">
-              Drivers
+            <p className="text-[10px] font-bold text-[#626E86] dark:text-[#B0BCD0] uppercase tracking-wider">
+              Approved Drivers
             </p>
-            <p className="text-2xl font-black text-teal-700 dark:text-teal-400 font-mono">
+            <p className="text-2xl font-black text-[#515FC5] dark:text-[#818CF8] font-mono tabular-nums">
               {stats?.approved_drivers || 0}
             </p>
-            <p className="text-[11px] text-teal-600 dark:text-teal-400">Approved student drivers</p>
+            <p className="text-[11px] text-amber-600 dark:text-amber-400 tabular-nums">
+              {stats?.pending_drivers || 0} awaiting review
+            </p>
           </div>
 
-          {/* Pending Approvals */}
-          <div className="p-5 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-xs space-y-1">
-            <div className="w-9 h-9 rounded-xl bg-amber-50 dark:bg-amber-950/50 text-amber-700 dark:text-amber-300 flex items-center justify-center font-bold mb-3">
-              <Clock className="w-4 h-4" />
-            </div>
-            <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider">
-              Pending
-            </p>
-            <p className="text-2xl font-black text-amber-600 dark:text-amber-400 font-mono">
-              {stats?.pending_drivers || 0}
-            </p>
-            <p className="text-[11px] text-amber-600 dark:text-amber-400">Awaiting verification</p>
-          </div>
-
-          {/* Total Rides */}
-          <div className="p-5 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-xs space-y-1">
-            <div className="w-9 h-9 rounded-xl bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300 flex items-center justify-center font-bold mb-3">
+          <div className="p-5 bg-[#F5F7FC] dark:bg-[#1C2A40] rounded-2xl border border-[#D4DAE7] dark:border-[#34445E] shadow-xs space-y-1">
+            <div className="w-9 h-9 rounded-xl bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300 flex items-center justify-center mb-3 border border-blue-200 dark:border-blue-800">
               <Compass className="w-4 h-4" />
             </div>
-            <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider">
-              Campus Rides
+            <p className="text-[10px] font-bold text-[#626E86] dark:text-[#B0BCD0] uppercase tracking-wider">
+              Total Rides
             </p>
-            <p className="text-2xl font-black text-slate-900 dark:text-slate-100 font-mono">
+            <p className="text-2xl font-black text-[#222B42] dark:text-[#F1F4FC] font-mono tabular-nums">
               {stats?.total_rides || 0}
             </p>
-            <p className="text-[11px] text-blue-600 dark:text-blue-400">Total posted journeys</p>
+            <p className="text-[11px] text-blue-600 dark:text-blue-400 tabular-nums">
+              {stats?.active_rides || 0} active · {stats?.completed_rides || 0} completed
+            </p>
           </div>
 
-          {/* Total Requests */}
-          <div className="p-5 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-xs space-y-1">
-            <div className="w-9 h-9 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 flex items-center justify-center font-bold mb-3">
-              <FileCheck className="w-4 h-4" />
+          <div className="p-5 bg-[#F5F7FC] dark:bg-[#1C2A40] rounded-2xl border border-[#D4DAE7] dark:border-[#34445E] shadow-xs space-y-1">
+            <div className="w-9 h-9 rounded-xl bg-rose-50 dark:bg-rose-950/50 text-rose-700 dark:text-rose-300 flex items-center justify-center mb-3 border border-rose-200 dark:border-rose-800">
+              <ShieldAlert className="w-4 h-4" />
             </div>
-            <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider">
-              Requests
+            <p className="text-[10px] font-bold text-[#626E86] dark:text-[#B0BCD0] uppercase tracking-wider">
+              Safety Reports
             </p>
-            <p className="text-2xl font-black text-slate-900 dark:text-slate-100 font-mono">
-              {stats?.total_requests || 0}
+            <p className="text-2xl font-black text-rose-600 dark:text-rose-400 font-mono tabular-nums">
+              {stats?.pending_reports || 0}
             </p>
-            <p className="text-[11px] text-emerald-600 dark:text-emerald-400">Seat bookings</p>
+            <p className="text-[11px] text-[#626E86] dark:text-[#B0BCD0] tabular-nums">
+              {stats?.total_reports || 0} total filed
+            </p>
+          </div>
+        </div>
+
+        {/* Analytics Breakdown Panels */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div className="bg-[#F5F7FC] dark:bg-[#1C2A40] p-6 rounded-2xl border border-[#D4DAE7] dark:border-[#34445E] shadow-xs space-y-4">
+            <div className="flex items-center justify-between border-b border-[#D4DAE7]/50 dark:border-[#34445E] pb-3">
+              <h3 className="font-bold text-sm text-[#222B42] dark:text-[#F1F4FC]">
+                Ride Completion & Fleet Split
+              </h3>
+              <span className="text-xs font-mono font-bold text-[#515FC5] dark:text-[#818CF8] tabular-nums">
+                {stats?.ride_completion_rate || 0}% completion
+              </span>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div className="space-y-1">
+                <div className="flex justify-between font-medium text-[#626E86] dark:text-[#B0BCD0] tabular-nums">
+                  <span>Motorbike Rides ({stats?.bike_rides || 0})</span>
+                  <span className="font-mono">{bikePct}%</span>
+                </div>
+                <div className="h-2 rounded-full bg-white dark:bg-[#24334B] overflow-hidden border border-[#D4DAE7]/50 dark:border-[#34445E]">
+                  <div className="h-full bg-[#515FC5] dark:bg-[#818CF8] rounded-full" style={{ width: `${bikePct}%` }} />
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <div className="flex justify-between font-medium text-[#626E86] dark:text-[#B0BCD0] tabular-nums">
+                  <span>Passenger Car Rides ({stats?.car_rides || 0})</span>
+                  <span className="font-mono">{carPct}%</span>
+                </div>
+                <div className="h-2 rounded-full bg-white dark:bg-[#24334B] overflow-hidden border border-[#D4DAE7]/50 dark:border-[#34445E]">
+                  <div className="h-full bg-[#8175D5] dark:bg-[#A78BFA] rounded-full" style={{ width: `${carPct}%` }} />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-3 gap-3 pt-2 border-t border-[#D4DAE7]/50 dark:border-[#34445E] text-center">
+                <div>
+                  <span className="text-[10px] text-[#626E86] dark:text-[#B0BCD0] uppercase font-bold block">Active</span>
+                  <span className="font-mono font-bold text-[#222B42] dark:text-[#F1F4FC] tabular-nums">
+                    {stats?.active_rides || 0}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[10px] text-[#626E86] dark:text-[#B0BCD0] uppercase font-bold block">Completed</span>
+                  <span className="font-mono font-bold text-emerald-600 dark:text-emerald-400 tabular-nums">
+                    {stats?.completed_rides || 0}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[10px] text-[#626E86] dark:text-[#B0BCD0] uppercase font-bold block">Cancelled</span>
+                  <span className="font-mono font-bold text-rose-600 dark:text-rose-400 tabular-nums">
+                    {stats?.cancelled_rides || 0}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-[#F5F7FC] dark:bg-[#1C2A40] p-6 rounded-2xl border border-[#D4DAE7] dark:border-[#34445E] shadow-xs space-y-4">
+            <div className="flex items-center justify-between border-b border-[#D4DAE7]/50 dark:border-[#34445E] pb-3">
+              <h3 className="font-bold text-sm text-[#222B42] dark:text-[#F1F4FC]">
+                Booking & Trust Metrics
+              </h3>
+              <span className="text-xs font-mono font-bold text-emerald-600 dark:text-emerald-400 tabular-nums">
+                {stats?.total_requests || 0} requests
+              </span>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div className="space-y-1">
+                <div className="flex justify-between font-medium text-[#626E86] dark:text-[#B0BCD0] tabular-nums">
+                  <span>Accepted Bookings ({stats?.accepted_requests || 0})</span>
+                  <span className="font-mono">{acceptedPct}%</span>
+                </div>
+                <div className="h-2 rounded-full bg-white dark:bg-[#24334B] overflow-hidden border border-[#D4DAE7]/50 dark:border-[#34445E]">
+                  <div className="h-full bg-emerald-500 rounded-full" style={{ width: `${acceptedPct}%` }} />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-2 border-t border-[#D4DAE7]/50 dark:border-[#34445E] text-center">
+                <div>
+                  <span className="text-[10px] text-[#626E86] dark:text-[#B0BCD0] uppercase font-bold block">Pending Req</span>
+                  <span className="font-mono font-bold text-amber-600 dark:text-amber-400 tabular-nums">
+                    {stats?.pending_requests || 0}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[10px] text-[#626E86] dark:text-[#B0BCD0] uppercase font-bold block">Rejected</span>
+                  <span className="font-mono font-bold text-[#222B42] dark:text-[#F1F4FC] tabular-nums">
+                    {stats?.rejected_requests || 0}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[10px] text-[#626E86] dark:text-[#B0BCD0] uppercase font-bold block">Cancelled</span>
+                  <span className="font-mono font-bold text-rose-600 dark:text-rose-400 tabular-nums">
+                    {stats?.cancelled_requests || 0}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[10px] text-[#626E86] dark:text-[#B0BCD0] uppercase font-bold block">Reviews</span>
+                  <span className="font-mono font-bold text-amber-500 tabular-nums inline-flex items-center gap-0.5 justify-center">
+                    <Star className="w-3 h-3 fill-amber-400" />
+                    {stats?.total_reviews || 0}
+                  </span>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 
         {/* Operational Shortcuts */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {/* Driver Approval Queue CTA */}
-          <div className="p-6 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-xs space-y-4">
+          <div className="p-6 bg-[#F5F7FC] dark:bg-[#1C2A40] rounded-2xl border border-[#D4DAE7] dark:border-[#34445E] shadow-xs space-y-3">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-amber-50 dark:bg-amber-950/50 text-amber-700 dark:text-amber-300 flex items-center justify-center font-bold">
+                <div className="w-10 h-10 rounded-xl bg-amber-50 dark:bg-amber-950/50 text-amber-700 dark:text-amber-300 flex items-center justify-center border border-amber-200 dark:border-amber-800">
                   <Clock className="w-5 h-5" />
                 </div>
                 <div>
-                  <h3 className="font-bold text-sm text-slate-900 dark:text-slate-100">
+                  <h3 className="font-bold text-sm text-[#222B42] dark:text-[#F1F4FC]">
                     Driver Verification Queue
                   </h3>
-                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                  <p className="text-xs text-[#626E86] dark:text-[#B0BCD0]">
                     {stats?.pending_drivers || 0} students waiting for verification
                   </p>
                 </div>
               </div>
               <Link
                 to="/admin/drivers"
-                className="text-xs font-bold text-teal-700 dark:text-teal-400 hover:text-teal-800 flex items-center gap-1"
+                className="text-xs font-bold text-[#515FC5] dark:text-[#818CF8] hover:underline flex items-center gap-1 whitespace-nowrap"
               >
                 Review <ArrowRight className="w-3.5 h-3.5" />
               </Link>
             </div>
-            <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
+            <p className="text-xs text-[#626E86] dark:text-[#B0BCD0] leading-relaxed">
               Review student IDs, vehicle models, and license plate registrations before granting driver privileges.
             </p>
           </div>
 
-          {/* User Management CTA */}
-          <div className="p-6 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-xs space-y-4">
+          <div className="p-6 bg-[#F5F7FC] dark:bg-[#1C2A40] rounded-2xl border border-[#D4DAE7] dark:border-[#34445E] shadow-xs space-y-3">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 flex items-center justify-center font-bold">
-                  <Users className="w-5 h-5" />
+                <div className="w-10 h-10 rounded-xl bg-white dark:bg-[#24334B] text-[#515FC5] dark:text-[#818CF8] flex items-center justify-center border border-[#D4DAE7] dark:border-[#34445E]">
+                  <BadgeCheck className="w-5 h-5" />
                 </div>
                 <div>
-                  <h3 className="font-bold text-sm text-slate-900 dark:text-slate-100">
+                  <h3 className="font-bold text-sm text-[#222B42] dark:text-[#F1F4FC]">
                     Student User Directory
                   </h3>
-                  <p className="text-xs text-slate-500 dark:text-slate-400">
-                    Search, inspect, and moderate accounts
+                  <p className="text-xs text-[#626E86] dark:text-[#B0BCD0]">
+                    Search, verify student badges, and moderate accounts
                   </p>
                 </div>
               </div>
               <Link
                 to="/admin/users"
-                className="text-xs font-bold text-teal-700 dark:text-teal-400 hover:text-teal-800 flex items-center gap-1"
+                className="text-xs font-bold text-[#515FC5] dark:text-[#818CF8] hover:underline flex items-center gap-1 whitespace-nowrap"
               >
                 Manage <ArrowRight className="w-3.5 h-3.5" />
               </Link>
             </div>
-            <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
-              Maintain campus transport safety. Suspend violating accounts or manage permissions.
+            <p className="text-xs text-[#626E86] dark:text-[#B0BCD0] leading-relaxed">
+              Assign official student verification badges or suspend accounts violating campus rules.
+            </p>
+          </div>
+
+          <div className="p-6 bg-[#F5F7FC] dark:bg-[#1C2A40] rounded-2xl border border-[#D4DAE7] dark:border-[#34445E] shadow-xs space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300 flex items-center justify-center border border-blue-200 dark:border-blue-800">
+                  <FileCheck className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-sm text-[#222B42] dark:text-[#F1F4FC]">
+                    Rides & Bookings Moderation
+                  </h3>
+                  <p className="text-xs text-[#626E86] dark:text-[#B0BCD0]">
+                    Inspect all posted trips and passenger bookings
+                  </p>
+                </div>
+              </div>
+              <Link
+                to="/admin/rides"
+                className="text-xs font-bold text-[#515FC5] dark:text-[#818CF8] hover:underline flex items-center gap-1 whitespace-nowrap"
+              >
+                Inspect <ArrowRight className="w-3.5 h-3.5" />
+              </Link>
+            </div>
+            <p className="text-xs text-[#626E86] dark:text-[#B0BCD0] leading-relaxed">
+              Monitor active trips across campus routes and cancel non-compliant postings with automatic passenger notice.
+            </p>
+          </div>
+
+          <div className="p-6 bg-[#F5F7FC] dark:bg-[#1C2A40] rounded-2xl border border-[#D4DAE7] dark:border-[#34445E] shadow-xs space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-rose-50 dark:bg-rose-950/50 text-rose-700 dark:text-rose-300 flex items-center justify-center border border-rose-200 dark:border-rose-800">
+                  <ShieldAlert className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-sm text-[#222B42] dark:text-[#F1F4FC]">
+                    Safety Reports Queue
+                  </h3>
+                  <p className="text-xs text-[#626E86] dark:text-[#B0BCD0]">
+                    {stats?.pending_reports || 0} open safety reports
+                  </p>
+                </div>
+              </div>
+              <Link
+                to="/admin/reports"
+                className="text-xs font-bold text-[#515FC5] dark:text-[#818CF8] hover:underline flex items-center gap-1 whitespace-nowrap"
+              >
+                Open Queue <ArrowRight className="w-3.5 h-3.5" />
+              </Link>
+            </div>
+            <p className="text-xs text-[#626E86] dark:text-[#B0BCD0] leading-relaxed">
+              Investigate student incident reports, record resolution notes, and suspend unsafe accounts.
             </p>
           </div>
         </div>

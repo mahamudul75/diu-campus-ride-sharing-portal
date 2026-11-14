@@ -6,7 +6,6 @@ import {
   Filter,
   MapPin,
   Calendar,
-  DollarSign,
   RotateCcw,
   Map as MapIcon,
   AlertCircle
@@ -29,6 +28,7 @@ export const SearchRidesPage: React.FC = () => {
   const [destination, setDestination] = useState(searchParams.get('destination') || '');
   const [date, setDate] = useState(searchParams.get('date') || '');
   const [maxFare, setMaxFare] = useState(searchParams.get('max_fare') || '');
+  const [minSeats, setMinSeats] = useState(searchParams.get('min_seats') || '');
   const [vehicleType, setVehicleType] = useState(searchParams.get('vehicle_type') || '');
 
   const [rides, setRides] = useState<Ride[]>([]);
@@ -61,6 +61,7 @@ export const SearchRidesPage: React.FC = () => {
         }
       }
       if (maxFare) params.max_fare = maxFare;
+      if (minSeats) params.min_seats = minSeats;
       if (vehicleType) params.vehicle_type = vehicleType;
 
       const res = await api.get('/rides', { params });
@@ -85,6 +86,7 @@ export const SearchRidesPage: React.FC = () => {
     if (destination) newParams.set('destination', destination);
     if (date) newParams.set('date', date);
     if (maxFare) newParams.set('max_fare', maxFare);
+    if (minSeats) newParams.set('min_seats', minSeats);
     if (vehicleType) newParams.set('vehicle_type', vehicleType);
     setSearchParams(newParams);
   };
@@ -94,6 +96,7 @@ export const SearchRidesPage: React.FC = () => {
     setDestination('');
     setDate('');
     setMaxFare('');
+    setMinSeats('');
     setVehicleType('');
     setSearchParams({});
   };
@@ -158,12 +161,14 @@ export const SearchRidesPage: React.FC = () => {
 
     markersLayer.clearLayers();
 
+    const diuColor = isDark ? '#818CF8' : '#515FC5';
+
     // Default state when no rides exist
     if (rides.length === 0) {
       const diuIcon = L.divIcon({
         className: 'custom-map-marker',
         html: `
-          <div style="background-color: #0d9488; width: 34px; height: 34px; border-radius: 50% 50% 50% 0; transform: rotate(-45deg); display: flex; align-items: center; justify-content: center; border: 2.5px solid white; box-shadow: 0 4px 10px rgba(0,0,0,0.35);">
+          <div style="background-color: ${diuColor}; width: 34px; height: 34px; border-radius: 50% 50% 50% 0; transform: rotate(-45deg); display: flex; align-items: center; justify-content: center; border: 2.5px solid white; box-shadow: 0 4px 10px rgba(0,0,0,0.35);">
             <span style="transform: rotate(45deg); color: white; font-weight: 800; font-size: 11px;">DIU</span>
           </div>
         `,
@@ -175,24 +180,18 @@ export const SearchRidesPage: React.FC = () => {
       const createCampusPopupEl = () => {
         const div = document.createElement('div');
         const strong = document.createElement('strong');
-        strong.textContent = 'DIU Daffodil Smart City';
+        strong.textContent = 'DIU Campus Hub';
         div.appendChild(strong);
         div.appendChild(document.createElement('br'));
         const span1 = document.createElement('span');
         span1.style.fontSize = '11px';
-        span1.style.color = '#64748b';
-        span1.textContent = 'Ashulia Campus Corridor';
+        span1.style.color = '#626E86';
+        span1.textContent = 'Main Departure Area';
         div.appendChild(span1);
-        div.appendChild(document.createElement('br'));
-        const span2 = document.createElement('span');
-        span2.style.fontSize = '10px';
-        span2.style.color = '#0d9488';
-        span2.textContent = 'Main Transit Hub';
-        div.appendChild(span2);
         return div;
       };
 
-      const campusMarker = L.marker([23.8768, 90.3202], { icon: diuIcon })
+      L.marker([23.8768, 90.3202], { icon: diuIcon })
         .bindPopup(createCampusPopupEl())
         .addTo(markersLayer);
 
@@ -229,7 +228,7 @@ export const SearchRidesPage: React.FC = () => {
       const pickupIcon = L.divIcon({
         className: 'custom-map-marker',
         html: `
-          <div style="background-color: ${isSelected ? '#059669' : '#0d9488'}; width: ${isSelected ? '32px' : '26px'}; height: ${isSelected ? '32px' : '26px'}; border-radius: 50% 50% 50% 0; transform: rotate(-45deg); display: flex; align-items: center; justify-content: center; border: 2.5px solid white; box-shadow: 0 4px 8px rgba(0,0,0,0.35); z-index: ${isSelected ? 1000 : 100};">
+          <div style="background-color: ${isSelected ? (isDark ? '#818CF8' : '#515FC5') : '#515FC5'}; width: ${isSelected ? '32px' : '26px'}; height: ${isSelected ? '32px' : '26px'}; border-radius: 50% 50% 50% 0; transform: rotate(-45deg); display: flex; align-items: center; justify-content: center; border: 2.5px solid white; box-shadow: 0 4px 8px rgba(0,0,0,0.35); z-index: ${isSelected ? 1000 : 100};">
             <span style="transform: rotate(45deg); color: white; font-weight: bold; font-size: ${isSelected ? '12px' : '10px'};">P</span>
           </div>
         `,
@@ -241,7 +240,7 @@ export const SearchRidesPage: React.FC = () => {
       const destIcon = L.divIcon({
         className: 'custom-map-marker',
         html: `
-          <div style="background-color: ${isSelected ? '#ea580c' : '#f97316'}; width: ${isSelected ? '32px' : '26px'}; height: ${isSelected ? '32px' : '26px'}; border-radius: 50% 50% 50% 0; transform: rotate(-45deg); display: flex; align-items: center; justify-content: center; border: 2.5px solid white; box-shadow: 0 4px 8px rgba(0,0,0,0.35); z-index: ${isSelected ? 1000 : 100};">
+          <div style="background-color: ${isSelected ? '#8175D5' : '#344269'}; width: ${isSelected ? '32px' : '26px'}; height: ${isSelected ? '32px' : '26px'}; border-radius: 50% 50% 50% 0; transform: rotate(-45deg); display: flex; align-items: center; justify-content: center; border: 2.5px solid white; box-shadow: 0 4px 8px rgba(0,0,0,0.35); z-index: ${isSelected ? 1000 : 100};">
             <span style="transform: rotate(45deg); color: white; font-weight: bold; font-size: ${isSelected ? '12px' : '10px'};">D</span>
           </div>
         `,
@@ -274,9 +273,9 @@ export const SearchRidesPage: React.FC = () => {
               const route = res.data.routes[0];
               const coords: [number, number][] = route.geometry.coordinates.map((c: [number, number]) => [c[1], c[0]]);
               const line = L.polyline(coords, {
-                color: '#0d9488',
+                color: isDark ? '#818CF8' : '#4F5FC9',
                 weight: 5,
-                opacity: 0.9
+                opacity: 0.95
               });
               line.on('click', () => setSelectedRide(r));
               markersLayer.addLayer(line);
@@ -284,7 +283,7 @@ export const SearchRidesPage: React.FC = () => {
           })
           .catch(() => {
             const line = L.polyline([[pLat, pLng], [dLat, dLng]], {
-              color: '#0d9488',
+              color: isDark ? '#818CF8' : '#4F5FC9',
               weight: 4,
               opacity: 0.85
             });
@@ -292,9 +291,9 @@ export const SearchRidesPage: React.FC = () => {
           });
       } else {
         const line = L.polyline([[pLat, pLng], [dLat, dLng]], {
-          color: '#94a3b8',
+          color: isDark ? '#34445D' : '#DCE2EC',
           weight: 3,
-          opacity: 0.5,
+          opacity: 0.6,
           dashArray: '6, 6'
         });
         line.on('click', () => setSelectedRide(r));
@@ -305,7 +304,7 @@ export const SearchRidesPage: React.FC = () => {
     if (rides.length > 0 && bounds.isValid()) {
       map.fitBounds(bounds, { padding: [40, 40], maxZoom: 14 });
     }
-  }, [rides, selectedRide]);
+  }, [rides, selectedRide, isDark]);
 
   useEffect(() => {
     const map = mapInstanceRef.current;
@@ -332,19 +331,19 @@ export const SearchRidesPage: React.FC = () => {
       {/* Search Header & View Mode Switcher */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-black text-slate-900 dark:text-slate-100 tracking-tight">Find Rides</h1>
-          <p className="text-xs text-slate-500 font-medium">Verified campus carpool & bike rides.</p>
+          <h1 className="text-2xl font-black text-[#253149] dark:text-[#F1F5FC] tracking-tight">Find Rides</h1>
+          <p className="text-xs text-[#66738A] dark:text-[#B4C0D3] font-medium">Verified campus carpool & bike rides.</p>
         </div>
         
-        <div className="flex bg-slate-100 dark:bg-slate-800/50 p-1 rounded-xl shadow-sm border border-slate-200/50 dark:border-slate-800">
+        <div className="flex bg-[#E9EDF5] dark:bg-[#172338] p-1 rounded-xl shadow-xs border border-[#DCE2EC] dark:border-[#34445D]">
           {(['split', 'list', 'map'] as const).map((mode) => (
             <button
               key={mode}
               onClick={() => setViewMode(mode)}
               className={`px-5 py-1.5 text-xs font-bold rounded-lg capitalize transition-all cursor-pointer ${
                 viewMode === mode
-                  ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-sm ring-1 ring-slate-200/50 dark:ring-slate-600'
-                  : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+                  ? 'bg-[#FFFFFF] dark:bg-[#243750] text-[#253149] dark:text-[#F1F5FC] shadow-sm ring-1 ring-[#DCE2EC] dark:ring-[#34445D]'
+                  : 'text-[#66738A] hover:text-[#253149] dark:text-[#B4C0D3] dark:hover:text-[#F1F5FC]'
               }`}
             >
               {mode}
@@ -354,88 +353,111 @@ export const SearchRidesPage: React.FC = () => {
       </div>
 
       {/* Filter Bar */}
-      <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-sm">
-        <form onSubmit={handleFilterSubmit} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-4 items-end">
-          <div className="lg:col-span-3">
-            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 ml-1">Pickup</label>
+      <div className="bg-[#FFFFFF] dark:bg-[#1B2940] p-5 rounded-2xl border border-[#DCE2EC] dark:border-[#34445D] shadow-sm">
+        <form onSubmit={handleFilterSubmit} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-3.5 items-end">
+          <div className="lg:col-span-2">
+            <label className="block text-[10px] font-bold text-[#66738A] dark:text-[#B4C0D3] uppercase tracking-widest mb-1.5 ml-1">Pickup</label>
             <div className="relative">
-              <MapPin className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
-              <input 
-                type="text" 
-                placeholder="Where from?" 
-                value={pickup} 
-                onChange={(e) => setPickup(e.target.value)} 
-                className="w-full text-sm pl-10 pr-4 py-2.5 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 outline-hidden transition-all" 
+              <MapPin className="absolute left-3 top-2.5 w-4 h-4 text-[#4F5FC9] dark:text-[#818CF8]" />
+              <input
+                type="text"
+                placeholder="Where from?"
+                value={pickup}
+                onChange={(e) => setPickup(e.target.value)}
+                className="w-full text-sm pl-9 pr-3 py-2.5 bg-[#F8F9FD] dark:bg-[#243750] text-[#253149] dark:text-[#F1F5FC] border border-[#DCE2EC] dark:border-[#34445D] rounded-xl focus:ring-2 focus:ring-[#4F5FC9]/20 focus:border-[#4F5FC9] outline-hidden transition-all"
               />
             </div>
           </div>
           <div className="lg:col-span-2">
-            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 ml-1">Destination</label>
+            <label className="block text-[10px] font-bold text-[#66738A] dark:text-[#B4C0D3] uppercase tracking-widest mb-1.5 ml-1">Destination</label>
             <div className="relative">
-              <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
-              <input 
-                type="text" 
-                placeholder="Where to?" 
-                value={destination} 
-                onChange={(e) => setDestination(e.target.value)} 
-                className="w-full text-sm pl-10 pr-4 py-2.5 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 outline-hidden transition-all" 
+              <Search className="absolute left-3 top-2.5 w-4 h-4 text-[#4F5FC9] dark:text-[#818CF8]" />
+              <input
+                type="text"
+                placeholder="Where to?"
+                value={destination}
+                onChange={(e) => setDestination(e.target.value)}
+                className="w-full text-sm pl-9 pr-3 py-2.5 bg-[#F8F9FD] dark:bg-[#243750] text-[#253149] dark:text-[#F1F5FC] border border-[#DCE2EC] dark:border-[#34445D] rounded-xl focus:ring-2 focus:ring-[#4F5FC9]/20 focus:border-[#4F5FC9] outline-hidden transition-all"
               />
             </div>
           </div>
           <div className="lg:col-span-2">
-            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 ml-1">Date</label>
+            <label className="block text-[10px] font-bold text-[#66738A] dark:text-[#B4C0D3] uppercase tracking-widest mb-1.5 ml-1">Date</label>
             <div className="relative">
-              <Calendar className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
-              <input 
-                type="date" 
-                value={date} 
-                onChange={(e) => setDate(e.target.value)} 
-                className="w-full text-sm pl-10 pr-4 py-2.5 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 outline-hidden transition-all" 
+              <Calendar className="absolute left-3 top-2.5 w-4 h-4 text-[#4F5FC9] dark:text-[#818CF8]" />
+              <input
+                type="date"
+                value={date}
+                onChange={(e) => setDate(e.target.value)}
+                className="w-full text-sm pl-9 pr-3 py-2.5 bg-[#F8F9FD] dark:bg-[#243750] text-[#253149] dark:text-[#F1F5FC] border border-[#DCE2EC] dark:border-[#34445D] rounded-xl focus:ring-2 focus:ring-[#4F5FC9]/20 focus:border-[#4F5FC9] outline-hidden transition-all font-mono"
               />
             </div>
           </div>
           <div className="lg:col-span-2">
-            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 ml-1">Max Fare</label>
+            <label className="block text-[10px] font-bold text-[#66738A] dark:text-[#B4C0D3] uppercase tracking-widest mb-1.5 ml-1">Max Fare</label>
             <div className="relative">
-              <span className="absolute left-3 top-2.5 text-xs text-slate-400 font-bold">৳</span>
-              <input 
-                type="number" 
-                placeholder="0" 
-                value={maxFare} 
-                onChange={(e) => setMaxFare(e.target.value)} 
-                className="w-full text-sm pl-7 pr-3 py-2.5 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 outline-hidden transition-all" 
+              <span className="absolute left-3 top-2.5 text-xs text-[#4F5FC9] dark:text-[#818CF8] font-bold">৳</span>
+              <input
+                type="number"
+                min="0"
+                placeholder="Any"
+                value={maxFare}
+                onChange={(e) => setMaxFare(e.target.value)}
+                className="w-full text-sm pl-7 pr-3 py-2.5 bg-[#F8F9FD] dark:bg-[#243750] text-[#253149] dark:text-[#F1F5FC] border border-[#DCE2EC] dark:border-[#34445D] rounded-xl focus:ring-2 focus:ring-[#4F5FC9]/20 focus:border-[#4F5FC9] outline-hidden transition-all font-mono tabular-nums"
               />
             </div>
           </div>
-          <div className="lg:col-span-2">
-            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 ml-1">Vehicle</label>
-            <select 
-              value={vehicleType} 
-              onChange={(e) => setVehicleType(e.target.value)} 
-              className="w-full text-sm px-3 py-2.5 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 outline-hidden transition-all appearance-none"
+          <div className="lg:col-span-1">
+            <label className="block text-[10px] font-bold text-[#66738A] dark:text-[#B4C0D3] uppercase tracking-widest mb-1.5 ml-1">Seats</label>
+            <input
+              type="number"
+              min="1"
+              max="8"
+              placeholder="1+"
+              value={minSeats}
+              onChange={(e) => setMinSeats(e.target.value)}
+              className="w-full text-sm px-3 py-2.5 bg-[#F8F9FD] dark:bg-[#243750] text-[#253149] dark:text-[#F1F5FC] border border-[#DCE2EC] dark:border-[#34445D] rounded-xl focus:ring-2 focus:ring-[#4F5FC9]/20 focus:border-[#4F5FC9] outline-hidden transition-all font-mono tabular-nums"
+            />
+          </div>
+          <div className="lg:col-span-1">
+            <label className="block text-[10px] font-bold text-[#66738A] dark:text-[#B4C0D3] uppercase tracking-widest mb-1.5 ml-1">Vehicle</label>
+            <select
+              value={vehicleType}
+              onChange={(e) => setVehicleType(e.target.value)}
+              className="w-full text-sm px-2.5 py-2.5 bg-[#F8F9FD] dark:bg-[#243750] text-[#253149] dark:text-[#F1F5FC] border border-[#DCE2EC] dark:border-[#34445D] rounded-xl focus:ring-2 focus:ring-[#4F5FC9]/20 focus:border-[#4F5FC9] outline-hidden transition-all appearance-none"
             >
               <option value="">Any</option>
               <option value="car">Car</option>
               <option value="bike">Bike</option>
             </select>
           </div>
-          <div className="lg:col-span-1 flex gap-2">
-            <button 
-              type="submit" 
-              className="w-full px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-bold shadow-md shadow-emerald-600/20 transition-all cursor-pointer flex items-center justify-center gap-2"
+          <div className="lg:col-span-2 flex gap-2">
+            <button
+              type="submit"
+              className="flex-1 px-4 py-2.5 bg-[#4F5FC9] hover:bg-[#404EB2] dark:bg-[#818CF8] dark:hover:bg-[#6B79F2] text-white dark:text-[#111827] rounded-xl text-xs font-bold shadow-md shadow-[#4F5FC9]/20 transition-all cursor-pointer flex items-center justify-center gap-1.5 whitespace-nowrap"
             >
-              <Filter className="w-4 h-4" />
+              <Filter className="w-3.5 h-3.5" />
               Filter
             </button>
+            {(pickup || destination || date || maxFare || minSeats || vehicleType) && (
+              <button
+                type="button"
+                onClick={handleReset}
+                title="Reset filters"
+                className="px-3 py-2.5 border border-[#DCE2EC] dark:border-[#34445D] text-[#66738A] dark:text-[#B4C0D3] hover:bg-[#EEF0FA] dark:hover:bg-[#243750] rounded-xl transition-colors cursor-pointer"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
         </form>
       </div>
 
-      {/* Main Content Layout */}
+      {/* Main Content Layout - Map Dominant */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-        {/* Left Column: Ride Cards, Skeletons, or Empty State */}
+        {/* Left Column: Ride Cards, Skeletons, or Empty State (4 cols in split mode) */}
         {viewMode !== 'map' && (
-          <div className={`${viewMode === 'split' ? 'lg:col-span-7' : 'lg:col-span-12'} space-y-4`}>
+          <div className={`${viewMode === 'split' ? 'lg:col-span-4 max-h-[760px] overflow-y-auto pr-1' : 'lg:col-span-12'} space-y-4`}>
             {loading ? (
               <div className="space-y-4">
                 <Skeleton type="card" count={3} />
@@ -448,7 +470,7 @@ export const SearchRidesPage: React.FC = () => {
                 action={
                   <button
                     onClick={handleReset}
-                    className="px-6 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-bold rounded-xl shadow-sm transition-all cursor-pointer"
+                    className="px-6 py-2 bg-[#4F5FC9] hover:bg-[#404EB2] dark:bg-[#818CF8] dark:hover:bg-[#6B79F2] text-white dark:text-[#111827] text-sm font-bold rounded-xl shadow-sm transition-all cursor-pointer"
                   >
                     Clear Filters
                   </button>
@@ -456,10 +478,11 @@ export const SearchRidesPage: React.FC = () => {
               />
             ) : (
               <>
-                <div className="flex items-center justify-between px-1">
-                  <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">
-                    {rides.length} results found
+                <div className="flex items-center justify-between px-1 sticky top-0 bg-[#F1F3F8] dark:bg-[#111827] py-2 z-10">
+                  <span className="text-xs font-bold text-[#66738A] dark:text-[#B4C0D3] uppercase tracking-wider">
+                    {rides.length} rides available
                   </span>
+                  <span className="text-[10px] text-[#66738A] dark:text-[#B4C0D3]">Click card to focus map</span>
                 </div>
                 {rides.map((ride) => (
                   <div
@@ -467,7 +490,7 @@ export const SearchRidesPage: React.FC = () => {
                     onMouseEnter={() => setSelectedRide(ride)}
                     onClick={() => setSelectedRide(ride)}
                     className={`transition-all rounded-2xl cursor-pointer ${
-                      selectedRide?.id === ride.id ? 'ring-2 ring-emerald-500 ring-offset-2 dark:ring-offset-slate-950' : ''
+                      selectedRide?.id === ride.id ? 'ring-2 ring-[#4F5FC9] dark:ring-[#818CF8] ring-offset-2 dark:ring-offset-[#111827] shadow-md' : ''
                     }`}
                   >
                     <RideCard ride={ride} />
@@ -478,26 +501,26 @@ export const SearchRidesPage: React.FC = () => {
           </div>
         )}
 
-        {/* Right Column: Permanent Interactive Leaflet Map */}
+        {/* Right Column: Dominant Full-Canvas Interactive Leaflet Map (8 cols in split mode) */}
         {viewMode !== 'list' && (
           <div
             className={`${
-              viewMode === 'split' ? 'lg:col-span-5 sticky top-24' : 'lg:col-span-12'
-            } rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden bg-white dark:bg-slate-900 p-2 space-y-2`}
+              viewMode === 'split' ? 'lg:col-span-8 sticky top-24' : 'lg:col-span-12'
+            } rounded-2xl border border-[#DCE2EC] dark:border-[#34445D] shadow-sm overflow-hidden bg-[#FFFFFF] dark:bg-[#1B2940] p-2.5 space-y-2`}
           >
             <div className="flex items-center justify-between px-2 pt-1">
-              <span className="text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center gap-2">
-                <MapIcon className="w-4 h-4 text-emerald-600" />
-                Route Map
+              <span className="text-xs font-bold text-[#253149] dark:text-[#F1F5FC] flex items-center gap-2">
+                <MapIcon className="w-4 h-4 text-[#4F5FC9] dark:text-[#818CF8]" />
+                Live Campus Corridor Map
               </span>
-              <span className="text-[10px] font-medium text-slate-400">
-                {rides.length === 0 ? 'DIU Smart City Campus' : 'Click markers for details'}
+              <span className="text-[10px] font-medium text-[#66738A] dark:text-[#B4C0D3]">
+                {rides.length === 0 ? 'Campus Hub' : 'Interactive Route View'}
               </span>
             </div>
-            <div className="relative rounded-xl overflow-hidden border border-slate-100 dark:border-slate-800">
+            <div className="relative rounded-xl overflow-hidden border border-[#DCE2EC] dark:border-[#34445D] shadow-inner">
               <div
                 ref={mapContainerRef}
-                style={{ height: viewMode === 'split' ? '580px' : '650px', width: '100%' }}
+                style={{ height: viewMode === 'split' ? '720px' : '800px', width: '100%' }}
               />
               {tileError && (
                 <div className="absolute bottom-3 left-3 right-3 z-[400] bg-amber-50/95 dark:bg-amber-950/95 backdrop-blur-sm border border-amber-200 dark:border-amber-900 text-amber-900 dark:text-amber-200 text-[10px] px-3 py-2 rounded-lg shadow-lg flex items-center gap-2">

@@ -3,6 +3,9 @@ import type { AuthRequest } from '../middleware/auth.ts';
 import { db } from '../config/db.ts';
 import { parseRideDateTime, toUtcIsoString } from '../utils/dateTime.ts';
 import { isPositiveIntId } from '../utils/validators.ts';
+import { areUsersBlocked, getUserExtendedFields, getUserRatingSummaries } from '../utils/dbHelpers.ts';
+import { calculateHaversineDistanceKm, estimateDurationMinutes } from '../utils/distance.ts';
+import { createNotification } from '../services/notificationService.ts';
 
 export async function createRideRequest(req: AuthRequest, res: Response): Promise<void> {
   const conn = await db.getConnection();
@@ -20,7 +23,6 @@ export async function createRideRequest(req: AuthRequest, res: Response): Promis
 
     await conn.beginTransaction();
 
-    // 1. Lock and fetch ride
     const [rideRows] = await conn.query('SELECT * FROM rides WHERE id = ? FOR UPDATE', [rideId]);
     const ride = Array.isArray(rideRows) && rideRows.length > 0 ? (rideRows[0] as any) : null;
 
@@ -30,25 +32,29 @@ export async function createRideRequest(req: AuthRequest, res: Response): Promis
       return;
     }
 
-    // 2. Prevent driver from requesting their own ride
     if (ride.driver_id === req.user.id) {
       await conn.rollback();
-      res.status(400).json({
+      res.status(400).json({ success: false, message: 'You cannot request your own ride.' });
+      return;
+    }
+
+    if (await areUsersBlocked(req.user.id, Number(ride.driver_id))) {
+      await conn.rollback();
+      res.status(403).json({
         success: false,
-        message: 'You cannot request your own ride.'
+        message: 'You cannot request a ride with this user due to block settings.'
       });
       return;
     }
 
-    // 3. Prevent requesting for cancelled, completed, expired, or full rides
     if (ride.status === 'cancelled') {
       await conn.rollback();
       res.status(400).json({ success: false, message: 'This ride has been cancelled.' });
       return;
     }
-    if (ride.status === 'completed') {
+    if (ride.status === 'completed' || ride.status === 'in_progress') {
       await conn.rollback();
-      res.status(400).json({ success: false, message: 'This ride is already completed.' });
+      res.status(400).json({ success: false, message: `This ride is already ${ride.status.replace('_', ' ')}.` });
       return;
     }
 
@@ -65,7 +71,6 @@ export async function createRideRequest(req: AuthRequest, res: Response): Promis
       return;
     }
 
-    // 4. One request per student per ride (locked for concurrency safety)
     const [existingReq] = await conn.query(
       'SELECT id, status FROM ride_requests WHERE ride_id = ? AND passenger_id = ? FOR UPDATE',
       [rideId, req.user.id]
@@ -89,12 +94,20 @@ export async function createRideRequest(req: AuthRequest, res: Response): Promis
         });
         return;
       }
-      // If previous was rejected or cancelled, allow re-requesting by updating status to pending
       await conn.query(
         "UPDATE ride_requests SET status = 'pending', updated_at = NOW() WHERE id = ?",
         [prev.id]
       );
       await conn.commit();
+
+      await createNotification({
+        userId: Number(ride.driver_id),
+        type: 'booking_request',
+        title: 'New Seat Request',
+        message: `${req.user.name} requested a seat on your ride to ${ride.dest_name}.`,
+        link: '/my-rides'
+      });
+
       res.status(200).json({
         success: true,
         message: 'Your ride request has been re-submitted to the driver.',
@@ -103,13 +116,20 @@ export async function createRideRequest(req: AuthRequest, res: Response): Promis
       return;
     }
 
-    // 5. Insert new request
     const [result] = await conn.query(
       "INSERT INTO ride_requests (ride_id, passenger_id, status) VALUES (?, ?, 'pending')",
       [rideId, req.user.id]
     );
 
     await conn.commit();
+
+    await createNotification({
+      userId: Number(ride.driver_id),
+      type: 'booking_request',
+      title: 'New Seat Request',
+      message: `${req.user.name} requested a seat on your ride from ${ride.pickup_name} to ${ride.dest_name}.`,
+      link: '/my-rides'
+    });
 
     res.status(201).json({
       success: true,
@@ -166,9 +186,31 @@ export async function getRideRequests(req: AuthRequest, res: Response): Promise<
       [rideId]
     );
 
+    const requestRows = rows as any[];
+    const passengerIds = requestRows.map((r) => Number(r.passenger_id));
+    const ratingsMap = await getUserRatingSummaries(passengerIds);
+
+    const enriched = await Promise.all(
+      requestRows.map(async (r) => {
+        const ext = await getUserExtendedFields(Number(r.passenger_id));
+        const rating = ratingsMap.get(Number(r.passenger_id)) || { avg_rating: null, review_count: 0 };
+        const canSeePhone =
+          r.status === 'accepted' && (ext.show_phone_to_accepted !== 0 || req.user?.role === 'admin');
+        return {
+          ...r,
+          passenger_phone: canSeePhone ? r.passenger_phone : null,
+          passenger_student_verified: ext.student_verified,
+          passenger_email_verified: ext.email_verified,
+          passenger_avatar_url: ext.avatar_url,
+          passenger_avg_rating: rating.avg_rating,
+          passenger_review_count: rating.review_count
+        };
+      })
+    );
+
     res.status(200).json({
       success: true,
-      requests: rows
+      requests: enriched
     });
   } catch (error: any) {
     console.error('getRideRequests error:', error);
@@ -192,7 +234,6 @@ export async function acceptRequest(req: AuthRequest, res: Response): Promise<vo
 
     await conn.beginTransaction();
 
-    // 1. Lock and fetch the ride request row to serialize concurrent operations on this request
     const [reqRows] = await conn.query(
       `SELECT id, ride_id, passenger_id, status FROM ride_requests WHERE id = ? FOR UPDATE`,
       [requestId]
@@ -205,9 +246,8 @@ export async function acceptRequest(req: AuthRequest, res: Response): Promise<vo
       return;
     }
 
-    // 2. Lock and fetch the parent ride row to serialize concurrent seat allocations for this ride
     const [rideRows] = await conn.query(
-      `SELECT id, driver_id, seats_total, seats_available, departure_time, status FROM rides WHERE id = ? FOR UPDATE`,
+      `SELECT id, driver_id, pickup_name, dest_name, seats_total, seats_available, departure_time, status FROM rides WHERE id = ? FOR UPDATE`,
       [request.ride_id]
     );
 
@@ -218,14 +258,12 @@ export async function acceptRequest(req: AuthRequest, res: Response): Promise<vo
       return;
     }
 
-    // 3. Authorization check: Driver of the ride or admin
     if (ride.driver_id !== req.user.id && req.user.role !== 'admin') {
       await conn.rollback();
       res.status(403).json({ success: false, message: 'Only the driver can accept this request.' });
       return;
     }
 
-    // 4. Request status check: Only pending requests can be accepted
     if (request.status !== 'pending') {
       await conn.rollback();
       res.status(409).json({
@@ -235,7 +273,6 @@ export async function acceptRequest(req: AuthRequest, res: Response): Promise<vo
       return;
     }
 
-    // 5. Ride availability & expiry checks
     if (ride.status === 'cancelled' || ride.status === 'completed') {
       await conn.rollback();
       res.status(409).json({
@@ -264,7 +301,6 @@ export async function acceptRequest(req: AuthRequest, res: Response): Promise<vo
       return;
     }
 
-    // 6. Atomically update seat inventory with strict condition and update status to 'full' if seats reach 0
     const [rideUpdateResult] = await conn.query(
       `UPDATE rides 
        SET seats_available = seats_available - 1,
@@ -283,7 +319,6 @@ export async function acceptRequest(req: AuthRequest, res: Response): Promise<vo
       return;
     }
 
-    // 7. Update the ride request status to accepted within the same transaction
     const [reqUpdateResult] = await conn.query(
       `UPDATE ride_requests SET status = 'accepted', updated_at = NOW() WHERE id = ? AND status = 'pending'`,
       [requestId]
@@ -299,8 +334,15 @@ export async function acceptRequest(req: AuthRequest, res: Response): Promise<vo
       return;
     }
 
-    // 8. Commit transaction
     await conn.commit();
+
+    await createNotification({
+      userId: Number(request.passenger_id),
+      type: 'booking_accepted',
+      title: 'Seat Request Accepted',
+      message: `Your seat for ${ride.pickup_name} to ${ride.dest_name} was accepted by the driver.`,
+      link: `/rides/${ride.id}`
+    });
 
     res.status(200).json({
       success: true,
@@ -332,7 +374,7 @@ export async function rejectRequest(req: AuthRequest, res: Response): Promise<vo
     await conn.beginTransaction();
 
     const [reqRows] = await conn.query(
-      `SELECT req.id, req.ride_id, req.status, r.driver_id
+      `SELECT req.id, req.ride_id, req.passenger_id, req.status, r.driver_id, r.pickup_name, r.dest_name
        FROM ride_requests req
        JOIN rides r ON req.ride_id = r.id
        WHERE req.id = ? FOR UPDATE`,
@@ -374,6 +416,14 @@ export async function rejectRequest(req: AuthRequest, res: Response): Promise<vo
 
     await conn.commit();
 
+    await createNotification({
+      userId: Number(request.passenger_id),
+      type: 'booking_rejected',
+      title: 'Seat Request Declined',
+      message: `Your seat request for ${request.pickup_name || 'campus ride'} to ${request.dest_name || 'destination'} was declined.`,
+      link: '/requests'
+    });
+
     res.status(200).json({
       success: true,
       message: 'Ride request rejected.'
@@ -403,7 +453,6 @@ export async function cancelRequest(req: AuthRequest, res: Response): Promise<vo
 
     await conn.beginTransaction();
 
-    // Lock the request row first
     const [reqRows] = await conn.query(
       `SELECT id, ride_id, passenger_id, status FROM ride_requests WHERE id = ? FOR UPDATE`,
       [requestId]
@@ -422,9 +471,8 @@ export async function cancelRequest(req: AuthRequest, res: Response): Promise<vo
       return;
     }
 
-    // Lock parent ride row
     const [rideRows] = await conn.query(
-      `SELECT id, seats_available, seats_total, status FROM rides WHERE id = ? FOR UPDATE`,
+      `SELECT id, driver_id, pickup_name, dest_name, seats_available, seats_total, status FROM rides WHERE id = ? FOR UPDATE`,
       [request.ride_id]
     );
     const ride = Array.isArray(rideRows) && rideRows.length > 0 ? (rideRows[0] as any) : null;
@@ -454,7 +502,6 @@ export async function cancelRequest(req: AuthRequest, res: Response): Promise<vo
 
     const wasAccepted = request.status === 'accepted';
 
-    // Atomically transition request status to cancelled
     const [reqUpdateResult] = await conn.query(
       "UPDATE ride_requests SET status = 'cancelled', updated_at = NOW() WHERE id = ? AND status IN ('pending', 'accepted')",
       [requestId]
@@ -465,7 +512,6 @@ export async function cancelRequest(req: AuthRequest, res: Response): Promise<vo
       return;
     }
 
-    // If request was accepted, restore seat count atomically and re-open a 'full' ride
     if (wasAccepted) {
       await conn.query(
         `UPDATE rides
@@ -477,6 +523,14 @@ export async function cancelRequest(req: AuthRequest, res: Response): Promise<vo
     }
 
     await conn.commit();
+
+    await createNotification({
+      userId: Number(ride.driver_id),
+      type: 'booking_cancelled',
+      title: 'Passenger Cancelled Request',
+      message: `${req.user.name} cancelled their ${wasAccepted ? 'confirmed seat' : 'request'} for ${ride.pickup_name} to ${ride.dest_name}.`,
+      link: '/my-rides'
+    });
 
     res.status(200).json({
       success: true,
@@ -502,7 +556,7 @@ export async function getMyRequests(req: AuthRequest, res: Response): Promise<vo
 
     const [rows] = await db.query(
       `SELECT req.id, req.ride_id, req.passenger_id, req.status, req.created_at, req.updated_at,
-              r.pickup_name, r.pickup_lat, r.pickup_lng,
+              r.driver_id, r.pickup_name, r.pickup_lat, r.pickup_lng,
               r.dest_name, r.dest_lat, r.dest_lng,
               r.departure_time, r.fare, r.seats_available, r.seats_total, r.vehicle_type,
               r.status AS ride_status,
@@ -518,13 +572,51 @@ export async function getMyRequests(req: AuthRequest, res: Response): Promise<vo
       [req.user.id]
     );
 
-    // Apply privacy rule F17: only show driver phone and vehicle plate if status === 'accepted'
-    const safeRequests = (rows as any[]).map(r => ({
-      ...r,
-      departure_time: r.departure_time ? toUtcIsoString(r.departure_time) : r.departure_time,
-      driver_phone: r.status === 'accepted' ? r.driver_phone : null,
-      driver_vehicle_plate: r.status === 'accepted' ? r.driver_vehicle_plate : null
-    }));
+    const requestRows = rows as any[];
+    const driverIds = requestRows.map((r) => Number(r.driver_id)).filter(Boolean);
+    const ratingMap = await getUserRatingSummaries(driverIds);
+
+    let reviewedRideIds = new Set<number>();
+    try {
+      const [revRows] = await db.query(
+        'SELECT ride_id FROM reviews WHERE reviewer_id = ?',
+        [req.user.id]
+      );
+      if (Array.isArray(revRows)) {
+        reviewedRideIds = new Set((revRows as any[]).map((x) => Number(x.ride_id)));
+      }
+    } catch (err: any) {
+      if (err?.code !== 'ER_NO_SUCH_TABLE') throw err;
+    }
+
+    const extCache = new Map<number, Awaited<ReturnType<typeof getUserExtendedFields>>>();
+    for (const did of new Set(driverIds)) {
+      extCache.set(did, await getUserExtendedFields(did));
+    }
+
+    const safeRequests = requestRows.map((r) => {
+      const distKm =
+        r.pickup_lat !== undefined && r.dest_lat !== undefined
+          ? calculateHaversineDistanceKm(Number(r.pickup_lat), Number(r.pickup_lng), Number(r.dest_lat), Number(r.dest_lng))
+          : null;
+      const ext = r.driver_id ? extCache.get(Number(r.driver_id)) : undefined;
+      const rating = r.driver_id ? ratingMap.get(Number(r.driver_id)) : undefined;
+      const allowPhone = r.status === 'accepted' && (ext?.show_phone_to_accepted ?? 1) !== 0;
+
+      return {
+        ...r,
+        departure_time: r.departure_time ? toUtcIsoString(r.departure_time) : r.departure_time,
+        driver_phone: allowPhone ? r.driver_phone : null,
+        driver_vehicle_plate: r.status === 'accepted' ? r.driver_vehicle_plate : null,
+        distance_km: distKm,
+        estimated_minutes:
+          distKm !== null ? estimateDurationMinutes(distKm, r.vehicle_type === 'car' ? 'car' : 'bike') : null,
+        driver_avg_rating: rating?.avg_rating ?? null,
+        driver_review_count: rating?.review_count ?? 0,
+        driver_student_verified: ext?.student_verified ?? 0,
+        has_reviewed: reviewedRideIds.has(Number(r.ride_id))
+      };
+    });
 
     res.status(200).json({
       success: true,

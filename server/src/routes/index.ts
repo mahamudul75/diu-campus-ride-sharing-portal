@@ -5,12 +5,16 @@ import driverRoutes from './driverRoutes.ts';
 import rideRoutes from './rideRoutes.ts';
 import requestRoutes from './requestRoutes.ts';
 import adminRoutes from './adminRoutes.ts';
+import reviewRoutes from './reviewRoutes.ts';
+import notificationRoutes from './notificationRoutes.ts';
+import chatRoutes from './chatRoutes.ts';
+import safetyRoutes from './safetyRoutes.ts';
 import { db, getDbPool } from '../config/db.ts';
 import { apiGeneralLimiter } from '../middleware/rateLimiter.ts';
 
 const apiRouter = express.Router();
 
-// 1. Health check endpoint with DB verification (does not require DB to be up to respond)
+// 1. Health check endpoint with DB verification
 apiRouter.get('/health', async (req, res) => {
   const isProduction = process.env.NODE_ENV === 'production';
   let dbStatus = 'disconnected';
@@ -33,7 +37,7 @@ apiRouter.get('/health', async (req, res) => {
         isHealthy = !isFallback || (!isProduction && process.env.ALLOW_IN_MEMORY_DB === 'true');
       }
     }
-  } catch (err) {
+  } catch {
     dbStatus = 'unavailable';
     dbType = 'tidb-cloud';
     isHealthy = false;
@@ -51,10 +55,10 @@ apiRouter.get('/health', async (req, res) => {
   });
 });
 
-// 2. General API rate limiter (protects entire API surface while permitting legitimate high-frequency client operations)
+// 2. General API rate limiter
 apiRouter.use(apiGeneralLimiter);
 
-// 3. Database availability guard: Reject database-dependent routes safely with HTTP 503 if TiDB is unavailable
+// 3. Database availability guard
 apiRouter.use(async (req, res, next) => {
   try {
     const pool = await getDbPool();
@@ -66,7 +70,7 @@ apiRouter.use(async (req, res, next) => {
       return;
     }
     next();
-  } catch (err: any) {
+  } catch {
     res.status(503).json({
       success: false,
       message: 'Database service is temporarily unavailable. Please try again shortly.'
@@ -74,12 +78,16 @@ apiRouter.use(async (req, res, next) => {
   }
 });
 
-// 3. Mount database-dependent subrouters
+// 4. Mount database-dependent subrouters
 apiRouter.use('/auth', authRoutes);
 apiRouter.use('/users', userRoutes);
 apiRouter.use('/drivers', driverRoutes);
 apiRouter.use('/rides', rideRoutes);
 apiRouter.use('/requests', requestRoutes);
 apiRouter.use('/admin', adminRoutes);
+apiRouter.use('/reviews', reviewRoutes);
+apiRouter.use('/notifications', notificationRoutes);
+apiRouter.use('/chat', chatRoutes);
+apiRouter.use('/safety', safetyRoutes);
 
 export default apiRouter;

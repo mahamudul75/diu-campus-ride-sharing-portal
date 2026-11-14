@@ -102,3 +102,21 @@ export const apiGeneralLimiter = rateLimit({
     });
   }
 });
+
+/**
+ * 6. Auth Token Limiter (Password Reset & Email Verification):
+ * Limits token generation/verification requests to 10 per 15 minutes per IP.
+ */
+export const authTokenLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  handler: (_req: Request, res: Response) => {
+    res.status(429).json({
+      success: false,
+      message: 'Too many verification or password reset attempts. Please try again in 15 minutes.'
+    });
+  }
+});
+
