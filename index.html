@@ -1,32 +1,84 @@
+
 <!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Campus Ride Sharing Portal — DIU</title>
-    <meta name="description" content="Exclusive, safe, and affordable campus ride-sharing portal for Daffodil International University (DIU) students." />
-    <meta property="og:title" content="Campus Ride Sharing Portal — DIU" />
-    <meta property="og:description" content="Exclusive, safe, and affordable campus ride-sharing portal for Daffodil International University (DIU) students." />
+    <meta name="theme-color" content="#111827" />
+
+    <title>Campus Ride Sharing Portal | DIU</title>
+
+    <meta
+      name="description"
+      content="A smarter, safer and more affordable ride-sharing experience exclusively for Daffodil International University students."
+    />
+
+    <meta
+      name="keywords"
+      content="DIU, Campus Ride Sharing, Daffodil International University, Student Ride Sharing"
+    />
+
+    <meta name="author" content="Campus Ride Sharing Portal" />
+    <meta name="robots" content="index, follow" />
+
+    <meta property="og:title" content="Campus Ride Sharing Portal | DIU" />
+    <meta
+      property="og:description"
+      content="Smarter journeys and stronger connections. Share rides with verified DIU students."
+    />
     <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Campus Ride Sharing Portal" />
+
     <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Campus Ride Sharing Portal | DIU" />
+    <meta
+      name="twitter:description"
+      content="A smarter way for DIU students to travel together."
+    />
+
     <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+    <link
+      rel="preconnect"
+      href="https://fonts.gstatic.com"
+      crossorigin
+    />
+
+    <link
+      href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin=""
+    />
+
     <script>
-      (function() {
+      (function () {
         try {
-          var t = localStorage.getItem('diu_theme') || 'system';
-          var isDark = t === 'dark' || (t === 'system' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
-          if (isDark) { document.documentElement.classList.add('dark'); }
-          else { document.documentElement.classList.remove('dark'); }
-        } catch (e) {}
+          var theme = localStorage.getItem("diu_theme") || "system";
+
+          var prefersDark =
+            window.matchMedia &&
+            window.matchMedia("(prefers-color-scheme: dark)").matches;
+
+          var isDark =
+            theme === "dark" ||
+            (theme === "system" && prefersDark);
+
+          document.documentElement.classList.toggle("dark", isDark);
+        } catch (error) {
+          document.documentElement.classList.remove("dark");
+        }
       })();
     </script>
   </head>
+
   <body>
     <div id="root"></div>
+
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
-
