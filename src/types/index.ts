@@ -1,9 +1,19 @@
 export type UserRole = 'student' | 'admin';
 export type DriverStatus = 'none' | 'pending' | 'approved' | 'rejected';
 export type VehicleType = 'bike' | 'car';
-export type RideStatus = 'scheduled' | 'open' | 'full' | 'in_progress' | 'completed' | 'cancelled';
+export type RideStatus =
+  | 'scheduled'
+  | 'open'
+  | 'full'
+  | 'in_progress'
+  | 'completed'
+  | 'cancelled';
 export type RequestStatus = 'pending' | 'accepted' | 'rejected' | 'cancelled';
-export type ReportStatus = 'pending' | 'under_review' | 'resolved' | 'dismissed';
+export type ReportStatus =
+  | 'pending'
+  | 'under_review'
+  | 'resolved'
+  | 'dismissed';
 
 export interface User {
   id: number;
