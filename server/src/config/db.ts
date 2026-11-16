@@ -1609,6 +1609,15 @@ function invalidateMysqlPool(targetPool?: mysql.Pool | null): void {
   }
 }
 
+export async function closeDbPool(): Promise<void> {
+  const p = mysqlPool;
+  mysqlPool = null;
+  poolInitPromise = null;
+  if (p) {
+    await p.end().catch(() => {});
+  }
+}
+
 export function resetDbPoolForTesting(): void {
   invalidateMysqlPool();
   poolInitPromise = null;
@@ -1714,7 +1723,7 @@ export async function getDbPool() {
 
     if (DB_SSL_CA) {
       if (DB_SSL_CA.startsWith('-----BEGIN CERTIFICATE-----')) {
-        sslConfig.ca = DB_SSL_CA;
+        sslConfig.ca = DB_SSL_CA.replace(/\\n/g, '\n');
       } else if (fs.existsSync(DB_SSL_CA)) {
         sslConfig.ca = fs.readFileSync(DB_SSL_CA).toString();
       } else {

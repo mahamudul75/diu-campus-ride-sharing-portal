@@ -8,8 +8,8 @@ import helmet from 'helmet';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import apiRouter from './server/src/routes/index.ts';
-import { getDbPool } from './server/src/config/db.ts';
-import { initWebSocketServer } from './server/src/realtime/wsServer.ts';
+import { getDbPool, closeDbPool } from './server/src/config/db.ts';
+import { initWebSocketServer, closeWebSocketServer } from './server/src/realtime/wsServer.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -67,6 +67,15 @@ if (process.env.APP_URL) {
     trustedOrigins.add(normalizedAppUrl);
   } else {
     console.warn(`Ignoring invalid APP_URL value: "${process.env.APP_URL}"`);
+  }
+}
+
+if (process.env.RENDER_EXTERNAL_URL) {
+  const normalizedRenderUrl = normalizeOrigin(process.env.RENDER_EXTERNAL_URL);
+  if (normalizedRenderUrl) {
+    trustedOrigins.add(normalizedRenderUrl);
+  } else {
+    console.warn(`Ignoring invalid RENDER_EXTERNAL_URL value: "${process.env.RENDER_EXTERNAL_URL}"`);
   }
 }
 
@@ -234,5 +243,41 @@ setupFrontend().then(() => {
     console.log(`=======================================================`);
   });
 });
+
+let isShuttingDown = false;
+
+function handleGracefulShutdown(signal: string) {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  console.log(`\nReceived ${signal}. Starting graceful shutdown...`);
+
+  const shutdownTimer = setTimeout(() => {
+    console.error('Forced shutdown due to timeout.');
+    process.exit(1);
+  }, 10000);
+  shutdownTimer.unref();
+
+  httpServer.close(async () => {
+    console.log('HTTP server closed.');
+    try {
+      closeWebSocketServer();
+      console.log('WebSocket server closed.');
+    } catch (err) {
+      console.error('Error closing WebSocket server:', err);
+    }
+    try {
+      await closeDbPool();
+      console.log('Database connection pool closed.');
+    } catch (err) {
+      console.error('Error closing database pool:', err);
+    }
+    clearTimeout(shutdownTimer);
+    console.log('Graceful shutdown completed successfully.');
+    process.exit(0);
+  });
+}
+
+process.on('SIGTERM', () => handleGracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => handleGracefulShutdown('SIGINT'));
 
 export default app;

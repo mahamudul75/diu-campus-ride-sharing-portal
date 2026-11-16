@@ -14,7 +14,7 @@ function hashToken(rawToken: string): string {
 }
 
 function getAppBaseUrl(): string {
-  const raw = process.env.APP_URL || process.env.CORS_ORIGINS?.split(',')[0] || 'http://localhost:3000';
+  const raw = process.env.APP_URL || process.env.RENDER_EXTERNAL_URL || process.env.CORS_ORIGINS?.split(',')[0] || 'http://localhost:3000';
   return raw.trim().replace(/\/+$/, '');
 }
 

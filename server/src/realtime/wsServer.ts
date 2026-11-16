@@ -10,6 +10,7 @@ interface AuthenticatedWebSocket extends WebSocket {
 
 const userSockets = new Map<number, Set<AuthenticatedWebSocket>>();
 let wssInstance: WebSocketServer | null = null;
+let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
 function parseCookies(cookieHeader: string | undefined): Record<string, string> {
   const result: Record<string, string> = {};
@@ -128,7 +129,8 @@ export function initWebSocketServer(
     });
   });
 
-  const heartbeatInterval = setInterval(() => {
+  if (heartbeatTimer) clearInterval(heartbeatTimer);
+  heartbeatTimer = setInterval(() => {
     for (const [, sockets] of userSockets.entries()) {
       for (const client of sockets) {
         if (client.isAlive === false) {
@@ -140,9 +142,30 @@ export function initWebSocketServer(
       }
     }
   }, 30000);
-  heartbeatInterval.unref();
+  heartbeatTimer.unref();
 
   return wss;
+}
+
+export function closeWebSocketServer(): void {
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+  }
+  for (const [, sockets] of userSockets.entries()) {
+    for (const client of sockets) {
+      try {
+        client.terminate();
+      } catch {}
+    }
+  }
+  userSockets.clear();
+  if (wssInstance) {
+    try {
+      wssInstance.close();
+    } catch {}
+    wssInstance = null;
+  }
 }
 
 export function pushToUser(userId: number, payload: Record<string, any>): void {

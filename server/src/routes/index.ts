@@ -90,4 +90,21 @@ apiRouter.use('/notifications', notificationRoutes);
 apiRouter.use('/chat', chatRoutes);
 apiRouter.use('/safety', safetyRoutes);
 
+// 5. Lightweight liveness check (process up, independent of DB readiness)
+apiRouter.get('/live', (_req, res) => {
+  res.status(200).json({
+    status: 'ok',
+    service: 'DIU Campus Ride Sharing API',
+    timestamp: new Date().toISOString()
+  });
+});
+
+// 6. 404 JSON fallback for unmatched API routes
+apiRouter.use((_req, res) => {
+  res.status(404).json({
+    success: false,
+    message: 'API endpoint not found.'
+  });
+});
+
 export default apiRouter;
