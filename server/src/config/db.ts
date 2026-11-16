@@ -11,19 +11,30 @@ import { parseRideDateTime } from '../utils/dateTime.ts';
 
 dotenv.config();
 
-const {
-  DB_HOST = 'gateway01.ap-southeast-1.prod.aws.tidbcloud.com',
-  DB_PORT = '4000',
-  DB_USER = 'root',
-  DB_PASSWORD = '',
-  DB_NAME = 'diu_campus_ride_sharing',
-  DB_SSL_CA = '',
-  ADMIN_EMAIL = 'admin@diu.edu.bd',
-  ADMIN_PASSWORD = '',
-  ADMIN_NAME = 'DIU Transport Admin',
-  ADMIN_STUDENT_ID = '000-00-001',
-  ADMIN_PHONE = '01711000001'
-} = process.env;
+function normalizeEnvValue(raw: string | undefined, fallback: string): string {
+  if (typeof raw !== 'string') return fallback;
+  let cleaned = raw.trim();
+  if (
+    cleaned.length >= 2 &&
+    ((cleaned.startsWith('"') && cleaned.endsWith('"')) ||
+      (cleaned.startsWith("'") && cleaned.endsWith("'")))
+  ) {
+    cleaned = cleaned.slice(1, -1).trim();
+  }
+  return cleaned || fallback;
+}
+
+const DB_HOST = normalizeEnvValue(process.env.DB_HOST, 'gateway01.ap-southeast-1.prod.aws.tidbcloud.com');
+const DB_PORT = normalizeEnvValue(process.env.DB_PORT, '4000');
+const DB_USER = normalizeEnvValue(process.env.DB_USER, 'root');
+const DB_PASSWORD = process.env.DB_PASSWORD ?? '';
+const DB_NAME = normalizeEnvValue(process.env.DB_NAME, 'diu_campus_ride_sharing');
+const DB_SSL_CA = normalizeEnvValue(process.env.DB_SSL_CA, '');
+const ADMIN_EMAIL = normalizeEnvValue(process.env.ADMIN_EMAIL, 'admin@diu.edu.bd');
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD ?? '';
+const ADMIN_NAME = normalizeEnvValue(process.env.ADMIN_NAME, 'DIU Transport Admin');
+const ADMIN_STUDENT_ID = normalizeEnvValue(process.env.ADMIN_STUDENT_ID, '000-00-001');
+const ADMIN_PHONE = normalizeEnvValue(process.env.ADMIN_PHONE, '01711000001');
 
 export interface QueryResultInfo {
   insertId: number;
@@ -40,7 +51,10 @@ export interface IDatabaseConnection {
 }
 
 let mysqlPool: mysql.Pool | null = null;
+let poolInitPromise: Promise<any> | null = null;
 let useFallback = false;
+let authFailureCooldownUntil = 0;
+let lastAuthFailureMessage = '';
 
 interface UserRecord {
   id: number;
@@ -1586,9 +1600,21 @@ export function isDbFallbackActive(): boolean {
   return useFallback;
 }
 
+function invalidateMysqlPool(targetPool?: mysql.Pool | null): void {
+  const poolToClose =
+    targetPool && targetPool === mysqlPool ? mysqlPool : !targetPool ? mysqlPool : null;
+  if (poolToClose) {
+    mysqlPool = null;
+    poolToClose.end().catch(() => {});
+  }
+}
+
 export function resetDbPoolForTesting(): void {
-  mysqlPool = null;
+  invalidateMysqlPool();
+  poolInitPromise = null;
   useFallback = false;
+  authFailureCooldownUntil = 0;
+  lastAuthFailureMessage = '';
   memoryStore.initialized = false;
 }
 
@@ -1596,10 +1622,47 @@ export async function enableIsolatedTestMemoryDb(): Promise<void> {
   if (process.env.NODE_ENV === 'production') {
     throw new Error('Cannot enable isolated test memory DB in production.');
   }
-  mysqlPool = null;
+  invalidateMysqlPool();
+  poolInitPromise = null;
   useFallback = true;
+  authFailureCooldownUntil = 0;
+  lastAuthFailureMessage = '';
   memoryStore.initialized = false;
   await initMemoryStore();
+}
+
+function isNonTransientDbConfigError(err: any): boolean {
+  if (!err) return false;
+  const code = String(err.code || '');
+  const errno = Number(err.errno || 0);
+  const msg = String(err.message || '');
+  return (
+    code === 'ER_ACCESS_DENIED_ERROR' ||
+    code === 'ER_DBACCESS_DENIED_ERROR' ||
+    code === 'ER_BAD_DB_ERROR' ||
+    errno === 1045 ||
+    errno === 1044 ||
+    errno === 1049 ||
+    msg.includes('Access denied for user') ||
+    msg.includes('Missing user name prefix')
+  );
+}
+
+function getPasswordFormatDiagnostic(password: string): string | null {
+  if (!password) {
+    return 'DB_PASSWORD is empty.';
+  }
+  if (password !== password.trim()) {
+    return 'DB_PASSWORD has leading or trailing whitespace.';
+  }
+  if (
+    password.length >= 2 &&
+    ((password.startsWith('"') && password.endsWith('"')) ||
+      (password.startsWith("'") && password.endsWith("'")))
+  ) {
+    return 'DB_PASSWORD appears to include literal surrounding quotes.';
+  }
+  return null;
 }
 
 export async function getDbPool() {
@@ -1623,156 +1686,267 @@ export async function getDbPool() {
     return mysqlPool;
   }
 
-  const sslConfig: any = {
-    rejectUnauthorized: true,
-    minVersion: 'TLSv1.2'
-  };
+  if (poolInitPromise) {
+    return await poolInitPromise;
+  }
 
-  if (DB_SSL_CA) {
-    if (DB_SSL_CA.startsWith('-----BEGIN CERTIFICATE-----')) {
-      sslConfig.ca = DB_SSL_CA;
-    } else if (fs.existsSync(DB_SSL_CA)) {
-      sslConfig.ca = fs.readFileSync(DB_SSL_CA).toString();
-    } else {
-      console.warn('! DB_SSL_CA provided but path is invalid. Strict verification falling back.');
+  if (authFailureCooldownUntil > Date.now()) {
+    if (isDevFallbackExplicitlyAllowed) {
+      useFallback = true;
+      await initMemoryStore();
+      return {
+        isFallback: true,
+        query: executeMemoryQuery,
+        execute: executeMemoryQuery,
+        getConnection: async () => new TransactionConnection()
+      };
     }
+    throw new DatabaseUnavailableError(
+      lastAuthFailureMessage || 'Database service is temporarily unavailable. Please try again shortly.'
+    );
   }
 
-  const maxRetries = 2;
-  let lastError: any = null;
-
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    let pool: mysql.Pool | null = null;
-    try {
-      pool = mysql.createPool({
-        host: DB_HOST,
-        port: Number(DB_PORT),
-        user: DB_USER,
-        password: DB_PASSWORD,
-        database: DB_NAME,
-        waitForConnections: true,
-        connectionLimit: 10,
-        queueLimit: 0,
-        decimalNumbers: true,
-        timezone: 'Z',
-        connectTimeout: 15000,
-        ssl: sslConfig
-      });
-
-      const testPromise = pool.getConnection();
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('TiDB connection timeout')), 15000)
-      );
-
-      const conn = (await Promise.race([testPromise, timeoutPromise])) as mysql.PoolConnection;
-      conn.release();
-
-      (pool as any).on?.('error', (err: any) => {
-        console.error('MySQL connection pool error:', err?.message || err);
-        mysqlPool = null;
-      });
-
-      mysqlPool = pool;
-      console.log('✓ Successfully connected to TiDB Cloud database:', DB_NAME);
-      return mysqlPool;
-    } catch (err: any) {
-      lastError = err;
-      if (pool) {
-        await pool.end().catch(() => {});
-      }
-      if (attempt < maxRetries) {
-        console.warn(`! TiDB connection attempt ${attempt} failed (${err?.message || err}). Retrying in 1.5s...`);
-        await new Promise((r) => setTimeout(r, 1500));
-      }
-    }
-  }
-
-  let errorMessage = lastError?.message || 'cannot reach host';
-  if (errorMessage.includes('Missing user name prefix')) {
-    errorMessage =
-      'TiDB Connection Error: Your DB_USER is missing the required cluster-ID prefix (e.g., should be "prefix.root" instead of just "root"). Check your TiDB Cloud console for the full username.';
-  }
-
-  console.error(`! TiDB connection failed (${errorMessage}).`);
-
-  if (isProduction) {
-    console.error('FATAL: TiDB Cloud connection failed in production. Refusing in-memory fallback. Operations will fail safely with HTTP 503.');
-    throw new DatabaseUnavailableError('Database service is temporarily unavailable. Please try again shortly.');
-  }
-
-  if (isDevFallbackExplicitlyAllowed) {
-    console.warn('⚠️ WARNING [DEV ONLY]: Explicit in-memory fallback enabled (ALLOW_IN_MEMORY_DB=true).');
-    console.warn('⚠️ User accounts, rides, and requests will NOT be persisted to TiDB Cloud!');
-    useFallback = true;
-    await initMemoryStore();
-    return {
-      isFallback: true,
-      query: executeMemoryQuery,
-      execute: executeMemoryQuery,
-      getConnection: async () => new TransactionConnection()
+  poolInitPromise = (async () => {
+    const sslConfig: any = {
+      rejectUnauthorized: true,
+      minVersion: 'TLSv1.2'
     };
-  }
 
-  console.error('! Database connection unavailable. Set ALLOW_IN_MEMORY_DB=true in development to allow ephemeral in-memory storage. Failing safely.');
-  throw new DatabaseUnavailableError('Database service is temporarily unavailable. Please try again shortly.');
+    if (DB_SSL_CA) {
+      if (DB_SSL_CA.startsWith('-----BEGIN CERTIFICATE-----')) {
+        sslConfig.ca = DB_SSL_CA;
+      } else if (fs.existsSync(DB_SSL_CA)) {
+        sslConfig.ca = fs.readFileSync(DB_SSL_CA).toString();
+      } else {
+        console.warn('! DB_SSL_CA provided but path is invalid. Strict verification falling back.');
+      }
+    }
+
+    const maxRetries = 2;
+    let lastError: any = null;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      let pool: mysql.Pool | null = null;
+      try {
+        pool = mysql.createPool({
+          host: DB_HOST,
+          port: Number(DB_PORT),
+          user: DB_USER,
+          password: DB_PASSWORD,
+          database: DB_NAME,
+          waitForConnections: true,
+          connectionLimit: 10,
+          maxIdle: 4,
+          idleTimeout: 55000,
+          enableKeepAlive: true,
+          keepAliveInitialDelay: 10000,
+          queueLimit: 0,
+          decimalNumbers: true,
+          timezone: 'Z',
+          connectTimeout: 15000,
+          ssl: sslConfig
+        });
+
+        const testPromise = pool.getConnection();
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('TiDB connection timeout')), 15000)
+        );
+
+        const conn = (await Promise.race([testPromise, timeoutPromise])) as mysql.PoolConnection;
+        conn.release();
+
+        (pool as any).on?.('error', (err: any) => {
+          console.error('MySQL connection pool error:', err?.message || err);
+          invalidateMysqlPool(pool);
+        });
+
+        mysqlPool = pool;
+        authFailureCooldownUntil = 0;
+        lastAuthFailureMessage = '';
+        console.log('✓ Successfully connected to TiDB Cloud database:', DB_NAME);
+        return mysqlPool;
+      } catch (err: any) {
+        lastError = err;
+        if (pool) {
+          await pool.end().catch(() => {});
+        }
+        if (isNonTransientDbConfigError(err)) {
+          break;
+        }
+        if (attempt < maxRetries) {
+          console.warn(`! TiDB connection attempt ${attempt} failed (${err?.message || err}). Retrying in 1.5s...`);
+          await new Promise((r) => setTimeout(r, 1500));
+        }
+      }
+    }
+
+    let errorMessage = lastError?.message || 'cannot reach host';
+    if (errorMessage.includes('Missing user name prefix')) {
+      errorMessage =
+        'TiDB Connection Error: Your DB_USER is missing the required cluster-ID prefix (e.g., should be "prefix.root" instead of just "root"). Check your TiDB Cloud console for the full username.';
+    }
+
+    console.error(`! TiDB connection failed (${errorMessage}).`);
+
+    if (isNonTransientDbConfigError(lastError)) {
+      authFailureCooldownUntil = Date.now() + 10_000;
+      lastAuthFailureMessage = 'Database service is temporarily unavailable. Please try again shortly.';
+      const passwordHint = getPasswordFormatDiagnostic(DB_PASSWORD);
+      if (passwordHint) {
+        console.error(`! TiDB credential check: ${passwordHint}`);
+      }
+      if (
+        lastError?.code === 'ER_ACCESS_DENIED_ERROR' ||
+        lastError?.errno === 1045 ||
+        String(lastError?.message || '').includes('Access denied for user')
+      ) {
+        console.error(
+          '! TiDB Access Denied troubleshooting: Verify DB_PASSWORD, DB_USER, and DB_HOST match your active TiDB Cloud cluster (without wrapping quotes), and ensure TiDB Cloud Traffic Filters / IP Access List allows this server IP (or 0.0.0.0/0 for cloud runtimes).'
+        );
+      }
+    }
+
+    if (isProduction) {
+      console.error('FATAL: TiDB Cloud connection failed in production. Refusing in-memory fallback. Operations will fail safely with HTTP 503.');
+      throw new DatabaseUnavailableError('Database service is temporarily unavailable. Please try again shortly.');
+    }
+
+    if (isDevFallbackExplicitlyAllowed) {
+      console.warn('⚠️ WARNING [DEV ONLY]: Explicit in-memory fallback enabled (ALLOW_IN_MEMORY_DB=true).');
+      console.warn('⚠️ User accounts, rides, and requests will NOT be persisted to TiDB Cloud!');
+      useFallback = true;
+      await initMemoryStore();
+      return {
+        isFallback: true,
+        query: executeMemoryQuery,
+        execute: executeMemoryQuery,
+        getConnection: async () => new TransactionConnection()
+      };
+    }
+
+    console.error('! Database connection unavailable. Set ALLOW_IN_MEMORY_DB=true in development to allow ephemeral in-memory storage. Failing safely.');
+    throw new DatabaseUnavailableError('Database service is temporarily unavailable. Please try again shortly.');
+  })().finally(() => {
+    poolInitPromise = null;
+  });
+
+  return await poolInitPromise;
 }
 
 function isConnectionFailure(err: any): boolean {
   if (!err) return false;
-  const msg = err.message || '';
-  const code = err.code || '';
+  const msg = String(err.message || '').toLowerCase();
+  const code = String(err.code || '');
   return (
     code === 'ETIMEDOUT' ||
     code === 'ECONNREFUSED' ||
     code === 'PROTOCOL_CONNECTION_LOST' ||
+    code === 'PROTOCOL_ENQUEUE_AFTER_FATAL_ERROR' ||
+    code === 'PROTOCOL_ENQUEUE_AFTER_QUIT' ||
+    code === 'ER_CLIENT_INTERACTION_TIMEOUT' ||
     code === 'ECONNRESET' ||
+    code === 'EPIPE' ||
     msg.includes('connection timeout') ||
-    msg.includes('Connection lost') ||
-    msg.includes('closed')
+    msg.includes('connection lost') ||
+    msg.includes('closed') ||
+    msg.includes('econnreset') ||
+    msg.includes('epipe') ||
+    msg.includes('socket hang up')
   );
+}
+
+function isSafeToRetryQuery(sql: string, err: any): boolean {
+  const trimmed = sql.trimStart().toLowerCase();
+  if (trimmed.startsWith('select') || trimmed.startsWith('show') || trimmed.startsWith('with')) {
+    return true;
+  }
+  const code = String(err?.code || '');
+  const msg = String(err?.message || '').toLowerCase();
+  return (
+    code === 'ECONNRESET' ||
+    code === 'EPIPE' ||
+    code === 'PROTOCOL_ENQUEUE_AFTER_FATAL_ERROR' ||
+    code === 'PROTOCOL_ENQUEUE_AFTER_QUIT' ||
+    msg.includes('closed state') ||
+    msg.includes("can't add new command")
+  );
+}
+
+async function runPoolOperation(
+  method: 'query' | 'execute',
+  sql: string,
+  params?: any[]
+): Promise<any> {
+  let pool = await getDbPool();
+  try {
+    return await (pool as any)[method](sql, params);
+  } catch (err: any) {
+    if (err?.isDatabaseUnavailable || err?.status === 503) {
+      throw err;
+    }
+    if (isConnectionFailure(err)) {
+      const isFallback = Boolean((pool as any).isFallback);
+      const canRetry = !isFallback && isSafeToRetryQuery(sql, err);
+      if (!isFallback) {
+        invalidateMysqlPool(pool as mysql.Pool);
+      }
+      if (canRetry) {
+        try {
+          pool = await getDbPool();
+          return await (pool as any)[method](sql, params);
+        } catch (retryErr: any) {
+          if (retryErr?.isDatabaseUnavailable || retryErr?.status === 503) {
+            throw retryErr;
+          }
+          if (isConnectionFailure(retryErr)) {
+            if (!(pool as any).isFallback) {
+              invalidateMysqlPool(pool as mysql.Pool);
+            }
+            throw new DatabaseUnavailableError('Database service connection lost during query execution.');
+          }
+          throw retryErr;
+        }
+      }
+      throw new DatabaseUnavailableError('Database service connection lost during query execution.');
+    }
+    throw err;
+  }
 }
 
 export const db = {
   query: async (sql: string, params?: any[]) => {
-    try {
-      const pool = await getDbPool();
-      return await pool.query(sql, params);
-    } catch (err: any) {
-      if (err?.isDatabaseUnavailable || err?.status === 503) {
-        throw err;
-      }
-      if (isConnectionFailure(err)) {
-        mysqlPool = null;
-        throw new DatabaseUnavailableError('Database service connection lost during query execution.');
-      }
-      throw err;
-    }
+    return await runPoolOperation('query', sql, params);
   },
   execute: async (sql: string, params?: any[]) => {
-    try {
-      const pool = await getDbPool();
-      return await pool.execute(sql, params);
-    } catch (err: any) {
-      if (err?.isDatabaseUnavailable || err?.status === 503) {
-        throw err;
-      }
-      if (isConnectionFailure(err)) {
-        mysqlPool = null;
-        throw new DatabaseUnavailableError('Database service connection lost during query execution.');
-      }
-      throw err;
-    }
+    return await runPoolOperation('execute', sql, params);
   },
   getConnection: async () => {
+    let pool = await getDbPool();
     try {
-      const pool = await getDbPool();
       return await pool.getConnection();
     } catch (err: any) {
       if (err?.isDatabaseUnavailable || err?.status === 503) {
         throw err;
       }
       if (isConnectionFailure(err)) {
-        mysqlPool = null;
+        if (!(pool as any).isFallback) {
+          invalidateMysqlPool(pool as mysql.Pool);
+          try {
+            pool = await getDbPool();
+            return await pool.getConnection();
+          } catch (retryErr: any) {
+            if (retryErr?.isDatabaseUnavailable || retryErr?.status === 503) {
+              throw retryErr;
+            }
+            if (isConnectionFailure(retryErr)) {
+              if (!(pool as any).isFallback) {
+                invalidateMysqlPool(pool as mysql.Pool);
+              }
+              throw new DatabaseUnavailableError('Database service connection lost while acquiring connection.');
+            }
+            throw retryErr;
+          }
+        }
         throw new DatabaseUnavailableError('Database service connection lost while acquiring connection.');
       }
       throw err;

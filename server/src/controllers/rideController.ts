@@ -186,6 +186,13 @@ export async function getRides(req: AuthRequest, res: Response): Promise<void> {
       rides: normalizedRides
     });
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({
+        success: false,
+        message: error.message || 'Database service is temporarily unavailable. Please try again shortly.'
+      });
+      return;
+    }
     console.error('getRides error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch campus rides.' });
   }
@@ -272,6 +279,13 @@ export async function getRideById(req: AuthRequest, res: Response): Promise<void
       isBlockedPair
     });
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({
+        success: false,
+        message: error.message || 'Database service is temporarily unavailable. Please try again shortly.'
+      });
+      return;
+    }
     console.error('getRideById error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch ride details.' });
   }
@@ -408,6 +422,13 @@ export async function createRide(req: AuthRequest, res: Response): Promise<void>
       res.status(503).json({
         success: false,
         message: 'Scheduled and in-progress ride statuses require Migration 002.'
+      });
+      return;
+    }
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({
+        success: false,
+        message: error.message || 'Database service is temporarily unavailable. Please try again shortly.'
       });
       return;
     }
@@ -621,7 +642,14 @@ export async function updateRide(req: AuthRequest, res: Response): Promise<void>
       message: 'Ride details updated successfully.'
     });
   } catch (error: any) {
-    await conn.rollback();
+    await conn.rollback().catch(() => {});
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({
+        success: false,
+        message: error.message || 'Database service is temporarily unavailable. Please try again shortly.'
+      });
+      return;
+    }
     console.error('updateRide error:', error);
     res.status(500).json({ success: false, message: 'Failed to update ride.' });
   } finally {
@@ -736,7 +764,14 @@ export async function updateRideStatus(req: AuthRequest, res: Response): Promise
       message: `Ride status updated to ${effectiveTarget.replace('_', ' ')}.`
     });
   } catch (error: any) {
-    await conn.rollback();
+    await conn.rollback().catch(() => {});
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({
+        success: false,
+        message: error.message || 'Database service is temporarily unavailable. Please try again shortly.'
+      });
+      return;
+    }
     if (
       error?.code === 'WARN_DATA_TRUNCATED' ||
       error?.code === 'ER_TRUNCATED_WRONG_VALUE_FOR_FIELD' ||
@@ -830,7 +865,14 @@ export async function cancelRide(req: AuthRequest, res: Response): Promise<void>
       message: 'Ride cancelled successfully. Associated booking requests have been cancelled.'
     });
   } catch (error: any) {
-    await conn.rollback();
+    await conn.rollback().catch(() => {});
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({
+        success: false,
+        message: error.message || 'Database service is temporarily unavailable. Please try again shortly.'
+      });
+      return;
+    }
     console.error('cancelRide error:', error);
     res.status(500).json({ success: false, message: 'Failed to cancel ride.' });
   } finally {
@@ -891,7 +933,14 @@ export async function completeRide(req: AuthRequest, res: Response): Promise<voi
       message: 'Ride marked as completed. Thank you for driving fellow DIU students!'
     });
   } catch (error: any) {
-    await conn.rollback();
+    await conn.rollback().catch(() => {});
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({
+        success: false,
+        message: error.message || 'Database service is temporarily unavailable. Please try again shortly.'
+      });
+      return;
+    }
     console.error('completeRide error:', error);
     res.status(500).json({ success: false, message: 'Failed to complete ride.' });
   } finally {
@@ -932,6 +981,13 @@ export async function getMyRides(req: AuthRequest, res: Response): Promise<void>
       rides: normalizedRides
     });
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({
+        success: false,
+        message: error.message || 'Database service is temporarily unavailable. Please try again shortly.'
+      });
+      return;
+    }
     console.error('getMyRides error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch your rides.' });
   }
