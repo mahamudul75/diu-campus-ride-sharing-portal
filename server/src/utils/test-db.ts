@@ -1,4 +1,4 @@
-import { db, getDbPool } from '../config/db.ts';
+import { getDbPool } from '../config/db.ts';
 
 async function testConnection() {
   console.log('--- TiDB Cloud Connection Test ---');

@@ -134,7 +134,16 @@ export const SearchRidesPage: React.FC = () => {
       map.invalidateSize();
     }, 150);
 
+    let resizeObserver: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined' && mapContainerRef.current) {
+      resizeObserver = new ResizeObserver(() => {
+        mapInstanceRef.current?.invalidateSize();
+      });
+      resizeObserver.observe(mapContainerRef.current);
+    }
+
     return () => {
+      resizeObserver?.disconnect();
       if (tileLayerRef.current) {
         tileLayerRef.current.remove();
         tileLayerRef.current = null;
@@ -152,12 +161,22 @@ export const SearchRidesPage: React.FC = () => {
     }
   }, [isDark]);
 
+  useEffect(() => {
+    setSelectedRide((prev) => {
+      if (!prev) return null;
+      return rides.find((r) => r.id === prev.id) || null;
+    });
+  }, [rides]);
+
   // Update markers and OSRM routes
   useEffect(() => {
     const map = mapInstanceRef.current;
     const markersLayer = markersLayerRef.current;
 
     if (!map || !markersLayer) return;
+
+    const controller = new AbortController();
+    let cancelled = false;
 
     markersLayer.clearLayers();
 
@@ -267,10 +286,19 @@ export const SearchRidesPage: React.FC = () => {
       // Draw OSRM route for selected ride
       if (isSelected) {
         axios
-          .get(`https://router.project-osrm.org/route/v1/driving/${pLng},${pLat};${dLng},${dLat}?overview=full&geometries=geojson`)
+          .get(
+            `https://router.project-osrm.org/route/v1/driving/${pLng},${pLat};${dLng},${dLat}?overview=full&geometries=geojson&alternatives=true`,
+            { timeout: 5000, signal: controller.signal }
+          )
           .then((res: { data: { routes: any[] } }) => {
-            if (res.data?.routes?.[0]) {
-              const route = res.data.routes[0];
+            if (cancelled || !mapInstanceRef.current) return;
+            const routes = Array.isArray(res.data?.routes) ? res.data.routes : [];
+            if (routes.length > 0) {
+              const route = routes.reduce(
+                (shortest: any, candidate: any) =>
+                  Number(candidate.distance) < Number(shortest.distance) ? candidate : shortest,
+                routes[0]
+              );
               const coords: [number, number][] = route.geometry.coordinates.map((c: [number, number]) => [c[1], c[0]]);
               const line = L.polyline(coords, {
                 color: isDark ? '#818CF8' : '#4F5FC9',
@@ -281,11 +309,13 @@ export const SearchRidesPage: React.FC = () => {
               markersLayer.addLayer(line);
             }
           })
-          .catch(() => {
+          .catch((err: any) => {
+            if (cancelled || axios.isCancel(err) || controller.signal.aborted || !mapInstanceRef.current) return;
             const line = L.polyline([[pLat, pLng], [dLat, dLng]], {
               color: isDark ? '#818CF8' : '#4F5FC9',
               weight: 4,
-              opacity: 0.85
+              opacity: 0.85,
+              dashArray: '8, 12'
             });
             markersLayer.addLayer(line);
           });
@@ -301,10 +331,15 @@ export const SearchRidesPage: React.FC = () => {
       }
     });
 
-    if (rides.length > 0 && bounds.isValid()) {
+    if (!selectedRide && rides.length > 0 && bounds.isValid()) {
       map.fitBounds(bounds, { padding: [40, 40], maxZoom: 14 });
     }
-  }, [rides, selectedRide, isDark]);
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [rides, selectedRide, isDark, viewMode]);
 
   useEffect(() => {
     const map = mapInstanceRef.current;
@@ -487,7 +522,6 @@ export const SearchRidesPage: React.FC = () => {
                 {rides.map((ride) => (
                   <div
                     key={ride.id}
-                    onMouseEnter={() => setSelectedRide(ride)}
                     onClick={() => setSelectedRide(ride)}
                     className={`transition-all rounded-2xl cursor-pointer ${
                       selectedRide?.id === ride.id ? 'ring-2 ring-[#4F5FC9] dark:ring-[#818CF8] ring-offset-2 dark:ring-offset-[#111827] shadow-md' : ''
@@ -523,9 +557,18 @@ export const SearchRidesPage: React.FC = () => {
                 style={{ height: viewMode === 'split' ? '720px' : '800px', width: '100%' }}
               />
               {tileError && (
-                <div className="absolute bottom-3 left-3 right-3 z-[400] bg-amber-50/95 dark:bg-amber-950/95 backdrop-blur-sm border border-amber-200 dark:border-amber-900 text-amber-900 dark:text-amber-200 text-[10px] px-3 py-2 rounded-lg shadow-lg flex items-center gap-2">
-                  <AlertCircle className="w-3.5 h-3.5 text-amber-600" />
-                  <span>Map tiles unavailable. Markers remain active.</span>
+                <div className="absolute bottom-3 left-3 right-3 z-[400] bg-amber-50/95 dark:bg-amber-950/95 backdrop-blur-sm border border-amber-200 dark:border-amber-900 text-amber-900 dark:text-amber-200 text-[10px] px-3 py-2 rounded-lg shadow-lg flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <AlertCircle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                    <span className="truncate">Map tiles unavailable. Ride markers remain active.</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => tileLayerRef.current?.retry()}
+                    className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded-md text-[10px] font-bold flex items-center gap-1 shrink-0 cursor-pointer"
+                  >
+                    <RotateCcw className="w-3 h-3" /> Retry
+                  </button>
                 </div>
               )}
             </div>

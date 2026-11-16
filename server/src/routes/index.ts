@@ -15,7 +15,7 @@ import { apiGeneralLimiter } from '../middleware/rateLimiter.ts';
 const apiRouter = express.Router();
 
 // 1. Health check endpoint with DB verification
-apiRouter.get('/health', async (req, res) => {
+apiRouter.get('/health', async (_req, res) => {
   const isProduction = process.env.NODE_ENV === 'production';
   let dbStatus = 'disconnected';
   let dbType = 'unknown';
@@ -59,7 +59,7 @@ apiRouter.get('/health', async (req, res) => {
 apiRouter.use(apiGeneralLimiter);
 
 // 3. Database availability guard
-apiRouter.use(async (req, res, next) => {
+apiRouter.use(async (_req, res, next) => {
   try {
     const pool = await getDbPool();
     if (process.env.NODE_ENV === 'production' && (pool as any).isFallback) {

@@ -1,13 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
 import L from 'leaflet';
 import {
   Compass,
-  ArrowRight,
   MapPin,
   Car,
   Clock,
-  AlertCircle
+  AlertCircle,
+  RotateCcw
 } from 'lucide-react';
 import { createResilientTileLayer, ResilientTileLayerHandle } from '../utils/mapConfig.ts';
 import { useTheme } from '../context/ThemeContext.tsx';
@@ -109,11 +108,20 @@ export const CampusMapPreview: React.FC = () => {
     layersGroupRef.current = L.layerGroup().addTo(map);
     mapInstanceRef.current = map;
 
+    let resizeObserver: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined' && mapContainerRef.current) {
+      resizeObserver = new ResizeObserver(() => {
+        mapInstanceRef.current?.invalidateSize();
+      });
+      resizeObserver.observe(mapContainerRef.current);
+    }
+
     setTimeout(() => {
       map.invalidateSize();
     }, 150);
 
     return () => {
+      resizeObserver?.disconnect();
       if (tileLayerRef.current) {
         tileLayerRef.current.remove();
         tileLayerRef.current = null;
@@ -296,9 +304,18 @@ export const CampusMapPreview: React.FC = () => {
             </div>
 
             {tileError && (
-              <div className="absolute bottom-3 left-3 right-3 z-[400] bg-amber-50/95 dark:bg-amber-950/95 backdrop-blur-sm border border-amber-200 dark:border-amber-900 text-amber-900 dark:text-amber-200 text-[10px] px-3 py-2 rounded-lg shadow-lg flex items-center gap-2">
-                <AlertCircle className="w-3.5 h-3.5 text-amber-600" />
-                <span>Map tiles unavailable. Corridor coordinates active.</span>
+              <div className="absolute bottom-3 left-3 right-3 z-[400] bg-amber-50/95 dark:bg-amber-950/95 backdrop-blur-sm border border-amber-200 dark:border-amber-900 text-amber-900 dark:text-amber-200 text-[10px] px-3 py-2 rounded-lg shadow-lg flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <AlertCircle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                  <span className="truncate">Map tiles unavailable. Corridor coordinates remain active.</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => tileLayerRef.current?.retry()}
+                  className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded-md text-[10px] font-bold flex items-center gap-1 shrink-0 cursor-pointer"
+                >
+                  <RotateCcw className="w-3 h-3" /> Retry
+                </button>
               </div>
             )}
           </div>

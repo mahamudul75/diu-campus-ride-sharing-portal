@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { PlusCircle, Calendar, Clock, DollarSign, Users, Bike, Car, MapPin } from 'lucide-react';
+import { PlusCircle, Calendar, Clock, Users, Bike, Car, MapPin } from 'lucide-react';
 import api from '../services/api.ts';
 import { useAuth } from '../context/AuthContext.tsx';
 import { useToast } from '../context/ToastContext.tsx';

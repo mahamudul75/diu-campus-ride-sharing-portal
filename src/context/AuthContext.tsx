@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import api from '../services/api.ts';
 import { User } from '../types/index.ts';
 import { useToast } from './ToastContext.tsx';

@@ -149,8 +149,8 @@ export const BecomeDriverPage: React.FC = () => {
           )}
         </div>
 
-        {/* Driver Application Form (visible when not approved) */}
-        {!isApprovedDriver && (
+        {/* Driver Application Form (visible only when neither approved nor pending) */}
+        {!isApprovedDriver && !isPendingDriver && (
           <form onSubmit={handleSubmit} className="bg-[#F5F7FC] dark:bg-[#1C2A40] p-5 sm:p-6 rounded-2xl border border-[#D4DAE7] dark:border-[#34445E] shadow-xs space-y-5">
             <h2 className="text-sm font-bold text-[#222B42] dark:text-[#F1F4FC]">Vehicle Information</h2>
 

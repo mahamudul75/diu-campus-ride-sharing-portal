@@ -74,7 +74,7 @@ CREATE TABLE rides (
   seats_available INT NOT NULL,
   vehicle_type ENUM('bike', 'car') NOT NULL,
   note TEXT NULL DEFAULT NULL,
-  status ENUM('scheduled', 'open', 'full', 'in_progress', 'completed', 'cancelled') NOT NULL DEFAULT 'open',
+  status ENUM('open','full','completed','cancelled','scheduled','in_progress') NOT NULL DEFAULT 'open',
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT fk_rides_driver FOREIGN KEY (driver_id)
     REFERENCES users (id)

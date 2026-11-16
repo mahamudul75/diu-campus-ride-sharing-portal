@@ -270,7 +270,7 @@ export async function login(req: AuthRequest, res: Response): Promise<void> {
   }
 }
 
-export async function logout(req: AuthRequest, res: Response): Promise<void> {
+export async function logout(_req: AuthRequest, res: Response): Promise<void> {
   clearAuthCookie(res);
   res.status(200).json({ success: true, message: 'Logged out successfully.' });
 }
@@ -315,15 +315,17 @@ export async function requestPasswordReset(req: AuthRequest, res: Response): Pro
 
     if (user && !user.is_blocked) {
       const rawToken = await createAuthToken(user.id, 'password_reset', 30);
-      if (rawToken) {
-        const resetUrl = `${getAppBaseUrl()}/reset-password?token=${encodeURIComponent(rawToken)}`;
-        await sendTransactionalEmail({
-          to: user.email,
-          subject: 'DIU Campus Ride Sharing — Password Reset',
-          text: `Hello ${user.name},\n\nReset your password using this link (valid for 30 minutes):\n${resetUrl}`,
-          html: `<p>Hello ${user.name},</p><p>Click below to reset your password (expires in 30 minutes):</p><p><a href="${resetUrl}">Reset Password</a></p>`
-        });
+      if (!rawToken) {
+        res.status(503).json({ success: false, message: 'Password reset storage requires Migration 002.' });
+        return;
       }
+      const resetUrl = `${getAppBaseUrl()}/reset-password?token=${encodeURIComponent(rawToken)}`;
+      await sendTransactionalEmail({
+        to: user.email,
+        subject: 'DIU Campus Ride Sharing — Password Reset',
+        text: `Hello ${user.name},\n\nReset your password using this link (valid for 30 minutes):\n${resetUrl}`,
+        html: `<p>Hello ${user.name},</p><p>Click below to reset your password (expires in 30 minutes):</p><p><a href="${resetUrl}">Reset Password</a></p>`
+      });
     }
 
     res.status(200).json({

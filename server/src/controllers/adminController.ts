@@ -6,7 +6,7 @@ import { toUtcIsoString } from '../utils/dateTime.ts';
 import { getUserExtendedFields } from '../utils/dbHelpers.ts';
 import { createNotification } from '../services/notificationService.ts';
 
-export async function getAdminStats(req: AuthRequest, res: Response): Promise<void> {
+export async function getAdminStats(_req: AuthRequest, res: Response): Promise<void> {
   try {
     const [userRows] = await db.query(
       `SELECT 
@@ -283,7 +283,7 @@ export async function deleteUser(req: AuthRequest, res: Response): Promise<void>
   }
 }
 
-export async function getPendingDrivers(req: AuthRequest, res: Response): Promise<void> {
+export async function getPendingDrivers(_req: AuthRequest, res: Response): Promise<void> {
   try {
     const [rows] = await db.query(
       `SELECT id, student_id, name, email, phone, role, driver_status, 
@@ -324,6 +324,22 @@ export async function approveDriver(req: AuthRequest, res: Response): Promise<vo
 
     if (!targetUser) {
       res.status(404).json({ success: false, message: 'Student not found.' });
+      return;
+    }
+
+    if (targetUser.driver_status === 'approved') {
+      res.status(409).json({
+        success: false,
+        message: 'Student is already an approved driver.'
+      });
+      return;
+    }
+
+    if (targetUser.driver_status !== 'pending') {
+      res.status(409).json({
+        success: false,
+        message: 'Only pending driver applications can be approved.'
+      });
       return;
     }
 
@@ -389,6 +405,16 @@ export async function rejectDriver(req: AuthRequest, res: Response): Promise<voi
 
     if (targetUser.driver_status === 'none') {
       res.status(400).json({ success: false, message: 'Student has no driver application to reject.' });
+      return;
+    }
+
+    if (targetUser.driver_status === 'approved') {
+      res.status(409).json({ success: false, message: 'Cannot reject an already approved driver.' });
+      return;
+    }
+
+    if (targetUser.driver_status === 'rejected') {
+      res.status(409).json({ success: false, message: 'Driver application is already rejected.' });
       return;
     }
 
@@ -541,7 +567,7 @@ export async function moderateRideAdmin(req: AuthRequest, res: Response): Promis
   }
 }
 
-export async function getAllBookingsAdmin(req: AuthRequest, res: Response): Promise<void> {
+export async function getAllBookingsAdmin(_req: AuthRequest, res: Response): Promise<void> {
   try {
     const [rows] = await db.query(
       `SELECT req.id, req.ride_id, req.passenger_id, req.status, req.created_at, req.updated_at,
@@ -567,7 +593,7 @@ export async function getAllBookingsAdmin(req: AuthRequest, res: Response): Prom
   }
 }
 
-export async function getReportsAdmin(req: AuthRequest, res: Response): Promise<void> {
+export async function getReportsAdmin(_req: AuthRequest, res: Response): Promise<void> {
   try {
     try {
       const [rows] = await db.query(

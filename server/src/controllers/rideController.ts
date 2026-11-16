@@ -399,6 +399,18 @@ export async function createRide(req: AuthRequest, res: Response): Promise<void>
       rideId: newRideId
     });
   } catch (error: any) {
+    if (
+      error?.code === 'WARN_DATA_TRUNCATED' ||
+      error?.code === 'ER_TRUNCATED_WRONG_VALUE_FOR_FIELD' ||
+      error?.code === 'ER_DATA_TRUNCATED' ||
+      error?.errno === 1265
+    ) {
+      res.status(503).json({
+        success: false,
+        message: 'Scheduled and in-progress ride statuses require Migration 002.'
+      });
+      return;
+    }
     console.error('createRide error:', error);
     res.status(500).json({ success: false, message: 'Failed to create ride.' });
   }
@@ -725,6 +737,18 @@ export async function updateRideStatus(req: AuthRequest, res: Response): Promise
     });
   } catch (error: any) {
     await conn.rollback();
+    if (
+      error?.code === 'WARN_DATA_TRUNCATED' ||
+      error?.code === 'ER_TRUNCATED_WRONG_VALUE_FOR_FIELD' ||
+      error?.code === 'ER_DATA_TRUNCATED' ||
+      error?.errno === 1265
+    ) {
+      res.status(503).json({
+        success: false,
+        message: 'Scheduled and in-progress ride statuses require Migration 002.'
+      });
+      return;
+    }
     console.error('updateRideStatus error:', error);
     res.status(500).json({ success: false, message: 'Failed to update ride status.' });
   } finally {

@@ -32,6 +32,27 @@ export async function applyForDriver(req: AuthRequest, res: Response): Promise<v
     const cleanModel = vehicle_model.trim();
     const cleanPlate = vehicle_plate.trim();
 
+    const [statusRows] = await db.query('SELECT driver_status FROM users WHERE id = ?', [req.user.id]);
+    const currentUser = Array.isArray(statusRows) && statusRows.length > 0 ? (statusRows[0] as any) : null;
+    if (!currentUser) {
+      res.status(404).json({ success: false, message: 'User account not found.' });
+      return;
+    }
+    if (currentUser.driver_status === 'approved') {
+      res.status(409).json({
+        success: false,
+        message: 'You are already an approved DIU driver.'
+      });
+      return;
+    }
+    if (currentUser.driver_status === 'pending') {
+      res.status(409).json({
+        success: false,
+        message: 'Your driver application is already pending admin review.'
+      });
+      return;
+    }
+
     await db.query(
       `UPDATE users 
        SET driver_status = 'pending', vehicle_type = ?, vehicle_model = ?, vehicle_plate = ? 

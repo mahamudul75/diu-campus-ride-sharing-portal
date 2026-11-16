@@ -1,15 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  Clock,
   CheckCircle2,
   XCircle,
   Bike,
   Car,
   Mail,
   Phone,
-  FileCheck,
-  ShieldCheck
+  FileCheck
 } from 'lucide-react';
 import api from '../services/api.ts';
 import { User as UserModel } from '../types/index.ts';

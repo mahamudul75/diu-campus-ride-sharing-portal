@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
-import { Search, MapPin, AlertCircle, Navigation, Car, Clock } from 'lucide-react';
+import { Search, MapPin, AlertCircle, Navigation, Car, Clock, X, RotateCcw } from 'lucide-react';
 import axios from 'axios';
 import { createResilientTileLayer, ResilientTileLayerHandle } from '../utils/mapConfig.ts';
 import { useTheme } from '../context/ThemeContext.tsx';
@@ -70,11 +70,28 @@ export const MapPicker: React.FC<MapPickerProps> = ({
 
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<any[]>([]);
+  const [searchFeedback, setSearchFeedback] = useState<string | null>(null);
   const [isSearching, setIsSearching] = useState(false);
   const [routeDistanceKm, setRouteDistanceKm] = useState<number | null>(null);
   const [routeDurationMin, setRouteDurationMin] = useState<number | null>(null);
+  const [isStraightLineFallback, setIsStraightLineFallback] = useState(false);
   const [isRouting, setIsRouting] = useState(false);
   const [tileError, setTileError] = useState(false);
+
+  const activeSelectionRef = useRef(activeSelection);
+  const onPickupChangeRef = useRef(onPickupChange);
+  const onDestChangeRef = useRef(onDestChange);
+  const isDarkRef = useRef(isDark);
+  const routeAbortRef = useRef<AbortController | null>(null);
+  const routeSeqRef = useRef(0);
+  const reverseAbortRef = useRef<AbortController | null>(null);
+  const searchAbortRef = useRef<AbortController | null>(null);
+  const searchCacheRef = useRef<Map<string, any[]>>(new Map());
+
+  activeSelectionRef.current = activeSelection;
+  onPickupChangeRef.current = onPickupChange;
+  onDestChangeRef.current = onDestChange;
+  isDarkRef.current = isDark;
 
   const createMarkerIcon = (color: string, label: string) => {
     return L.divIcon({
@@ -90,7 +107,7 @@ export const MapPicker: React.FC<MapPickerProps> = ({
     });
   };
 
-  const calculateStraightDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
+  const calculateHaversineKm = (lat1: number, lon1: number, lat2: number, lon2: number) => {
     const R = 6371;
     const dLat = (lat2 - lat1) * (Math.PI / 180);
     const dLon = (lon2 - lon1) * (Math.PI / 180);
@@ -99,7 +116,7 @@ export const MapPicker: React.FC<MapPickerProps> = ({
       Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) *
       Math.sin(dLon / 2) * Math.sin(dLon / 2);
     const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return Number((R * c * 1.25).toFixed(1));
+    return Number((R * c).toFixed(1));
   };
 
   const createPopupEl = (title: string, value: string) => {
@@ -135,19 +152,24 @@ export const MapPicker: React.FC<MapPickerProps> = ({
 
         pickupMarkerRef.current.on('dragend', async (e: any) => {
           const { lat, lng } = e.target.getLatLng();
+          let name = `Point (${lat.toFixed(4)}, ${lng.toFixed(4)})`;
+          if (reverseAbortRef.current) reverseAbortRef.current.abort();
+          const ctrl = new AbortController();
+          reverseAbortRef.current = ctrl;
           try {
             const res = await axios.get('https://nominatim.openstreetmap.org/reverse', {
-              params: { lat, lon: lng, format: 'json' }
+              params: { lat, lon: lng, format: 'json' },
+              timeout: 4000,
+              signal: ctrl.signal
             });
-            const name = res.data?.display_name?.split(',').slice(0, 2).join(',') || `Point (${lat.toFixed(4)}, ${lng.toFixed(4)})`;
-            const updated = { name, lat, lng };
-            setPickup(updated);
-            onPickupChange(updated);
+            name = res.data?.display_name?.split(',').slice(0, 2).join(',') || name;
           } catch {
-            const updated = { name: `Point (${lat.toFixed(4)}, ${lng.toFixed(4)})`, lat, lng };
-            setPickup(updated);
-            onPickupChange(updated);
+            // Keep coordinate fallback label
           }
+          if (ctrl.signal.aborted) return;
+          const updated = { name, lat, lng };
+          setPickup(updated);
+          onPickupChangeRef.current(updated);
         });
       }
     } else if (pickupMarkerRef.current) {
@@ -170,19 +192,24 @@ export const MapPicker: React.FC<MapPickerProps> = ({
 
         destMarkerRef.current.on('dragend', async (e: any) => {
           const { lat, lng } = e.target.getLatLng();
+          let name = `Point (${lat.toFixed(4)}, ${lng.toFixed(4)})`;
+          if (reverseAbortRef.current) reverseAbortRef.current.abort();
+          const ctrl = new AbortController();
+          reverseAbortRef.current = ctrl;
           try {
             const res = await axios.get('https://nominatim.openstreetmap.org/reverse', {
-              params: { lat, lon: lng, format: 'json' }
+              params: { lat, lon: lng, format: 'json' },
+              timeout: 4000,
+              signal: ctrl.signal
             });
-            const name = res.data?.display_name?.split(',').slice(0, 2).join(',') || `Point (${lat.toFixed(4)}, ${lng.toFixed(4)})`;
-            const updated = { name, lat, lng };
-            setDest(updated);
-            onDestChange(updated);
+            name = res.data?.display_name?.split(',').slice(0, 2).join(',') || name;
           } catch {
-            const updated = { name: `Point (${lat.toFixed(4)}, ${lng.toFixed(4)})`, lat, lng };
-            setDest(updated);
-            onDestChange(updated);
+            // Keep coordinate fallback label
           }
+          if (ctrl.signal.aborted) return;
+          const updated = { name, lat, lng };
+          setDest(updated);
+          onDestChangeRef.current(updated);
         });
       }
     } else if (destMarkerRef.current) {
@@ -192,32 +219,58 @@ export const MapPicker: React.FC<MapPickerProps> = ({
 
     // Clear route if one point is missing
     if (!currentPickup || !currentDest) {
+      if (routeAbortRef.current) {
+        routeAbortRef.current.abort();
+        routeAbortRef.current = null;
+      }
       if (polylineRef.current) {
         map.removeLayer(polylineRef.current);
         polylineRef.current = null;
       }
       setRouteDistanceKm(null);
       setRouteDurationMin(null);
+      setIsStraightLineFallback(false);
+      setIsRouting(false);
       return;
     }
 
-    // Update Route
+    // Cancel any in-flight route lookup before starting a new one
+    if (routeAbortRef.current) {
+      routeAbortRef.current.abort();
+    }
+    const routeCtrl = new AbortController();
+    routeAbortRef.current = routeCtrl;
+    const seq = ++routeSeqRef.current;
+
     setIsRouting(true);
     try {
       const res = await axios.get(
-        `https://router.project-osrm.org/route/v1/driving/${currentPickup.lng},${currentPickup.lat};${currentDest.lng},${currentDest.lat}?overview=full&geometries=geojson`,
-        { timeout: 5000 }
+        `https://router.project-osrm.org/route/v1/driving/${currentPickup.lng},${currentPickup.lat};${currentDest.lng},${currentDest.lat}?overview=full&geometries=geojson&alternatives=true`,
+        { timeout: 5000, signal: routeCtrl.signal }
       );
-      if (res.data?.routes?.[0]) {
-        const route = res.data.routes[0];
+      if (seq !== routeSeqRef.current || routeCtrl.signal.aborted || !mapInstanceRef.current) return;
+
+      const routes: any[] = Array.isArray(res.data?.routes) ? res.data.routes : [];
+      if (routes.length > 0) {
+        const route = routes.reduce(
+          (shortest: any, candidate: any) =>
+            Number(candidate.distance) < Number(shortest.distance) ? candidate : shortest,
+          routes[0]
+        );
+        setIsStraightLineFallback(false);
         setRouteDistanceKm(Number((route.distance / 1000).toFixed(1)));
-        setRouteDurationMin(Math.round(route.duration / 60));
+        setRouteDurationMin(Math.max(1, Math.round(route.duration / 60)));
 
         const coords: [number, number][] = route.geometry.coordinates.map((c: [number, number]) => [c[1], c[0]]);
 
         if (polylineRef.current) {
           polylineRef.current.setLatLngs(coords);
-          polylineRef.current.setStyle({ color: routeColor });
+          polylineRef.current.setStyle({
+            color: routeColor,
+            weight: 6,
+            opacity: 0.9,
+            dashArray: undefined
+          });
         } else {
           polylineRef.current = L.polyline(coords, {
             color: routeColor,
@@ -227,14 +280,21 @@ export const MapPicker: React.FC<MapPickerProps> = ({
           }).addTo(map);
         }
 
-        const bounds = L.featureGroup([pickupMarkerRef.current!, destMarkerRef.current!]).getBounds();
-        map.fitBounds(bounds, { padding: [60, 60], maxZoom: 14 });
+        if (pickupMarkerRef.current && destMarkerRef.current) {
+          const bounds = L.featureGroup([pickupMarkerRef.current, destMarkerRef.current]).getBounds();
+          map.fitBounds(bounds, { padding: [60, 60], maxZoom: 14 });
+        }
+      } else {
+        throw new Error('No routes returned');
       }
-    } catch (err) {
-      console.warn('OSRM Route failed, using straight line fallback.');
-      const dist = calculateStraightDistance(currentPickup.lat, currentPickup.lng, currentDest.lat, currentDest.lng);
+    } catch (err: any) {
+      if (axios.isCancel(err) || routeCtrl.signal.aborted || seq !== routeSeqRef.current || !mapInstanceRef.current) {
+        return;
+      }
+      const dist = calculateHaversineKm(currentPickup.lat, currentPickup.lng, currentDest.lat, currentDest.lng);
+      setIsStraightLineFallback(true);
       setRouteDistanceKm(dist);
-      setRouteDurationMin(Math.round(dist * 2.5));
+      setRouteDurationMin(null);
 
       const latlngs: [number, number][] = [
         [currentPickup.lat, currentPickup.lng],
@@ -242,7 +302,12 @@ export const MapPicker: React.FC<MapPickerProps> = ({
       ];
       if (polylineRef.current) {
         polylineRef.current.setLatLngs(latlngs);
-        polylineRef.current.setStyle({ color: routeColor });
+        polylineRef.current.setStyle({
+          color: routeColor,
+          weight: 4,
+          opacity: 0.7,
+          dashArray: '8, 12'
+        });
       } else {
         polylineRef.current = L.polyline(latlngs, {
           color: routeColor,
@@ -251,8 +316,15 @@ export const MapPicker: React.FC<MapPickerProps> = ({
           dashArray: '8, 12'
         }).addTo(map);
       }
+
+      if (pickupMarkerRef.current && destMarkerRef.current) {
+        const bounds = L.featureGroup([pickupMarkerRef.current, destMarkerRef.current]).getBounds();
+        map.fitBounds(bounds, { padding: [60, 60], maxZoom: 14 });
+      }
     } finally {
-      setIsRouting(false);
+      if (seq === routeSeqRef.current) {
+        setIsRouting(false);
+      }
     }
   };
 
@@ -267,7 +339,7 @@ export const MapPicker: React.FC<MapPickerProps> = ({
 
     L.control.zoom({ position: 'topright' }).addTo(map);
 
-    tileLayerRef.current = createResilientTileLayer(map, isDark, (hasError) => {
+    tileLayerRef.current = createResilientTileLayer(map, isDarkRef.current, (hasError) => {
       setTileError(hasError);
     });
 
@@ -275,33 +347,50 @@ export const MapPicker: React.FC<MapPickerProps> = ({
 
     map.on('click', async (e: L.LeafletMouseEvent) => {
       const { lat, lng } = e.latlng;
+      const target = activeSelectionRef.current;
       let name = `Point (${lat.toFixed(4)}, ${lng.toFixed(4)})`;
+
+      if (reverseAbortRef.current) reverseAbortRef.current.abort();
+      const ctrl = new AbortController();
+      reverseAbortRef.current = ctrl;
 
       try {
         const res = await axios.get('https://nominatim.openstreetmap.org/reverse', {
-          params: { lat, lon: lng, format: 'json' }
+          params: { lat, lon: lng, format: 'json' },
+          timeout: 4000,
+          signal: ctrl.signal
         });
         name = res.data?.display_name?.split(',').slice(0, 2).join(',') || name;
-      } catch (err) {}
+      } catch {
+        // Fallback to coordinate label
+      }
+
+      if (ctrl.signal.aborted) return;
 
       const clickedPoint: LocationPoint = { name, lat, lng };
-
-      setActiveSelection((curr) => {
-        if (curr === 'pickup') {
-          setPickup(clickedPoint);
-          onPickupChange(clickedPoint);
-          return 'dest';
-        } else {
-          setDest(clickedPoint);
-          onDestChange(clickedPoint);
-          return curr;
-        }
-      });
+      if (target === 'pickup') {
+        setPickup(clickedPoint);
+        onPickupChangeRef.current(clickedPoint);
+        setActiveSelection('dest');
+      } else {
+        setDest(clickedPoint);
+        onDestChangeRef.current(clickedPoint);
+      }
     });
 
-    updateMarkersAndRoute(pickup, dest);
+    let resizeObserver: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined' && mapContainerRef.current) {
+      resizeObserver = new ResizeObserver(() => {
+        mapInstanceRef.current?.invalidateSize();
+      });
+      resizeObserver.observe(mapContainerRef.current);
+    }
 
     return () => {
+      resizeObserver?.disconnect();
+      routeAbortRef.current?.abort();
+      reverseAbortRef.current?.abort();
+      searchAbortRef.current?.abort();
       if (tileLayerRef.current) {
         tileLayerRef.current.remove();
         tileLayerRef.current = null;
@@ -324,29 +413,57 @@ export const MapPicker: React.FC<MapPickerProps> = ({
     updateMarkersAndRoute(pickup, dest);
   }, [pickup, dest]);
 
-  // Debounced search
+  // Debounced search with cache + abort handling
   useEffect(() => {
-    if (!searchQuery.trim() || searchQuery.length < 3) {
+    const trimmed = searchQuery.trim();
+    if (!trimmed || trimmed.length < 3) {
+      searchAbortRef.current?.abort();
       setSearchResults([]);
+      setSearchFeedback(null);
+      setIsSearching(false);
+      return;
+    }
+
+    const cacheKey = trimmed.toLowerCase();
+    const cached = searchCacheRef.current.get(cacheKey);
+    if (cached) {
+      setSearchResults(cached);
+      setSearchFeedback(cached.length === 0 ? 'No matching locations found.' : null);
+      setIsSearching(false);
       return;
     }
 
     const timer = setTimeout(async () => {
+      searchAbortRef.current?.abort();
+      const ctrl = new AbortController();
+      searchAbortRef.current = ctrl;
       setIsSearching(true);
+      setSearchFeedback(null);
       try {
         const res = await axios.get('https://nominatim.openstreetmap.org/search', {
-          params: { q: `${searchQuery.trim()}, Bangladesh`, format: 'json', limit: 5 },
-          timeout: 4000
+          params: { q: `${trimmed}, Bangladesh`, format: 'json', limit: 5 },
+          timeout: 4500,
+          signal: ctrl.signal
         });
-        setSearchResults(res.data || []);
-      } catch (err) {
+        const items = Array.isArray(res.data) ? res.data : [];
+        searchCacheRef.current.set(cacheKey, items);
+        setSearchResults(items);
+        setSearchFeedback(items.length === 0 ? 'No matching locations found.' : null);
+      } catch (err: any) {
+        if (axios.isCancel(err) || ctrl.signal.aborted) return;
         setSearchResults([]);
+        setSearchFeedback('Location search unavailable — click map or use hotspots.');
       } finally {
-        setIsSearching(false);
+        if (!ctrl.signal.aborted) {
+          setIsSearching(false);
+        }
       }
-    }, 600);
+    }, 550);
 
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      searchAbortRef.current?.abort();
+    };
   }, [searchQuery]);
 
   const selectSearchResult = (item: any) => {
@@ -402,26 +519,34 @@ export const MapPicker: React.FC<MapPickerProps> = ({
         const lng = pos.coords.longitude;
         let name = `My Location (${lat.toFixed(4)}, ${lng.toFixed(4)})`;
 
+        if (reverseAbortRef.current) reverseAbortRef.current.abort();
+        const ctrl = new AbortController();
+        reverseAbortRef.current = ctrl;
+
         try {
           const res = await axios.get('https://nominatim.openstreetmap.org/reverse', {
-            params: { lat, lon: lng, format: 'json' }
+            params: { lat, lon: lng, format: 'json' },
+            timeout: 4000,
+            signal: ctrl.signal
           });
           name = res.data?.display_name?.split(',').slice(0, 2).join(',') || name;
-        } catch (err) {}
+        } catch {
+          // Keep coordinate fallback label on network error or timeout
+        }
+
+        if (ctrl.signal.aborted || !mapInstanceRef.current) return;
 
         const currPoint: LocationPoint = { name, lat, lng };
 
-        if (activeSelection === 'pickup') {
+        if (activeSelectionRef.current === 'pickup') {
           setPickup(currPoint);
-          onPickupChange(currPoint);
+          onPickupChangeRef.current(currPoint);
         } else {
           setDest(currPoint);
-          onDestChange(currPoint);
+          onDestChangeRef.current(currPoint);
         }
 
-        if (mapInstanceRef.current) {
-          mapInstanceRef.current.flyTo([lat, lng], 15, { animate: true });
-        }
+        mapInstanceRef.current.flyTo([lat, lng], 15, { animate: true });
       },
       () => showToast('Unable to retrieve your current location. Please select a point on the map.', 'error')
     );
@@ -486,19 +611,25 @@ export const MapPicker: React.FC<MapPickerProps> = ({
             )}
           </div>
 
-          {searchResults.length > 0 && (
+          {(searchResults.length > 0 || searchFeedback) && (
             <div className="absolute top-full left-0 right-0 mt-2 bg-white dark:bg-[#1C2A40] border border-[#D4DAE7] dark:border-[#34445E] rounded-2xl shadow-xl z-50 overflow-hidden divide-y divide-[#D4DAE7]/50 dark:divide-[#34445E]">
-              {searchResults.map((item, idx) => (
-                <button
-                  key={idx}
-                  type="button"
-                  onClick={() => selectSearchResult(item)}
-                  className="w-full text-left px-4 py-3 hover:bg-[#DDE2FA]/30 dark:hover:bg-[#24334B] transition-colors flex items-start gap-3 cursor-pointer group"
-                >
-                  <MapPin className="w-4 h-4 text-[#626E86] dark:text-[#B0BCD0] group-hover:text-[#515FC5] dark:group-hover:text-[#818CF8] mt-0.5 shrink-0" />
-                  <span className="text-xs text-[#222B42] dark:text-[#F1F4FC] line-clamp-2 leading-snug">{item.display_name}</span>
-                </button>
-              ))}
+              {searchResults.length > 0 ? (
+                searchResults.map((item, idx) => (
+                  <button
+                    key={idx}
+                    type="button"
+                    onClick={() => selectSearchResult(item)}
+                    className="w-full text-left px-4 py-3 hover:bg-[#DDE2FA]/30 dark:hover:bg-[#24334B] transition-colors flex items-start gap-3 cursor-pointer group"
+                  >
+                    <MapPin className="w-4 h-4 text-[#626E86] dark:text-[#B0BCD0] group-hover:text-[#515FC5] dark:group-hover:text-[#818CF8] mt-0.5 shrink-0" />
+                    <span className="text-xs text-[#222B42] dark:text-[#F1F4FC] line-clamp-2 leading-snug">{item.display_name}</span>
+                  </button>
+                ))
+              ) : (
+                <div className="px-4 py-3 text-xs text-[#626E86] dark:text-[#B0BCD0]">
+                  {searchFeedback}
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -514,11 +645,12 @@ export const MapPicker: React.FC<MapPickerProps> = ({
           {routeDistanceKm !== null && (
             <div className="pointer-events-auto bg-white/95 dark:bg-[#1C2A40]/95 backdrop-blur-md px-4 py-2 rounded-2xl border border-[#D4DAE7] dark:border-[#34445E] shadow-lg text-[11px] font-bold text-[#222B42] dark:text-[#F1F4FC] flex items-center gap-3">
               <span className="flex items-center gap-1.5 text-[#515FC5] dark:text-[#818CF8]">
-                <Car className="w-3.5 h-3.5" /> {routeDistanceKm} km
+                <Car className="w-3.5 h-3.5" /> {isStraightLineFallback ? `${routeDistanceKm} km (direct)` : `${routeDistanceKm} km`}
               </span>
               <span className="w-px h-3 bg-[#D4DAE7] dark:bg-[#34445E]"></span>
               <span className="flex items-center gap-1.5 text-[#626E86] dark:text-[#B0BCD0]">
-                <Clock className="w-3.5 h-3.5" /> ~{routeDurationMin} mins
+                <Clock className="w-3.5 h-3.5" />
+                {isStraightLineFallback ? 'Road ETA unavailable' : `~${routeDurationMin} mins`}
               </span>
               {isRouting && (
                 <div className="w-3 h-3 border-2 border-[#515FC5] dark:border-[#818CF8] border-t-transparent rounded-full animate-spin"></div>
@@ -554,10 +686,11 @@ export const MapPicker: React.FC<MapPickerProps> = ({
                   <span className="text-[10px] font-black text-[#515FC5] dark:text-[#818CF8] uppercase tracking-widest">Pickup</span>
                   <button 
                     type="button" 
+                    aria-label="Clear pickup location"
                     onClick={() => { setPickup(null); onPickupChange({name: '', lat: 0, lng: 0}); }}
                     className="text-[#626E86] hover:text-rose-500 transition-colors cursor-pointer"
                   >
-                    <AlertCircle className="w-3.5 h-3.5" />
+                    <X className="w-3.5 h-3.5" />
                   </button>
                 </div>
                 <p className="text-xs font-bold text-[#222B42] dark:text-[#F1F4FC] truncate mt-0.5">{pickup.name}</p>
@@ -576,10 +709,11 @@ export const MapPicker: React.FC<MapPickerProps> = ({
                   <span className="text-[10px] font-black text-[#8175D5] dark:text-[#A78BFA] uppercase tracking-widest">Destination</span>
                   <button 
                     type="button" 
+                    aria-label="Clear destination location"
                     onClick={() => { setDest(null); onDestChange({name: '', lat: 0, lng: 0}); }}
                     className="text-[#626E86] hover:text-rose-500 transition-colors cursor-pointer"
                   >
-                    <AlertCircle className="w-3.5 h-3.5" />
+                    <X className="w-3.5 h-3.5" />
                   </button>
                 </div>
                 <p className="text-xs font-bold text-[#222B42] dark:text-[#F1F4FC] truncate mt-0.5">{dest.name}</p>
@@ -590,12 +724,18 @@ export const MapPicker: React.FC<MapPickerProps> = ({
         </div>
 
         {tileError && (
-          <div className="absolute inset-0 z-30 bg-[#111827]/40 backdrop-blur-[2px] flex items-center justify-center p-6">
-            <div className="bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 p-4 rounded-2xl shadow-2xl max-w-xs text-center space-y-2">
-              <AlertCircle className="w-8 h-8 text-amber-600 mx-auto" />
-              <p className="text-xs font-bold text-amber-900 dark:text-amber-200">Map connectivity issue</p>
-              <p className="text-[10px] text-amber-700 dark:text-amber-400">Markers and routing are still functioning, but background tiles failed to load.</p>
+          <div className="absolute bottom-3 left-3 right-3 z-30 bg-amber-50/95 dark:bg-amber-950/95 backdrop-blur-sm border border-amber-200 dark:border-amber-800 text-amber-900 dark:text-amber-200 text-[11px] px-3 py-2 rounded-xl shadow-lg flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+              <span className="truncate">Map tiles unavailable right now. Markers and presets remain interactive.</span>
             </div>
+            <button
+              type="button"
+              onClick={() => tileLayerRef.current?.retry()}
+              className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-[10px] font-bold flex items-center gap-1 shrink-0 cursor-pointer"
+            >
+              <RotateCcw className="w-3 h-3" /> Retry
+            </button>
           </div>
         )}
       </div>

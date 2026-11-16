@@ -162,7 +162,7 @@ export const Navbar: React.FC = () => {
                   <Link
                     to="/admin"
                     className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap ${
-                      isActive('/admin')
+                      location.pathname.startsWith('/admin')
                         ? 'bg-amber-600 text-white'
                         : 'text-amber-800 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/40 hover:bg-amber-100 dark:hover:bg-amber-900/60 border border-amber-200 dark:border-amber-800'
                     }`}

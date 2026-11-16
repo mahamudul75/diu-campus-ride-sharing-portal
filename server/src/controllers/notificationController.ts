@@ -129,6 +129,10 @@ export async function deleteNotification(req: AuthRequest, res: Response): Promi
     await db.query('DELETE FROM notifications WHERE id = ? AND user_id = ?', [notificationId, req.user.id]);
     res.status(200).json({ success: true, message: 'Notification removed.' });
   } catch (error: any) {
+    if (error?.code === 'ER_NO_SUCH_TABLE') {
+      res.status(503).json({ success: false, message: 'Notifications table requires Migration 002.' });
+      return;
+    }
     console.error('deleteNotification error:', error);
     res.status(500).json({ success: false, message: 'Failed to delete notification.' });
   }

@@ -129,6 +129,10 @@ export async function deleteEmergencyContact(req: AuthRequest, res: Response): P
     await db.query('DELETE FROM emergency_contacts WHERE id = ? AND user_id = ?', [contactId, req.user.id]);
     res.status(200).json({ success: true, message: 'Emergency contact removed.' });
   } catch (error: any) {
+    if (error?.code === 'ER_NO_SUCH_TABLE') {
+      res.status(503).json({ success: false, message: 'Emergency contacts require Migration 002.' });
+      return;
+    }
     console.error('deleteEmergencyContact error:', error);
     res.status(500).json({ success: false, message: 'Failed to delete emergency contact.' });
   }
@@ -341,6 +345,10 @@ export async function unblockUser(req: AuthRequest, res: Response): Promise<void
 
     res.status(200).json({ success: true, message: 'User unblocked successfully.' });
   } catch (error: any) {
+    if (error?.code === 'ER_NO_SUCH_TABLE') {
+      res.status(503).json({ success: false, message: 'User blocking requires Migration 002.' });
+      return;
+    }
     console.error('unblockUser error:', error);
     res.status(500).json({ success: false, message: 'Failed to unblock user.' });
   }

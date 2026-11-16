@@ -1,11 +1,10 @@
 import React, { useEffect, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import {
   Car,
   Search,
   PlusCircle,
   Clock,
-  Compass,
   ArrowRight,
   Sparkles,
   MapPin
@@ -20,7 +19,6 @@ import MapView from '../components/MapView.tsx';
 
 export const DashboardPage: React.FC = () => {
   const { user, isApprovedDriver, isPendingDriver } = useAuth();
-  const navigate = useNavigate();
 
   const [myRequests, setMyRequests] = useState<RideRequest[]>([]);
   const [myRides, setMyRides] = useState<Ride[]>([]);

@@ -331,11 +331,44 @@ async function runTests() {
     });
     assert(adminSelfDelete.status === 400, 'Admin blocked from deleting own account (400)');
 
+    const dupPendingApply = await fetch(`${baseUrl}/drivers/apply`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: rahatLogin.cookie },
+      body: JSON.stringify({
+        vehicle_type: 'bike',
+        vehicle_model: 'Yamaha FZS',
+        vehicle_plate: 'Dhaka Metro-HA 11-2233'
+      })
+    });
+    assert(dupPendingApply.status === 409, 'Blocks duplicate driver application while pending (409)');
+
     const approveRahat = await fetch(`${baseUrl}/admin/drivers/4/approve`, {
       method: 'PATCH',
       headers: { Origin: trustedOrigin, Cookie: adminLogin.cookie }
     });
     assert(approveRahat.status === 200, 'Admin approves pending driver Rahat (id=4)');
+
+    const doubleApproveRahat = await fetch(`${baseUrl}/admin/drivers/4/approve`, {
+      method: 'PATCH',
+      headers: { Origin: trustedOrigin, Cookie: adminLogin.cookie }
+    });
+    const rejectApprovedRahat = await fetch(`${baseUrl}/admin/drivers/4/reject`, {
+      method: 'PATCH',
+      headers: { Origin: trustedOrigin, Cookie: adminLogin.cookie }
+    });
+    const reapplyApproved = await fetch(`${baseUrl}/drivers/apply`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: rahatLogin.cookie },
+      body: JSON.stringify({
+        vehicle_type: 'bike',
+        vehicle_model: 'Yamaha FZS',
+        vehicle_plate: 'Dhaka Metro-HA 11-2233'
+      })
+    });
+    assert(
+      doubleApproveRahat.status === 409 && rejectApprovedRahat.status === 409 && reapplyApproved.status === 409,
+      'Prevents double driver approval, rejecting approved driver, and approved driver re-apply (409)'
+    );
 
     // Phase 11: Concurrency, Privacy (F17) & Seat Conservation via HTTP
     console.log('\n[Phase 11: HTTP Concurrency, Privacy F17 & Seat Invariants]');

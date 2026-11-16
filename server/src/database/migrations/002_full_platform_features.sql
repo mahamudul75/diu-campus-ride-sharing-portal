@@ -26,7 +26,7 @@ ALTER TABLE users
 
 -- 2. Extend `rides.status` enum while preserving existing values
 ALTER TABLE rides
-  MODIFY COLUMN status ENUM('scheduled', 'open', 'full', 'in_progress', 'completed', 'cancelled') NOT NULL DEFAULT 'open';
+  MODIFY COLUMN status ENUM('open','full','completed','cancelled','scheduled','in_progress') NOT NULL DEFAULT 'open';
 
 -- 3. Auth verification & password reset tokens (hashed SHA-256)
 CREATE TABLE IF NOT EXISTS auth_tokens (
@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS auth_tokens (
     ON UPDATE CASCADE,
   INDEX idx_auth_tokens_hash (token_hash),
   INDEX idx_auth_tokens_user_purpose (user_id, purpose)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 -- 4. Driver application history
 CREATE TABLE IF NOT EXISTS driver_applications (
@@ -67,7 +67,7 @@ CREATE TABLE IF NOT EXISTS driver_applications (
     ON UPDATE CASCADE,
   INDEX idx_driver_apps_user (user_id),
   INDEX idx_driver_apps_status (status)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 -- 5. Ratings & reviews (completed rides only, 1 review per directional pair per ride)
 CREATE TABLE IF NOT EXISTS reviews (
@@ -94,7 +94,7 @@ CREATE TABLE IF NOT EXISTS reviews (
   CONSTRAINT chk_reviews_rating CHECK (rating >= 1 AND rating <= 5),
   INDEX idx_reviews_reviewee (reviewee_id),
   INDEX idx_reviews_ride (ride_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 -- 6. Notifications
 CREATE TABLE IF NOT EXISTS notifications (
@@ -112,7 +112,7 @@ CREATE TABLE IF NOT EXISTS notifications (
     ON UPDATE CASCADE,
   INDEX idx_notifications_user_read (user_id, is_read),
   INDEX idx_notifications_created (created_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 -- 7. In-app conversations & messages
 CREATE TABLE IF NOT EXISTS conversations (
@@ -137,7 +137,7 @@ CREATE TABLE IF NOT EXISTS conversations (
   CONSTRAINT uq_conv_ride_passenger UNIQUE (ride_id, passenger_id),
   INDEX idx_conv_driver (driver_id),
   INDEX idx_conv_passenger (passenger_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 CREATE TABLE IF NOT EXISTS messages (
   id INT AUTO_INCREMENT PRIMARY KEY,
@@ -156,7 +156,7 @@ CREATE TABLE IF NOT EXISTS messages (
     ON UPDATE CASCADE,
   INDEX idx_messages_conv_created (conversation_id, created_at),
   INDEX idx_messages_unread (conversation_id, sender_id, is_read)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 -- 8. Safety: emergency contacts, user reports, user blocks
 CREATE TABLE IF NOT EXISTS emergency_contacts (
@@ -171,7 +171,7 @@ CREATE TABLE IF NOT EXISTS emergency_contacts (
     ON DELETE CASCADE
     ON UPDATE CASCADE,
   INDEX idx_emergency_user (user_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 CREATE TABLE IF NOT EXISTS user_reports (
   id INT AUTO_INCREMENT PRIMARY KEY,
@@ -204,7 +204,7 @@ CREATE TABLE IF NOT EXISTS user_reports (
   INDEX idx_reports_status (status),
   INDEX idx_reports_reporter (reporter_id),
   INDEX idx_reports_reported (reported_user_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 CREATE TABLE IF NOT EXISTS user_blocks (
   id INT AUTO_INCREMENT PRIMARY KEY,
@@ -222,4 +222,4 @@ CREATE TABLE IF NOT EXISTS user_blocks (
   CONSTRAINT uq_blocks_pair UNIQUE (blocker_id, blocked_id),
   INDEX idx_blocks_blocker (blocker_id),
   INDEX idx_blocks_blocked (blocked_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;

@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useCallback, useRef, ReactNode } from 'react';
+import { createContext, useContext, useState, useEffect, useCallback, useRef, ReactNode } from 'react';
 import api from '../services/api.ts';
 import { NotificationItem, ChatMessage } from '../types/index.ts';
 import { useAuth } from './AuthContext.tsx';
@@ -83,50 +83,78 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
       refreshUnreadChatCount();
     }, 25000);
 
-    let ws: WebSocket | null = null;
-    try {
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
-      wsRef.current = ws;
+    let intentionalClose = false;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let reconnectAttempts = 0;
+    const maxReconnectAttempts = 6;
 
-      ws.onmessage = (evt) => {
-        try {
-          const payload = JSON.parse(evt.data);
-          if (payload?.event === 'notification:new' && payload.notification) {
-            const incoming = payload.notification as NotificationItem;
-            setNotifications((prev) => {
-              if (prev.some((n) => n.id === incoming.id)) return prev;
-              return [incoming, ...prev];
-            });
-            setUnreadCount((c) => c + 1);
-            if (incoming.type !== 'new_message') {
-              showToast(incoming.title, 'info');
+    const connectWebSocket = () => {
+      if (intentionalClose) return;
+      try {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+        wsRef.current = ws;
+
+        ws.onopen = () => {
+          reconnectAttempts = 0;
+        };
+
+        ws.onmessage = (evt) => {
+          try {
+            const payload = JSON.parse(evt.data);
+            if (payload?.event === 'notification:new' && payload.notification) {
+              const incoming = payload.notification as NotificationItem;
+              setNotifications((prev) => {
+                if (prev.some((n) => n.id === incoming.id)) return prev;
+                return [incoming, ...prev];
+              });
+              setUnreadCount((c) => c + 1);
+              if (incoming.type !== 'new_message') {
+                showToast(incoming.title, 'info');
+              }
+            } else if (payload?.event === 'chat:message' && payload.message) {
+              setLastWsMessage({
+                conversationId: Number(payload.conversationId),
+                message: payload.message as ChatMessage
+              });
+              if (Number(payload.message.sender_id) !== user.id) {
+                setUnreadChatCount((c) => c + 1);
+              }
             }
-          } else if (payload?.event === 'chat:message' && payload.message) {
-            setLastWsMessage({
-              conversationId: Number(payload.conversationId),
-              message: payload.message as ChatMessage
-            });
-            if (Number(payload.message.sender_id) !== user.id) {
-              setUnreadChatCount((c) => c + 1);
-            }
+          } catch {
+            // Ignore malformed frame
           }
-        } catch {
-          // Ignore malformed frame
-        }
-      };
+        };
 
-      ws.onerror = () => {
-        // Polling remains active as fallback
-      };
-    } catch {
-      // WebSocket construction fallback handled by polling
-    }
+        ws.onerror = () => {
+          // Polling remains active as fallback
+        };
+
+        ws.onclose = () => {
+          if (wsRef.current === ws) {
+            wsRef.current = null;
+          }
+          if (!intentionalClose && reconnectAttempts < maxReconnectAttempts) {
+            const delayMs = Math.min(30000, 2000 * Math.pow(2, reconnectAttempts));
+            reconnectAttempts += 1;
+            reconnectTimer = setTimeout(connectWebSocket, delayMs);
+          }
+        };
+      } catch {
+        // WebSocket construction fallback handled by polling
+      }
+    };
+
+    connectWebSocket();
 
     return () => {
+      intentionalClose = true;
       clearInterval(pollTimer);
-      if (ws) {
-        ws.close();
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+      }
+      if (wsRef.current) {
+        wsRef.current.close();
         wsRef.current = null;
       }
     };
