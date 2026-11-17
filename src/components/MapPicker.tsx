@@ -636,7 +636,7 @@ export const MapPicker: React.FC<MapPickerProps> = ({
       </div>
 
       {/* Map Canvas */}
-      <div className="relative rounded-3xl overflow-hidden border border-[#D4DAE7] dark:border-[#34445E] shadow-sm bg-[#E8ECF4] dark:bg-[#111827]">
+      <div className="relative z-0 isolate rounded-3xl overflow-hidden border border-[#D4DAE7] dark:border-[#34445E] shadow-sm bg-[#E8ECF4] dark:bg-[#111827]">
         <div ref={mapContainerRef} style={{ height, width: '100%' }} className="z-10" />
 
         {/* Overlay Badges */}

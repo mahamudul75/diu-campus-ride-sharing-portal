@@ -1,7 +1,13 @@
 import type { Response } from 'express';
 import type { AuthRequest } from '../middleware/auth.ts';
 import { db } from '../config/db.ts';
-import { isNonEmptyString, isPositiveIntId, isValidPhone, sanitizePhone } from '../utils/validators.ts';
+import {
+  isNonEmptyString,
+  isPositiveIntId,
+  isValidPhone,
+  parsePaginationParams,
+  sanitizePhone
+} from '../utils/validators.ts';
 import { createNotification } from '../services/notificationService.ts';
 
 const ALLOWED_REPORT_REASONS = [
@@ -221,6 +227,11 @@ export async function getMyReports(req: AuthRequest, res: Response): Promise<voi
       return;
     }
 
+    const { limit, offset } = parsePaginationParams(req.query as Record<string, unknown>, {
+      defaultLimit: 50,
+      maxLimit: 100
+    });
+
     try {
       const [rows] = await db.query(
         `SELECT rp.id, rp.reporter_id, rp.reported_user_id, rp.ride_id, rp.reason, rp.description,
@@ -229,13 +240,30 @@ export async function getMyReports(req: AuthRequest, res: Response): Promise<voi
          FROM user_reports rp
          JOIN users u ON rp.reported_user_id = u.id
          WHERE rp.reporter_id = ?
-         ORDER BY rp.created_at DESC`,
-        [req.user.id]
+         ORDER BY rp.created_at DESC
+         LIMIT ? OFFSET ?`,
+        [req.user.id, limit + 1, offset]
       );
-      res.status(200).json({ success: true, reports: rows });
+      const rawList = (rows as any[]) || [];
+      const hasMore = rawList.length > limit;
+      const reports = hasMore ? rawList.slice(0, limit) : rawList;
+
+      res.status(200).json({
+        success: true,
+        reports,
+        pagination: {
+          limit,
+          offset,
+          has_more: hasMore
+        }
+      });
     } catch (err: any) {
       if (err?.code === 'ER_NO_SUCH_TABLE') {
-        res.status(200).json({ success: true, reports: [] });
+        res.status(200).json({
+          success: true,
+          reports: [],
+          pagination: { limit, offset, has_more: false }
+        });
         return;
       }
       throw err;
@@ -253,19 +281,41 @@ export async function getBlockedUsers(req: AuthRequest, res: Response): Promise<
       return;
     }
 
+    const { limit, offset } = parsePaginationParams(req.query as Record<string, unknown>, {
+      defaultLimit: 50,
+      maxLimit: 100
+    });
+
     try {
       const [rows] = await db.query(
         `SELECT ub.id, ub.blocked_id, ub.created_at, u.name AS blocked_name, u.student_id AS blocked_student_id
          FROM user_blocks ub
          JOIN users u ON ub.blocked_id = u.id
          WHERE ub.blocker_id = ?
-         ORDER BY ub.created_at DESC`,
-        [req.user.id]
+         ORDER BY ub.created_at DESC
+         LIMIT ? OFFSET ?`,
+        [req.user.id, limit + 1, offset]
       );
-      res.status(200).json({ success: true, blocks: rows });
+      const rawList = (rows as any[]) || [];
+      const hasMore = rawList.length > limit;
+      const blocks = hasMore ? rawList.slice(0, limit) : rawList;
+
+      res.status(200).json({
+        success: true,
+        blocks,
+        pagination: {
+          limit,
+          offset,
+          has_more: hasMore
+        }
+      });
     } catch (err: any) {
       if (err?.code === 'ER_NO_SUCH_TABLE') {
-        res.status(200).json({ success: true, blocks: [] });
+        res.status(200).json({
+          success: true,
+          blocks: [],
+          pagination: { limit, offset, has_more: false }
+        });
         return;
       }
       throw err;

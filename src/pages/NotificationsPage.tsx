@@ -4,13 +4,17 @@ import { Bell, CheckCheck, Trash2, ArrowUpRight } from 'lucide-react';
 import { useNotifications } from '../context/NotificationContext.tsx';
 import DashboardLayout from '../components/DashboardLayout.tsx';
 import EmptyState from '../components/EmptyState.tsx';
+import { isDbFlagTrue } from '../utils/boolean.ts';
 
 export const NotificationsPage: React.FC = () => {
   const navigate = useNavigate();
   const {
     notifications,
     unreadCount,
+    hasMoreNotifications,
+    loadingMoreNotifications,
     refreshNotifications,
+    loadMoreNotifications,
     markAsRead,
     markAllAsRead,
     deleteNotification
@@ -21,10 +25,16 @@ export const NotificationsPage: React.FC = () => {
     refreshNotifications();
   }, [refreshNotifications]);
 
-  const visible = filter === 'unread' ? notifications.filter((n) => !n.is_read) : notifications;
+  const visible = filter === 'unread' ? notifications.filter((n) => !isDbFlagTrue(n.is_read)) : notifications;
 
-  const handleOpen = async (id: number, link: string | null, isRead: number) => {
-    if (!isRead) {
+  useEffect(() => {
+    if (filter === 'unread' && visible.length === 0 && unreadCount > 0 && hasMoreNotifications && !loadingMoreNotifications) {
+      loadMoreNotifications();
+    }
+  }, [filter, visible.length, unreadCount, hasMoreNotifications, loadingMoreNotifications, loadMoreNotifications]);
+
+  const handleOpen = async (id: number, link: string | null, isRead: number | boolean) => {
+    if (!isDbFlagTrue(isRead)) {
       await markAsRead(id);
     }
     if (link) {
@@ -59,7 +69,7 @@ export const NotificationsPage: React.FC = () => {
                 : 'text-[#626E86] hover:text-[#222B42] dark:text-[#B0BCD0] dark:hover:text-white'
             }`}
           >
-            All ({notifications.length})
+            All ({notifications.length}{hasMoreNotifications ? '+' : ''})
           </button>
           <button
             onClick={() => setFilter('unread')}
@@ -89,7 +99,7 @@ export const NotificationsPage: React.FC = () => {
               <div
                 key={item.id}
                 className={`p-4 sm:p-5 flex items-start justify-between gap-4 transition-colors ${
-                  item.is_read ? '' : 'bg-[#DDE2FA]/40 dark:bg-[#24334B]/40'
+                  isDbFlagTrue(item.is_read) ? '' : 'bg-[#DDE2FA]/40 dark:bg-[#24334B]/40'
                 }`}
               >
                 <div
@@ -100,7 +110,7 @@ export const NotificationsPage: React.FC = () => {
                     <h3 className="text-xs sm:text-sm font-bold text-[#222B42] dark:text-[#F1F4FC]">
                       {item.title}
                     </h3>
-                    {!item.is_read && (
+                    {!isDbFlagTrue(item.is_read) && (
                       <span className="text-[10px] font-bold text-[#515FC5] dark:text-[#818CF8]">
                         · New
                       </span>
@@ -125,7 +135,7 @@ export const NotificationsPage: React.FC = () => {
                 </div>
 
                 <div className="flex items-center gap-1.5 shrink-0">
-                  {!item.is_read && (
+                  {!isDbFlagTrue(item.is_read) && (
                     <button
                       onClick={() => markAsRead(item.id)}
                       title="Mark as read"
@@ -144,6 +154,18 @@ export const NotificationsPage: React.FC = () => {
                 </div>
               </div>
             ))}
+          </div>
+        )}
+
+        {hasMoreNotifications && (
+          <div className="flex justify-center pt-1">
+            <button
+              onClick={loadMoreNotifications}
+              disabled={loadingMoreNotifications}
+              className="px-4 py-2 rounded-xl border border-[#D4DAE7] dark:border-[#34445E] bg-[#F5F7FC] dark:bg-[#1C2A40] hover:bg-[#E8ECF4] dark:hover:bg-[#24334B] text-xs font-bold text-[#515FC5] dark:text-[#818CF8] cursor-pointer disabled:opacity-50"
+            >
+              {loadingMoreNotifications ? 'Loading...' : 'Load More Notifications'}
+            </button>
           </div>
         )}
       </div>

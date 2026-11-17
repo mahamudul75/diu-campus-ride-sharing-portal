@@ -1,7 +1,7 @@
 import type { Response } from 'express';
 import type { AuthRequest } from '../middleware/auth.ts';
 import { db } from '../config/db.ts';
-import { isPositiveIntId } from '../utils/validators.ts';
+import { isPositiveIntId, parsePaginationParams } from '../utils/validators.ts';
 import { ensureUpcomingRideRemindersForUser } from '../services/notificationService.ts';
 
 export async function getMyNotifications(req: AuthRequest, res: Response): Promise<void> {
@@ -11,27 +11,57 @@ export async function getMyNotifications(req: AuthRequest, res: Response): Promi
       return;
     }
 
+    const { limit, offset } = parsePaginationParams(req.query as Record<string, unknown>, {
+      defaultLimit: 50,
+      maxLimit: 100
+    });
+
     await ensureUpcomingRideRemindersForUser(req.user.id);
 
     try {
-      const [rows] = await db.query(
-        `SELECT id, user_id, type, title, message, link, is_read, created_at
-         FROM notifications
-         WHERE user_id = ?
-         ORDER BY created_at DESC`,
-        [req.user.id]
-      );
-      const list = (rows as any[]) || [];
-      const unreadCount = list.filter((n) => !n.is_read).length;
+      const [[rows], [unreadRows]] = await Promise.all([
+        db.query(
+          `SELECT id, user_id, type, title, message, link, is_read, created_at
+           FROM notifications
+           WHERE user_id = ?
+           ORDER BY created_at DESC
+           LIMIT ? OFFSET ?`,
+          [req.user.id, limit + 1, offset]
+        ),
+        db.query(
+          `SELECT COUNT(*) AS unread_count
+           FROM notifications
+           WHERE user_id = ? AND is_read = 0`,
+          [req.user.id]
+        )
+      ]);
+
+      const rawList = (rows as any[]) || [];
+      const hasMore = rawList.length > limit;
+      const notifications = hasMore ? rawList.slice(0, limit) : rawList;
+      const unreadCount =
+        Array.isArray(unreadRows) && unreadRows.length > 0
+          ? Number((unreadRows[0] as any).unread_count || 0)
+          : 0;
 
       res.status(200).json({
         success: true,
         unread_count: unreadCount,
-        notifications: list
+        notifications,
+        pagination: {
+          limit,
+          offset,
+          has_more: hasMore
+        }
       });
     } catch (err: any) {
       if (err?.code === 'ER_NO_SUCH_TABLE') {
-        res.status(200).json({ success: true, unread_count: 0, notifications: [] });
+        res.status(200).json({
+          success: true,
+          unread_count: 0,
+          notifications: [],
+          pagination: { limit, offset, has_more: false }
+        });
         return;
       }
       throw err;

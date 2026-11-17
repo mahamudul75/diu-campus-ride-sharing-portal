@@ -232,17 +232,27 @@ app.use(errorHandler);
 const httpServer = http.createServer(app);
 initWebSocketServer(httpServer, isTrustedOrigin);
 
-setupFrontend().then(() => {
-  httpServer.listen(PORT, () => {
-    console.log(`=======================================================`);
-    console.log(` DIU CAMPUS RIDE SHARING PORTAL`);
-    console.log(` Server active on http://0.0.0.0:${PORT}`);
-    console.log(` REST API Base: http://0.0.0.0:${PORT}/api`);
-    console.log(` WebSocket Endpoint: ws://0.0.0.0:${PORT}/ws`);
-    console.log(` Environment: ${process.env.NODE_ENV || 'development'}`);
-    console.log(`=======================================================`);
-  });
+httpServer.on('error', (err) => {
+  console.error('HTTP server failed to start:', err);
+  process.exit(1);
 });
+
+setupFrontend()
+  .then(() => {
+    httpServer.listen(PORT, () => {
+      console.log(`=======================================================`);
+      console.log(` DIU CAMPUS RIDE SHARING PORTAL`);
+      console.log(` Server active on http://0.0.0.0:${PORT}`);
+      console.log(` REST API Base: http://0.0.0.0:${PORT}/api`);
+      console.log(` WebSocket Endpoint: ws://0.0.0.0:${PORT}/ws`);
+      console.log(` Environment: ${process.env.NODE_ENV || 'development'}`);
+      console.log(`=======================================================`);
+    });
+  })
+  .catch((err) => {
+    console.error('Failed to initialize frontend middleware:', err);
+    process.exit(1);
+  });
 
 let isShuttingDown = false;
 

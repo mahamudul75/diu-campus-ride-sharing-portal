@@ -84,7 +84,9 @@ CREATE TABLE rides (
   INDEX idx_rides_driver (driver_id),
   INDEX idx_rides_status (status),
   INDEX idx_rides_departure (departure_time),
-  INDEX idx_rides_fare (fare)
+  INDEX idx_rides_fare (fare),
+  INDEX idx_rides_status_departure (status, departure_time),
+  INDEX idx_rides_driver_departure (driver_id, departure_time)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ----------------------------------------------------------------------------
@@ -108,7 +110,10 @@ CREATE TABLE ride_requests (
   CONSTRAINT uq_ride_passenger UNIQUE (ride_id, passenger_id),
   INDEX idx_requests_ride (ride_id),
   INDEX idx_requests_passenger (passenger_id),
-  INDEX idx_requests_status (status)
+  INDEX idx_requests_status (status),
+  INDEX idx_requests_passenger_created (passenger_id, created_at),
+  INDEX idx_requests_passenger_status (passenger_id, status),
+  INDEX idx_requests_ride_status (ride_id, status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ----------------------------------------------------------------------------
@@ -153,7 +158,8 @@ CREATE TABLE driver_applications (
     ON DELETE SET NULL
     ON UPDATE CASCADE,
   INDEX idx_driver_apps_user (user_id),
-  INDEX idx_driver_apps_status (status)
+  INDEX idx_driver_apps_status (status),
+  INDEX idx_driver_apps_user_created (user_id, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ----------------------------------------------------------------------------
@@ -182,7 +188,9 @@ CREATE TABLE reviews (
   CONSTRAINT uq_reviews_ride_pair UNIQUE (ride_id, reviewer_id, reviewee_id),
   CONSTRAINT chk_reviews_rating CHECK (rating >= 1 AND rating <= 5),
   INDEX idx_reviews_reviewee (reviewee_id),
-  INDEX idx_reviews_ride (ride_id)
+  INDEX idx_reviews_ride (ride_id),
+  INDEX idx_reviews_reviewee_created (reviewee_id, created_at),
+  INDEX idx_reviews_reviewer_ride (reviewer_id, ride_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ----------------------------------------------------------------------------
@@ -202,7 +210,9 @@ CREATE TABLE notifications (
     ON DELETE CASCADE
     ON UPDATE CASCADE,
   INDEX idx_notifications_user_read (user_id, is_read),
-  INDEX idx_notifications_created (created_at)
+  INDEX idx_notifications_created (created_at),
+  INDEX idx_notifications_user_created (user_id, created_at),
+  INDEX idx_notifications_user_type (user_id, type)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ----------------------------------------------------------------------------
@@ -229,7 +239,9 @@ CREATE TABLE conversations (
     ON UPDATE CASCADE,
   CONSTRAINT uq_conv_ride_passenger UNIQUE (ride_id, passenger_id),
   INDEX idx_conv_driver (driver_id),
-  INDEX idx_conv_passenger (passenger_id)
+  INDEX idx_conv_passenger (passenger_id),
+  INDEX idx_conv_driver_updated (driver_id, updated_at),
+  INDEX idx_conv_passenger_updated (passenger_id, updated_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE messages (
@@ -298,7 +310,10 @@ CREATE TABLE user_reports (
     ON UPDATE CASCADE,
   INDEX idx_reports_status (status),
   INDEX idx_reports_reporter (reporter_id),
-  INDEX idx_reports_reported (reported_user_id)
+  INDEX idx_reports_reported (reported_user_id),
+  INDEX idx_reports_reporter_created (reporter_id, created_at),
+  INDEX idx_reports_status_created (status, created_at),
+  INDEX idx_reports_created (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE user_blocks (
@@ -316,5 +331,6 @@ CREATE TABLE user_blocks (
     ON UPDATE CASCADE,
   CONSTRAINT uq_blocks_pair UNIQUE (blocker_id, blocked_id),
   INDEX idx_blocks_blocker (blocker_id),
-  INDEX idx_blocks_blocked (blocked_id)
+  INDEX idx_blocks_blocked (blocked_id),
+  INDEX idx_blocks_blocker_created (blocker_id, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

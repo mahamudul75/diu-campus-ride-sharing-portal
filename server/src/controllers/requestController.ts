@@ -1,45 +1,62 @@
 import type { Response } from 'express';
 import type { AuthRequest } from '../middleware/auth.ts';
-import { db } from '../config/db.ts';
+import { db, type IDatabaseConnection } from '../config/db.ts';
 import { parseRideDateTime, toUtcIsoString } from '../utils/dateTime.ts';
-import { isPositiveIntId } from '../utils/validators.ts';
-import { areUsersBlocked, getUserExtendedFields, getUserRatingSummaries } from '../utils/dbHelpers.ts';
+import { isPositiveIntId, parsePaginationParams } from '../utils/validators.ts';
+import {
+  areUsersBlocked,
+  getUserExtendedFieldsBatch,
+  getUserRatingSummaries
+} from '../utils/dbHelpers.ts';
 import { calculateHaversineDistanceKm, estimateDurationMinutes } from '../utils/distance.ts';
-import { createNotification } from '../services/notificationService.ts';
+import { createNotification, invalidateReminderCacheForUser } from '../services/notificationService.ts';
 
 export async function createRideRequest(req: AuthRequest, res: Response): Promise<void> {
-  const conn = await db.getConnection();
+  if (!req.user) {
+    res.status(401).json({ success: false, message: 'Not authenticated.' });
+    return;
+  }
+
+  const rideId = isPositiveIntId(req.params.id);
+  if (!rideId) {
+    res.status(400).json({ success: false, message: 'Invalid ride ID.' });
+    return;
+  }
+
+  let conn: IDatabaseConnection;
   try {
-    if (!req.user) {
-      res.status(401).json({ success: false, message: 'Not authenticated.' });
-      return;
-    }
+    conn = await db.getConnection();
+  } catch (error: any) {
+    console.error('createRideRequest error:', error);
+    res.status(500).json({ success: false, message: 'Failed to submit ride request.' });
+    return;
+  }
 
-    const rideId = isPositiveIntId(req.params.id);
-    if (!rideId) {
-      res.status(400).json({ success: false, message: 'Invalid ride ID.' });
-      return;
-    }
-
+  let txActive = false;
+  try {
     await conn.beginTransaction();
+    txActive = true;
 
     const [rideRows] = await conn.query('SELECT * FROM rides WHERE id = ? FOR UPDATE', [rideId]);
     const ride = Array.isArray(rideRows) && rideRows.length > 0 ? (rideRows[0] as any) : null;
 
     if (!ride) {
       await conn.rollback();
+      txActive = false;
       res.status(404).json({ success: false, message: 'Ride not found.' });
       return;
     }
 
     if (ride.driver_id === req.user.id) {
       await conn.rollback();
+      txActive = false;
       res.status(400).json({ success: false, message: 'You cannot request your own ride.' });
       return;
     }
 
     if (await areUsersBlocked(req.user.id, Number(ride.driver_id))) {
       await conn.rollback();
+      txActive = false;
       res.status(403).json({
         success: false,
         message: 'You cannot request a ride with this user due to block settings.'
@@ -49,11 +66,13 @@ export async function createRideRequest(req: AuthRequest, res: Response): Promis
 
     if (ride.status === 'cancelled') {
       await conn.rollback();
+      txActive = false;
       res.status(400).json({ success: false, message: 'This ride has been cancelled.' });
       return;
     }
     if (ride.status === 'completed' || ride.status === 'in_progress') {
       await conn.rollback();
+      txActive = false;
       res.status(400).json({ success: false, message: `This ride is already ${ride.status.replace('_', ' ')}.` });
       return;
     }
@@ -61,12 +80,14 @@ export async function createRideRequest(req: AuthRequest, res: Response): Promis
     const depDate = parseRideDateTime(ride.departure_time);
     if (!depDate || depDate.getTime() <= Date.now()) {
       await conn.rollback();
+      txActive = false;
       res.status(400).json({ success: false, message: 'This ride has already departed.' });
       return;
     }
 
     if (ride.status === 'full' || ride.seats_available <= 0) {
       await conn.rollback();
+      txActive = false;
       res.status(400).json({ success: false, message: 'This ride is currently full.' });
       return;
     }
@@ -80,6 +101,7 @@ export async function createRideRequest(req: AuthRequest, res: Response): Promis
       const prev = existingReq[0] as any;
       if (prev.status === 'pending') {
         await conn.rollback();
+        txActive = false;
         res.status(409).json({
           success: false,
           message: 'You already have a pending request for this ride.'
@@ -88,6 +110,7 @@ export async function createRideRequest(req: AuthRequest, res: Response): Promis
       }
       if (prev.status === 'accepted') {
         await conn.rollback();
+        txActive = false;
         res.status(409).json({
           success: false,
           message: 'You are already an accepted passenger for this ride.'
@@ -99,6 +122,7 @@ export async function createRideRequest(req: AuthRequest, res: Response): Promis
         [prev.id]
       );
       await conn.commit();
+      txActive = false;
 
       await createNotification({
         userId: Number(ride.driver_id),
@@ -122,6 +146,7 @@ export async function createRideRequest(req: AuthRequest, res: Response): Promis
     );
 
     await conn.commit();
+    txActive = false;
 
     await createNotification({
       userId: Number(ride.driver_id),
@@ -137,7 +162,13 @@ export async function createRideRequest(req: AuthRequest, res: Response): Promis
       requestId: (result as any).insertId
     });
   } catch (error: any) {
-    await conn.rollback();
+    if (txActive) {
+      try {
+        await conn.rollback();
+      } catch (rollbackErr) {
+        console.error('createRideRequest rollback error:', rollbackErr);
+      }
+    }
     if (error?.code === 'ER_DUP_ENTRY') {
       res.status(409).json({ success: false, message: 'A request for this ride already exists.' });
       return;
@@ -175,6 +206,11 @@ export async function getRideRequests(req: AuthRequest, res: Response): Promise<
       return;
     }
 
+    const { limit, offset } = parsePaginationParams(req.query as Record<string, unknown>, {
+      defaultLimit: 50,
+      maxLimit: 100
+    });
+
     const [rows] = await db.query(
       `SELECT req.id, req.ride_id, req.passenger_id, req.status, req.created_at, req.updated_at,
               u.name AS passenger_name, u.email AS passenger_email, u.phone AS passenger_phone,
@@ -182,35 +218,46 @@ export async function getRideRequests(req: AuthRequest, res: Response): Promise<
        FROM ride_requests req
        JOIN users u ON req.passenger_id = u.id
        WHERE req.ride_id = ?
-       ORDER BY req.created_at DESC`,
-      [rideId]
+       ORDER BY req.created_at DESC
+       LIMIT ? OFFSET ?`,
+      [rideId, limit + 1, offset]
     );
 
-    const requestRows = rows as any[];
+    const rawRows = (rows as any[]) || [];
+    const hasMore = rawRows.length > limit;
+    const requestRows = hasMore ? rawRows.slice(0, limit) : rawRows;
     const passengerIds = requestRows.map((r) => Number(r.passenger_id));
-    const ratingsMap = await getUserRatingSummaries(passengerIds);
 
-    const enriched = await Promise.all(
-      requestRows.map(async (r) => {
-        const ext = await getUserExtendedFields(Number(r.passenger_id));
-        const rating = ratingsMap.get(Number(r.passenger_id)) || { avg_rating: null, review_count: 0 };
-        const canSeePhone =
-          r.status === 'accepted' && (ext.show_phone_to_accepted !== 0 || req.user?.role === 'admin');
-        return {
-          ...r,
-          passenger_phone: canSeePhone ? r.passenger_phone : null,
-          passenger_student_verified: ext.student_verified,
-          passenger_email_verified: ext.email_verified,
-          passenger_avatar_url: ext.avatar_url,
-          passenger_avg_rating: rating.avg_rating,
-          passenger_review_count: rating.review_count
-        };
-      })
-    );
+    const [ratingsMap, extMap] = await Promise.all([
+      getUserRatingSummaries(passengerIds),
+      getUserExtendedFieldsBatch(passengerIds, { includeAvatar: true })
+    ]);
+
+    const enriched = requestRows.map((r) => {
+      const pid = Number(r.passenger_id);
+      const ext = extMap.get(pid);
+      const rating = ratingsMap.get(pid) || { avg_rating: null, review_count: 0 };
+      const canSeePhone =
+        r.status === 'accepted' && ((ext?.show_phone_to_accepted ?? 1) !== 0 || req.user?.role === 'admin');
+      return {
+        ...r,
+        passenger_phone: canSeePhone ? r.passenger_phone : null,
+        passenger_student_verified: ext?.student_verified ?? 0,
+        passenger_email_verified: ext?.email_verified ?? 0,
+        passenger_avatar_url: ext?.avatar_url ?? null,
+        passenger_avg_rating: rating.avg_rating,
+        passenger_review_count: rating.review_count
+      };
+    });
 
     res.status(200).json({
       success: true,
-      requests: enriched
+      requests: enriched,
+      pagination: {
+        limit,
+        offset,
+        has_more: hasMore
+      }
     });
   } catch (error: any) {
     console.error('getRideRequests error:', error);
@@ -219,20 +266,30 @@ export async function getRideRequests(req: AuthRequest, res: Response): Promise<
 }
 
 export async function acceptRequest(req: AuthRequest, res: Response): Promise<void> {
-  const conn = await db.getConnection();
+  if (!req.user) {
+    res.status(401).json({ success: false, message: 'Not authenticated.' });
+    return;
+  }
+
+  const requestId = isPositiveIntId(req.params.id);
+  if (!requestId) {
+    res.status(400).json({ success: false, message: 'Invalid request ID.' });
+    return;
+  }
+
+  let conn: IDatabaseConnection;
   try {
-    if (!req.user) {
-      res.status(401).json({ success: false, message: 'Not authenticated.' });
-      return;
-    }
+    conn = await db.getConnection();
+  } catch (error: any) {
+    console.error('acceptRequest error:', error);
+    res.status(500).json({ success: false, message: 'Failed to accept ride request.' });
+    return;
+  }
 
-    const requestId = isPositiveIntId(req.params.id);
-    if (!requestId) {
-      res.status(400).json({ success: false, message: 'Invalid request ID.' });
-      return;
-    }
-
+  let txActive = false;
+  try {
     await conn.beginTransaction();
+    txActive = true;
 
     const [reqRows] = await conn.query(
       `SELECT id, ride_id, passenger_id, status FROM ride_requests WHERE id = ? FOR UPDATE`,
@@ -242,6 +299,7 @@ export async function acceptRequest(req: AuthRequest, res: Response): Promise<vo
     const request = Array.isArray(reqRows) && reqRows.length > 0 ? (reqRows[0] as any) : null;
     if (!request) {
       await conn.rollback();
+      txActive = false;
       res.status(404).json({ success: false, message: 'Request not found.' });
       return;
     }
@@ -254,18 +312,21 @@ export async function acceptRequest(req: AuthRequest, res: Response): Promise<vo
     const ride = Array.isArray(rideRows) && rideRows.length > 0 ? (rideRows[0] as any) : null;
     if (!ride) {
       await conn.rollback();
+      txActive = false;
       res.status(404).json({ success: false, message: 'Associated ride not found.' });
       return;
     }
 
     if (ride.driver_id !== req.user.id && req.user.role !== 'admin') {
       await conn.rollback();
+      txActive = false;
       res.status(403).json({ success: false, message: 'Only the driver can accept this request.' });
       return;
     }
 
     if (request.status !== 'pending') {
       await conn.rollback();
+      txActive = false;
       res.status(409).json({
         success: false,
         message: `Cannot accept a request that is already ${request.status}.`
@@ -275,6 +336,7 @@ export async function acceptRequest(req: AuthRequest, res: Response): Promise<vo
 
     if (ride.status === 'cancelled' || ride.status === 'completed') {
       await conn.rollback();
+      txActive = false;
       res.status(409).json({
         success: false,
         message: `Cannot accept request for a ride that is already ${ride.status}.`
@@ -285,6 +347,7 @@ export async function acceptRequest(req: AuthRequest, res: Response): Promise<vo
     const depDate = parseRideDateTime(ride.departure_time);
     if (!depDate || depDate.getTime() <= Date.now()) {
       await conn.rollback();
+      txActive = false;
       res.status(409).json({
         success: false,
         message: 'Cannot accept a request after the ride departure time has passed.'
@@ -294,6 +357,7 @@ export async function acceptRequest(req: AuthRequest, res: Response): Promise<vo
 
     if (ride.seats_available <= 0) {
       await conn.rollback();
+      txActive = false;
       res.status(409).json({
         success: false,
         message: 'No seats remaining on this ride to accept further passengers.'
@@ -312,6 +376,7 @@ export async function acceptRequest(req: AuthRequest, res: Response): Promise<vo
     const affectedRideRows = (rideUpdateResult as any)?.affectedRows;
     if (!affectedRideRows || affectedRideRows !== 1) {
       await conn.rollback();
+      txActive = false;
       res.status(409).json({
         success: false,
         message: 'Seat inventory conflict: all available seats have just been reserved.'
@@ -327,6 +392,7 @@ export async function acceptRequest(req: AuthRequest, res: Response): Promise<vo
     const affectedReqRows = (reqUpdateResult as any)?.affectedRows;
     if (!affectedReqRows || affectedReqRows !== 1) {
       await conn.rollback();
+      txActive = false;
       res.status(409).json({
         success: false,
         message: 'Request status conflict: request is no longer in pending status.'
@@ -335,6 +401,8 @@ export async function acceptRequest(req: AuthRequest, res: Response): Promise<vo
     }
 
     await conn.commit();
+    txActive = false;
+    invalidateReminderCacheForUser(Number(request.passenger_id));
 
     await createNotification({
       userId: Number(request.passenger_id),
@@ -349,7 +417,13 @@ export async function acceptRequest(req: AuthRequest, res: Response): Promise<vo
       message: 'Passenger request accepted! Passenger can now view your contact details.'
     });
   } catch (error: any) {
-    await conn.rollback();
+    if (txActive) {
+      try {
+        await conn.rollback();
+      } catch (rollbackErr) {
+        console.error('acceptRequest rollback error:', rollbackErr);
+      }
+    }
     console.error('acceptRequest error:', error);
     res.status(500).json({ success: false, message: 'Failed to accept ride request.' });
   } finally {
@@ -358,20 +432,30 @@ export async function acceptRequest(req: AuthRequest, res: Response): Promise<vo
 }
 
 export async function rejectRequest(req: AuthRequest, res: Response): Promise<void> {
-  const conn = await db.getConnection();
+  if (!req.user) {
+    res.status(401).json({ success: false, message: 'Not authenticated.' });
+    return;
+  }
+
+  const requestId = isPositiveIntId(req.params.id);
+  if (!requestId) {
+    res.status(400).json({ success: false, message: 'Invalid request ID.' });
+    return;
+  }
+
+  let conn: IDatabaseConnection;
   try {
-    if (!req.user) {
-      res.status(401).json({ success: false, message: 'Not authenticated.' });
-      return;
-    }
+    conn = await db.getConnection();
+  } catch (error: any) {
+    console.error('rejectRequest error:', error);
+    res.status(500).json({ success: false, message: 'Failed to reject request.' });
+    return;
+  }
 
-    const requestId = isPositiveIntId(req.params.id);
-    if (!requestId) {
-      res.status(400).json({ success: false, message: 'Invalid request ID.' });
-      return;
-    }
-
+  let txActive = false;
+  try {
     await conn.beginTransaction();
+    txActive = true;
 
     const [reqRows] = await conn.query(
       `SELECT req.id, req.ride_id, req.passenger_id, req.status, r.driver_id, r.pickup_name, r.dest_name
@@ -384,18 +468,21 @@ export async function rejectRequest(req: AuthRequest, res: Response): Promise<vo
     const request = Array.isArray(reqRows) && reqRows.length > 0 ? (reqRows[0] as any) : null;
     if (!request) {
       await conn.rollback();
+      txActive = false;
       res.status(404).json({ success: false, message: 'Request not found.' });
       return;
     }
 
     if (request.driver_id !== req.user.id && req.user.role !== 'admin') {
       await conn.rollback();
+      txActive = false;
       res.status(403).json({ success: false, message: 'Only the driver can reject this request.' });
       return;
     }
 
     if (request.status !== 'pending') {
       await conn.rollback();
+      txActive = false;
       res.status(409).json({
         success: false,
         message: `Cannot reject a request that is already ${request.status}.`
@@ -410,11 +497,13 @@ export async function rejectRequest(req: AuthRequest, res: Response): Promise<vo
 
     if ((updateResult as any)?.affectedRows !== 1) {
       await conn.rollback();
+      txActive = false;
       res.status(409).json({ success: false, message: 'Request is no longer in pending status.' });
       return;
     }
 
     await conn.commit();
+    txActive = false;
 
     await createNotification({
       userId: Number(request.passenger_id),
@@ -429,7 +518,13 @@ export async function rejectRequest(req: AuthRequest, res: Response): Promise<vo
       message: 'Ride request rejected.'
     });
   } catch (error: any) {
-    await conn.rollback();
+    if (txActive) {
+      try {
+        await conn.rollback();
+      } catch (rollbackErr) {
+        console.error('rejectRequest rollback error:', rollbackErr);
+      }
+    }
     console.error('rejectRequest error:', error);
     res.status(500).json({ success: false, message: 'Failed to reject request.' });
   } finally {
@@ -438,20 +533,30 @@ export async function rejectRequest(req: AuthRequest, res: Response): Promise<vo
 }
 
 export async function cancelRequest(req: AuthRequest, res: Response): Promise<void> {
-  const conn = await db.getConnection();
+  if (!req.user) {
+    res.status(401).json({ success: false, message: 'Not authenticated.' });
+    return;
+  }
+
+  const requestId = isPositiveIntId(req.params.id);
+  if (!requestId) {
+    res.status(400).json({ success: false, message: 'Invalid request ID.' });
+    return;
+  }
+
+  let conn: IDatabaseConnection;
   try {
-    if (!req.user) {
-      res.status(401).json({ success: false, message: 'Not authenticated.' });
-      return;
-    }
+    conn = await db.getConnection();
+  } catch (error: any) {
+    console.error('cancelRequest error:', error);
+    res.status(500).json({ success: false, message: 'Failed to cancel request.' });
+    return;
+  }
 
-    const requestId = isPositiveIntId(req.params.id);
-    if (!requestId) {
-      res.status(400).json({ success: false, message: 'Invalid request ID.' });
-      return;
-    }
-
+  let txActive = false;
+  try {
     await conn.beginTransaction();
+    txActive = true;
 
     const [reqRows] = await conn.query(
       `SELECT id, ride_id, passenger_id, status FROM ride_requests WHERE id = ? FOR UPDATE`,
@@ -461,12 +566,14 @@ export async function cancelRequest(req: AuthRequest, res: Response): Promise<vo
     const request = Array.isArray(reqRows) && reqRows.length > 0 ? (reqRows[0] as any) : null;
     if (!request) {
       await conn.rollback();
+      txActive = false;
       res.status(404).json({ success: false, message: 'Request not found.' });
       return;
     }
 
     if (request.passenger_id !== req.user.id && req.user.role !== 'admin') {
       await conn.rollback();
+      txActive = false;
       res.status(403).json({ success: false, message: 'You can only cancel your own ride requests.' });
       return;
     }
@@ -478,12 +585,14 @@ export async function cancelRequest(req: AuthRequest, res: Response): Promise<vo
     const ride = Array.isArray(rideRows) && rideRows.length > 0 ? (rideRows[0] as any) : null;
     if (!ride) {
       await conn.rollback();
+      txActive = false;
       res.status(404).json({ success: false, message: 'Associated ride not found.' });
       return;
     }
 
     if (ride.status === 'completed' || ride.status === 'cancelled') {
       await conn.rollback();
+      txActive = false;
       res.status(409).json({
         success: false,
         message: `Cannot cancel booking for a ride that is already ${ride.status}.`
@@ -493,6 +602,7 @@ export async function cancelRequest(req: AuthRequest, res: Response): Promise<vo
 
     if (request.status === 'cancelled' || request.status === 'rejected') {
       await conn.rollback();
+      txActive = false;
       res.status(409).json({
         success: false,
         message: `Request is already ${request.status}.`
@@ -508,6 +618,7 @@ export async function cancelRequest(req: AuthRequest, res: Response): Promise<vo
     );
     if ((reqUpdateResult as any)?.affectedRows !== 1) {
       await conn.rollback();
+      txActive = false;
       res.status(409).json({ success: false, message: 'Booking status conflict during cancellation.' });
       return;
     }
@@ -523,6 +634,8 @@ export async function cancelRequest(req: AuthRequest, res: Response): Promise<vo
     }
 
     await conn.commit();
+    txActive = false;
+    invalidateReminderCacheForUser(Number(request.passenger_id));
 
     await createNotification({
       userId: Number(ride.driver_id),
@@ -539,7 +652,13 @@ export async function cancelRequest(req: AuthRequest, res: Response): Promise<vo
         : 'Pending request cancelled.'
     });
   } catch (error: any) {
-    await conn.rollback();
+    if (txActive) {
+      try {
+        await conn.rollback();
+      } catch (rollbackErr) {
+        console.error('cancelRequest rollback error:', rollbackErr);
+      }
+    }
     console.error('cancelRequest error:', error);
     res.status(500).json({ success: false, message: 'Failed to cancel request.' });
   } finally {
@@ -553,6 +672,11 @@ export async function getMyRequests(req: AuthRequest, res: Response): Promise<vo
       res.status(401).json({ success: false, message: 'Not authenticated.' });
       return;
     }
+
+    const { limit, offset } = parsePaginationParams(req.query as Record<string, unknown>, {
+      defaultLimit: 50,
+      maxLimit: 100
+    });
 
     const [rows] = await db.query(
       `SELECT req.id, req.ride_id, req.passenger_id, req.status, req.created_at, req.updated_at,
@@ -568,31 +692,38 @@ export async function getMyRequests(req: AuthRequest, res: Response): Promise<vo
        JOIN rides r ON req.ride_id = r.id
        JOIN users u ON r.driver_id = u.id
        WHERE req.passenger_id = ?
-       ORDER BY req.created_at DESC`,
-      [req.user.id]
+       ORDER BY req.created_at DESC
+       LIMIT ? OFFSET ?`,
+      [req.user.id, limit + 1, offset]
     );
 
-    const requestRows = rows as any[];
+    const rawRows = (rows as any[]) || [];
+    const hasMore = rawRows.length > limit;
+    const requestRows = hasMore ? rawRows.slice(0, limit) : rawRows;
     const driverIds = requestRows.map((r) => Number(r.driver_id)).filter(Boolean);
-    const ratingMap = await getUserRatingSummaries(driverIds);
+    const rideIds = Array.from(new Set(requestRows.map((r) => Number(r.ride_id)).filter(Boolean)));
 
-    let reviewedRideIds = new Set<number>();
-    try {
-      const [revRows] = await db.query(
-        'SELECT ride_id FROM reviews WHERE reviewer_id = ?',
-        [req.user.id]
-      );
-      if (Array.isArray(revRows)) {
-        reviewedRideIds = new Set((revRows as any[]).map((x) => Number(x.ride_id)));
-      }
-    } catch (err: any) {
-      if (err?.code !== 'ER_NO_SUCH_TABLE') throw err;
-    }
-
-    const extCache = new Map<number, Awaited<ReturnType<typeof getUserExtendedFields>>>();
-    for (const did of new Set(driverIds)) {
-      extCache.set(did, await getUserExtendedFields(did));
-    }
+    const [ratingMap, extCache, reviewedRideIds] = await Promise.all([
+      getUserRatingSummaries(driverIds),
+      getUserExtendedFieldsBatch(driverIds, { includeAvatar: false }),
+      (async () => {
+        const set = new Set<number>();
+        if (rideIds.length === 0) return set;
+        try {
+          const ridePlaceholders = rideIds.map(() => '?').join(', ');
+          const [revRows] = await db.query(
+            `SELECT ride_id FROM reviews WHERE reviewer_id = ? AND ride_id IN (${ridePlaceholders})`,
+            [req.user!.id, ...rideIds]
+          );
+          if (Array.isArray(revRows)) {
+            for (const x of revRows as any[]) set.add(Number(x.ride_id));
+          }
+        } catch (err: any) {
+          if (err?.code !== 'ER_NO_SUCH_TABLE') throw err;
+        }
+        return set;
+      })()
+    ]);
 
     const safeRequests = requestRows.map((r) => {
       const distKm =
@@ -620,7 +751,12 @@ export async function getMyRequests(req: AuthRequest, res: Response): Promise<vo
 
     res.status(200).json({
       success: true,
-      requests: safeRequests
+      requests: safeRequests,
+      pagination: {
+        limit,
+        offset,
+        has_more: hasMore
+      }
     });
   } catch (error: any) {
     console.error('getMyRequests error:', error);

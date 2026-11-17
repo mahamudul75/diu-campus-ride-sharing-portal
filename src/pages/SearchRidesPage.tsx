@@ -33,9 +33,12 @@ export const SearchRidesPage: React.FC = () => {
 
   const [rides, setRides] = useState<Ride[]>([]);
   const [loading, setLoading] = useState(true);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [selectedRide, setSelectedRide] = useState<Ride | null>(null);
   const [viewMode, setViewMode] = useState<'split' | 'list' | 'map'>('split');
   const [tileError, setTileError] = useState(false);
+  const fetchSeqRef = useRef(0);
 
   // Leaflet map refs
   const mapContainerRef = useRef<HTMLDivElement>(null);
@@ -43,10 +46,18 @@ export const SearchRidesPage: React.FC = () => {
   const markersLayerRef = useRef<L.LayerGroup | null>(null);
   const tileLayerRef = useRef<ResilientTileLayerHandle | null>(null);
 
-  const fetchRides = async () => {
-    setLoading(true);
+  const fetchRides = async (append = false) => {
+    const seq = ++fetchSeqRef.current;
+    if (append) {
+      setLoadingMore(true);
+    } else {
+      setLoading(true);
+    }
     try {
-      const params: any = {};
+      const params: any = {
+        limit: 50,
+        offset: append ? rides.length : 0
+      };
       if (pickup.trim()) params.pickup = pickup.trim();
       if (destination.trim()) params.destination = destination.trim();
       if (date) {
@@ -65,18 +76,33 @@ export const SearchRidesPage: React.FC = () => {
       if (vehicleType) params.vehicle_type = vehicleType;
 
       const res = await api.get('/rides', { params });
+      if (seq !== fetchSeqRef.current) return;
       if (res.data?.success) {
-        setRides(res.data.rides || []);
+        const incoming: Ride[] = res.data.rides || [];
+        if (append) {
+          setRides((prev) => {
+            const seen = new Set(prev.map((r) => r.id));
+            return [...prev, ...incoming.filter((r) => !seen.has(r.id))];
+          });
+        } else {
+          setRides(incoming);
+        }
+        setHasMore(Boolean(res.data.pagination?.has_more) && incoming.length > 0);
       }
     } catch (err) {
-      console.warn('Search rides error:', err);
+      if (seq === fetchSeqRef.current) {
+        console.warn('Search rides error:', err);
+      }
     } finally {
-      setLoading(false);
+      if (seq === fetchSeqRef.current) {
+        setLoading(false);
+        setLoadingMore(false);
+      }
     }
   };
 
   useEffect(() => {
-    fetchRides();
+    fetchRides(false);
   }, [searchParams]);
 
   const handleFilterSubmit = (e: React.FormEvent) => {
@@ -515,7 +541,7 @@ export const SearchRidesPage: React.FC = () => {
               <>
                 <div className="flex items-center justify-between px-1 sticky top-0 bg-[#F1F3F8] dark:bg-[#111827] py-2 z-10">
                   <span className="text-xs font-bold text-[#66738A] dark:text-[#B4C0D3] uppercase tracking-wider">
-                    {rides.length} rides available
+                    {rides.length}{hasMore ? '+' : ''} rides available
                   </span>
                   <span className="text-[10px] text-[#66738A] dark:text-[#B4C0D3]">Click card to focus map</span>
                 </div>
@@ -530,6 +556,17 @@ export const SearchRidesPage: React.FC = () => {
                     <RideCard ride={ride} />
                   </div>
                 ))}
+                {hasMore && (
+                  <div className="flex justify-center pt-1 pb-2">
+                    <button
+                      onClick={() => fetchRides(true)}
+                      disabled={loadingMore}
+                      className="px-4 py-2 rounded-xl border border-[#DCE2EC] dark:border-[#34445D] bg-[#FFFFFF] dark:bg-[#1B2940] hover:bg-[#F8F9FD] dark:hover:bg-[#243750] text-xs font-bold text-[#4F5FC9] dark:text-[#818CF8] cursor-pointer disabled:opacity-50"
+                    >
+                      {loadingMore ? 'Loading...' : 'Load More Rides'}
+                    </button>
+                  </div>
+                )}
               </>
             )}
           </div>
@@ -551,7 +588,7 @@ export const SearchRidesPage: React.FC = () => {
                 {rides.length === 0 ? 'Campus Hub' : 'Interactive Route View'}
               </span>
             </div>
-            <div className="relative rounded-xl overflow-hidden border border-[#DCE2EC] dark:border-[#34445D] shadow-inner">
+            <div className="relative z-0 isolate rounded-xl overflow-hidden border border-[#DCE2EC] dark:border-[#34445D] shadow-inner">
               <div
                 ref={mapContainerRef}
                 style={{ height: viewMode === 'split' ? '720px' : '800px', width: '100%' }}

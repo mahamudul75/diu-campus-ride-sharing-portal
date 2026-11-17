@@ -63,3 +63,43 @@ export function isValidCoordinate(lat: unknown, lng: unknown): { lat: number; ln
   return { lat: nLat, lng: nLng };
 }
 
+export function isTruthyDbFlag(value: unknown): boolean {
+  return value === true || value === 1 || value === '1';
+}
+
+export interface PaginationParams {
+  limit: number;
+  offset: number;
+}
+
+export function parsePaginationParams(
+  query: Record<string, unknown> | undefined,
+  options?: { defaultLimit?: number; maxLimit?: number }
+): PaginationParams {
+  const defaultLimit = options?.defaultLimit ?? 50;
+  const maxLimit = options?.maxLimit ?? 100;
+
+  let limit = defaultLimit;
+  if (query && query.limit !== undefined && String(query.limit).trim() !== '') {
+    const rawLimit = Number(query.limit);
+    if (Number.isInteger(rawLimit) && rawLimit >= 1) {
+      limit = Math.min(rawLimit, maxLimit);
+    }
+  }
+
+  let offset = 0;
+  if (query && query.offset !== undefined && String(query.offset).trim() !== '') {
+    const rawOffset = Number(query.offset);
+    if (Number.isInteger(rawOffset) && rawOffset >= 0) {
+      offset = Math.min(rawOffset, 100000);
+    }
+  } else if (query && query.page !== undefined && String(query.page).trim() !== '') {
+    const rawPage = Number(query.page);
+    if (Number.isInteger(rawPage) && rawPage >= 1) {
+      offset = Math.min((rawPage - 1) * limit, 100000);
+    }
+  }
+
+  return { limit, offset };
+}
+

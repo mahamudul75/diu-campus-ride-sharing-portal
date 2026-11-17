@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { ShieldAlert, CheckCircle2 } from 'lucide-react';
 import api from '../services/api.ts';
 import { UserReport, ReportStatus } from '../types/index.ts';
@@ -8,12 +8,16 @@ import StatusBadge from '../components/StatusBadge.tsx';
 import Spinner from '../components/Spinner.tsx';
 import EmptyState from '../components/EmptyState.tsx';
 import Modal from '../components/Modal.tsx';
+import { isDbFlagTrue } from '../utils/boolean.ts';
 
 export const AdminReportsPage: React.FC = () => {
   const { showToast } = useToast();
   const [reports, setReports] = useState<UserReport[]>([]);
   const [loading, setLoading] = useState(true);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [statusFilter, setStatusFilter] = useState<'all' | ReportStatus>('all');
+  const fetchSeqRef = useRef(0);
 
   // Review Modal
   const [activeReport, setActiveReport] = useState<UserReport | null>(null);
@@ -22,22 +26,50 @@ export const AdminReportsPage: React.FC = () => {
   const [blockUser, setBlockUser] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  const fetchReports = async () => {
+  const fetchReports = async (append = false, preserveCount?: number) => {
+    const seq = ++fetchSeqRef.current;
+    if (append) {
+      setLoadingMore(true);
+    } else {
+      setLoading(true);
+    }
     try {
-      const res = await api.get('/admin/reports');
+      const limit = append ? 100 : Math.min(200, Math.max(100, preserveCount || 100));
+      const res = await api.get('/admin/reports', {
+        params: {
+          status: statusFilter === 'all' ? undefined : statusFilter,
+          limit,
+          offset: append ? reports.length : 0
+        }
+      });
+      if (seq !== fetchSeqRef.current) return;
       if (res.data?.success) {
-        setReports(res.data.reports || []);
+        const incoming: UserReport[] = res.data.reports || [];
+        if (append) {
+          setReports((prev) => {
+            const seen = new Set(prev.map((rp) => rp.id));
+            return [...prev, ...incoming.filter((rp) => !seen.has(rp.id))];
+          });
+        } else {
+          setReports(incoming);
+        }
+        setHasMore(Boolean(res.data.pagination?.has_more) && incoming.length > 0);
       }
     } catch (err) {
-      console.warn('Failed to fetch reports:', err);
+      if (seq === fetchSeqRef.current) {
+        console.warn('Failed to fetch reports:', err);
+      }
     } finally {
-      setLoading(false);
+      if (seq === fetchSeqRef.current) {
+        setLoading(false);
+        setLoadingMore(false);
+      }
     }
   };
 
   useEffect(() => {
-    fetchReports();
-  }, []);
+    fetchReports(false);
+  }, [statusFilter]);
 
   const openReviewModal = (report: UserReport) => {
     setActiveReport(report);
@@ -60,7 +92,7 @@ export const AdminReportsPage: React.FC = () => {
       if (res.data?.success) {
         showToast(res.data.message || 'Report updated.', 'success');
         setActiveReport(null);
-        fetchReports();
+        fetchReports(false, reports.length);
       }
     } catch (err: any) {
       showToast(err.response?.data?.message || 'Failed to update report.', 'error');
@@ -119,7 +151,7 @@ export const AdminReportsPage: React.FC = () => {
                         Reported: {rp.reported_user_name} ({rp.reported_student_id})
                       </span>
                       <StatusBadge status={rp.status} size="sm" />
-                      {rp.reported_is_blocked === 1 && (
+                      {isDbFlagTrue(rp.reported_is_blocked) && (
                         <span className="text-[11px] font-bold text-rose-600 dark:text-rose-400">
                           · Account Suspended
                         </span>
@@ -156,6 +188,17 @@ export const AdminReportsPage: React.FC = () => {
                 )}
               </div>
             ))}
+            {hasMore && (
+              <div className="flex justify-center pt-1">
+                <button
+                  onClick={() => fetchReports(true)}
+                  disabled={loadingMore}
+                  className="px-4 py-2 rounded-xl border border-[#D4DAE7] dark:border-[#34445E] bg-[#F5F7FC] dark:bg-[#1C2A40] hover:bg-[#E8ECF4] dark:hover:bg-[#24334B] text-xs font-bold text-[#515FC5] dark:text-[#818CF8] cursor-pointer disabled:opacity-50"
+                >
+                  {loadingMore ? 'Loading...' : 'Load More Reports'}
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -202,7 +245,7 @@ export const AdminReportsPage: React.FC = () => {
             />
           </div>
 
-          {activeReport?.reported_is_blocked !== 1 && (
+          {!isDbFlagTrue(activeReport?.reported_is_blocked) && (
             <label className="flex items-center gap-2 p-3 bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-800 rounded-xl cursor-pointer">
               <input
                 type="checkbox"

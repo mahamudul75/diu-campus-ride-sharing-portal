@@ -21,6 +21,9 @@ export const AdminDriverApprovalsPage: React.FC = () => {
   const { showToast } = useToast();
   const [pendingDrivers, setPendingDrivers] = useState<UserModel[]>([]);
   const [loading, setLoading] = useState(true);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [approvingId, setApprovingId] = useState<number | null>(null);
 
   // Rejection modal
   const [selectedDriver, setSelectedDriver] = useState<UserModel | null>(null);
@@ -28,32 +31,51 @@ export const AdminDriverApprovalsPage: React.FC = () => {
   const [rejectNote, setRejectNote] = useState('');
   const [processing, setProcessing] = useState(false);
 
-  const fetchPendingDrivers = async () => {
+  const fetchPendingDrivers = async (append = false, preserveCount?: number) => {
+    if (append) {
+      setLoadingMore(true);
+    }
     try {
-      const res = await api.get('/admin/drivers/pending');
+      const limit = append ? 100 : Math.min(200, Math.max(100, preserveCount || 100));
+      const res = await api.get('/admin/drivers/pending', {
+        params: { limit, offset: append ? pendingDrivers.length : 0 }
+      });
       if (res.data?.success) {
-        setPendingDrivers(res.data.drivers || []);
+        const incoming: UserModel[] = res.data.drivers || [];
+        if (append) {
+          setPendingDrivers((prev) => {
+            const seen = new Set(prev.map((d) => d.id));
+            return [...prev, ...incoming.filter((d) => !seen.has(d.id))];
+          });
+        } else {
+          setPendingDrivers(incoming);
+        }
+        setHasMore(Boolean(res.data.pagination?.has_more) && incoming.length > 0);
       }
     } catch (err) {
       console.warn('Failed to fetch pending drivers:', err);
     } finally {
       setLoading(false);
+      setLoadingMore(false);
     }
   };
 
   useEffect(() => {
-    fetchPendingDrivers();
+    fetchPendingDrivers(false);
   }, []);
 
   const handleApprove = async (driverId: number, name: string) => {
+    setApprovingId(driverId);
     try {
       const res = await api.patch(`/admin/drivers/${driverId}/approve`);
       if (res.data?.success) {
         showToast(`${name} approved as driver.`, 'success');
-        fetchPendingDrivers();
+        fetchPendingDrivers(false, pendingDrivers.length);
       }
     } catch (err: any) {
       showToast(err.response?.data?.message || 'Approval failed.', 'error');
+    } finally {
+      setApprovingId(null);
     }
   };
 
@@ -69,7 +91,7 @@ export const AdminDriverApprovalsPage: React.FC = () => {
         setShowRejectModal(false);
         setSelectedDriver(null);
         setRejectNote('');
-        fetchPendingDrivers();
+        fetchPendingDrivers(false, pendingDrivers.length);
       }
     } catch (err: any) {
       showToast(err.response?.data?.message || 'Rejection failed.', 'error');
@@ -85,7 +107,7 @@ export const AdminDriverApprovalsPage: React.FC = () => {
       subtitle="Verify student driver applications, inspect vehicle model and plates."
       actions={
         <span className="px-3 py-1 rounded-xl bg-amber-50 dark:bg-amber-950/50 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-800 text-xs font-bold">
-          {pendingDrivers.length} Pending
+          {pendingDrivers.length}{hasMore ? '+' : ''} Pending
         </span>
       }
     >
@@ -109,6 +131,7 @@ export const AdminDriverApprovalsPage: React.FC = () => {
             }
           />
         ) : (
+          <>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {pendingDrivers.map((driver) => {
               const isBike = driver.vehicle_type === 'bike';
@@ -195,15 +218,28 @@ export const AdminDriverApprovalsPage: React.FC = () => {
                     </button>
                     <button
                       onClick={() => handleApprove(driver.id, driver.name)}
-                      className="py-2 px-3 rounded-xl bg-[#515FC5] hover:bg-[#434FA8] dark:bg-[#818CF8] dark:hover:bg-[#6366F1] text-white text-xs font-bold shadow-xs transition-colors cursor-pointer flex items-center justify-center gap-1.5"
+                      disabled={approvingId === driver.id}
+                      className="py-2 px-3 rounded-xl bg-[#515FC5] hover:bg-[#434FA8] dark:bg-[#818CF8] dark:hover:bg-[#6366F1] text-white text-xs font-bold shadow-xs transition-colors cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-50"
                     >
-                      <CheckCircle2 className="w-4 h-4" /> Approve
+                      <CheckCircle2 className="w-4 h-4" /> {approvingId === driver.id ? 'Approving...' : 'Approve'}
                     </button>
                   </div>
                 </div>
               );
             })}
           </div>
+          {hasMore && (
+            <div className="flex justify-center">
+              <button
+                onClick={() => fetchPendingDrivers(true)}
+                disabled={loadingMore}
+                className="px-4 py-2 rounded-xl border border-[#D4DAE7] dark:border-[#34445E] bg-[#F5F7FC] dark:bg-[#1C2A40] hover:bg-[#E8ECF4] dark:hover:bg-[#24334B] text-xs font-bold text-[#515FC5] dark:text-[#818CF8] cursor-pointer disabled:opacity-50"
+              >
+                {loadingMore ? 'Loading...' : 'Load More Pending Drivers'}
+              </button>
+            </div>
+          )}
+        </>
         )}
       </div>
 

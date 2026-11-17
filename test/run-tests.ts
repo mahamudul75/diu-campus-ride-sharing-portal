@@ -10,13 +10,39 @@ import cookieParser from 'cookie-parser';
 import cors from 'cors';
 import helmet from 'helmet';
 import http from 'http';
+import net from 'net';
+import fs from 'fs';
+import path from 'path';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
-import { db, enableIsolatedTestMemoryDb, resetDbPoolForTesting } from '../server/src/config/db.ts';
+import {
+  db,
+  enableIsolatedTestMemoryDb,
+  resetDbPoolForTesting,
+  addTestMessageRecordForTesting
+} from '../server/src/config/db.ts';
 import apiRouter from '../server/src/routes/index.ts';
+import { getConversations } from '../server/src/controllers/chatController.ts';
 import { generateToken } from '../server/src/utils/jwt.ts';
-import { isValidStudentId, isValidDiuEmail } from '../server/src/utils/validators.ts';
+import { isValidStudentId, isValidDiuEmail, isTruthyDbFlag } from '../server/src/utils/validators.ts';
+import {
+  isValidDiuEmail as isFrontendValidDiuEmail,
+  isValidBdPhone as isFrontendValidBdPhone,
+  isValidRideCoordinate
+} from '../src/utils/validators.ts';
+import { shouldIncrementUnreadChatCount } from '../src/utils/chatUnread.ts';
+import { isDbFlagTrue, isDbFlagNotFalse } from '../src/utils/boolean.ts';
 import { validateAvatarDataUrl } from '../server/src/utils/avatar.ts';
+import { getUserRatingSummaries } from '../server/src/utils/dbHelpers.ts';
+import {
+  sendTransactionalEmail,
+  setSmtpTransporterForTesting,
+  resetSmtpTransporterForTesting
+} from '../server/src/utils/mailer.ts';
+import {
+  ensureUpcomingRideRemindersForUser,
+  resetReminderCheckCacheForTesting
+} from '../server/src/services/notificationService.ts';
 import {
   parseRideDateTime,
   formatDateToMySqlUtc,
@@ -985,6 +1011,1018 @@ async function runTests() {
         typeof adminStatsExpanded.stats?.ride_completion_rate === 'number' &&
         adminStatsExpanded.stats?.verified_students >= 1,
       'Admin report resolution, ride moderation & expanded analytics KPIs succeed'
+    );
+
+    // =========================================================================
+    // Phase 17: Regression Tests for Phase 2 Critical Bug Fixes
+    // =========================================================================
+    console.log('\n[Phase 17: Phase 2 Bug Fixes & Regression Tests]');
+
+    // 1. /api/live bypasses global rate limiter & works independently of DB readiness
+    const liveRes = await fetch(`${baseUrl}/live`);
+    const liveJson: any = await liveRes.json();
+    const ridesForHeaderCheck = await fetch(`${baseUrl}/rides`);
+    assert(
+      liveRes.status === 200 &&
+        liveJson.status === 'ok' &&
+        !liveRes.headers.has('ratelimit') &&
+        ridesForHeaderCheck.headers.has('ratelimit'),
+      '/api/live bypasses apiGeneralLimiter and responds ok independently of DB guard'
+    );
+
+    // 2. Auth & ID validation happen BEFORE db.getConnection()
+    let getConnCalls = 0;
+    const origGetConnection = db.getConnection.bind(db);
+    (db as any).getConnection = async () => {
+      getConnCalls++;
+      return origGetConnection();
+    };
+    try {
+      const invalidChecks = await Promise.all([
+        fetch(`${baseUrl}/rides/abc`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: driverLogin.cookie },
+          body: JSON.stringify({ fare: 120 })
+        }),
+        fetch(`${baseUrl}/rides/abc/status`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: driverLogin.cookie },
+          body: JSON.stringify({ status: 'open' })
+        }),
+        fetch(`${baseUrl}/rides/1/status`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: driverLogin.cookie },
+          body: JSON.stringify({ status: 'invalid_state' })
+        }),
+        fetch(`${baseUrl}/rides/abc/cancel`, {
+          method: 'PATCH',
+          headers: { Origin: trustedOrigin, Cookie: driverLogin.cookie }
+        }),
+        fetch(`${baseUrl}/rides/abc/complete`, {
+          method: 'PATCH',
+          headers: { Origin: trustedOrigin, Cookie: driverLogin.cookie }
+        }),
+        fetch(`${baseUrl}/rides/abc/requests`, {
+          method: 'POST',
+          headers: { Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie }
+        }),
+        fetch(`${baseUrl}/requests/abc/accept`, {
+          method: 'PATCH',
+          headers: { Origin: trustedOrigin, Cookie: driverLogin.cookie }
+        }),
+        fetch(`${baseUrl}/requests/abc/reject`, {
+          method: 'PATCH',
+          headers: { Origin: trustedOrigin, Cookie: driverLogin.cookie }
+        }),
+        fetch(`${baseUrl}/requests/abc/cancel`, {
+          method: 'PATCH',
+          headers: { Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie }
+        }),
+        fetch(`${baseUrl}/admin/rides/abc/moderate`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: adminLogin.cookie },
+          body: JSON.stringify({ reason: 'Invalid id test' })
+        })
+      ]);
+      assert(
+        invalidChecks.every((r) => r.status === 400) && getConnCalls === 0,
+        'Invalid IDs/statuses reject with 400 before acquiring any DB connection'
+      );
+    } finally {
+      (db as any).getConnection = origGetConnection;
+    }
+
+    // 3. Unsafe transaction rollback failure never masks original error & always releases connection
+    const doubleErrorState: { released: boolean } = { released: false };
+    const resetReleaseFlag = () => {
+      doubleErrorState.released = false;
+    };
+    (db as any).getConnection = async () => ({
+      beginTransaction: async () => {},
+      query: async () => {
+        throw new Error('Simulated primary SQL failure');
+      },
+      execute: async () => {
+        throw new Error('Simulated primary SQL failure');
+      },
+      commit: async () => {},
+      rollback: async () => {
+        throw new Error('Simulated secondary rollback failure');
+      },
+      release: () => {
+        doubleErrorState.released = true;
+      }
+    });
+    try {
+      const rollbackErrRes = await fetch(`${baseUrl}/requests/1/accept`, {
+        method: 'PATCH',
+        headers: { Origin: trustedOrigin, Cookie: driverLogin.cookie }
+      });
+      const rollbackErrJson: any = await rollbackErrRes.json();
+      assert(
+        rollbackErrRes.status === 500 &&
+          rollbackErrJson.success === false &&
+          doubleErrorState.released === true,
+        'Rollback failure does not cause unhandled rejection or connection leak in requestController'
+      );
+
+      resetReleaseFlag();
+      const adminRollbackErrRes = await fetch(`${baseUrl}/admin/rides/1/moderate`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: adminLogin.cookie },
+        body: JSON.stringify({ reason: 'Rollback safety check' })
+      });
+      assert(
+        adminRollbackErrRes.status === 500 && doubleErrorState.released === true,
+        'Rollback failure does not cause unhandled rejection or connection leak in adminController'
+      );
+    } finally {
+      (db as any).getConnection = origGetConnection;
+    }
+
+    // 4. Frontend/Backend Registration Email & Phone Validator Parity
+    assert(
+      isFrontendValidDiuEmail('student@diu.edu.bd') === true &&
+        isFrontendValidDiuEmail('student@s.diu.edu.bd') === true &&
+        isFrontendValidDiuEmail('attacker@fakediu.edu.bd') === false &&
+        isFrontendValidDiuEmail('@diu.edu.bd') === false,
+      'Frontend DIU email validation strictly rejects spoofed domains like @fakediu.edu.bd'
+    );
+    assert(
+      isFrontendValidBdPhone('01712345678') === true &&
+        isFrontendValidBdPhone('+8801812345678') === true &&
+        isFrontendValidBdPhone('01234567890') === false &&
+        isFrontendValidBdPhone('12345') === false,
+      'Frontend Bangladesh phone validation matches backend regex rules'
+    );
+
+    // 5. PostRidePage finite coordinate validation & bike seat limits aligned with backend (1-8)
+    assert(
+      isValidRideCoordinate(23.8768, 90.3202) === true &&
+        isValidRideCoordinate(0, 90.3202) === true &&
+        isValidRideCoordinate(0, 0) === false &&
+        isValidRideCoordinate(NaN, 90.3) === false &&
+        isValidRideCoordinate(Infinity, 90.3) === false &&
+        isValidRideCoordinate(95, 90.3) === false &&
+        isValidRideCoordinate(23.8, -185) === false,
+      'Coordinate validator enforces Number.isFinite, geographic bounds, and cleared (0,0) rejection'
+    );
+
+    const bikeMultiSeatRes = await fetch(`${baseUrl}/rides`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: driverLogin.cookie },
+      body: JSON.stringify({
+        pickup_name: 'DIU Gate Bike Test',
+        pickup_lat: 23.8768,
+        pickup_lng: 90.3202,
+        dest_name: 'Mirpur Bike Dest',
+        dest_lat: 23.8069,
+        dest_lng: 90.3687,
+        departure_time: new Date(Date.now() + 8 * 3600000).toISOString(),
+        fare: 90,
+        seats_total: 2,
+        vehicle_type: 'bike'
+      })
+    });
+    const bikeOverSeatRes = await fetch(`${baseUrl}/rides`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: driverLogin.cookie },
+      body: JSON.stringify({
+        pickup_name: 'DIU Gate Bike Invalid',
+        pickup_lat: 23.8768,
+        pickup_lng: 90.3202,
+        dest_name: 'Mirpur Bike Dest',
+        dest_lat: 23.8069,
+        dest_lng: 90.3687,
+        departure_time: new Date(Date.now() + 8 * 3600000).toISOString(),
+        fare: 90,
+        seats_total: 9,
+        vehicle_type: 'bike'
+      })
+    });
+    assert(
+      bikeMultiSeatRes.status === 201 && bikeOverSeatRes.status === 400,
+      'Bike ride creation enforces 1-8 seat alignment cleanly with frontend PostRidePage'
+    );
+
+    // 6. Active conversation unreadChatCount suppression
+    assert(
+      shouldIncrementUnreadChatCount({
+        currentUserId: 5,
+        senderId: 5,
+        incomingConversationId: 10,
+        activeConversationId: null
+      }) === false &&
+        shouldIncrementUnreadChatCount({
+          currentUserId: 5,
+          senderId: 2,
+          incomingConversationId: 10,
+          activeConversationId: 10
+        }) === false &&
+        shouldIncrementUnreadChatCount({
+          currentUserId: 5,
+          senderId: 2,
+          incomingConversationId: 11,
+          activeConversationId: 10
+        }) === true &&
+        shouldIncrementUnreadChatCount({
+          currentUserId: 5,
+          senderId: 2,
+          incomingConversationId: 10,
+          activeConversationId: null
+        }) === true,
+      'Suppresses unreadChatCount increment while viewing active conversation and counts others'
+    );
+
+    // 7. TINYINT(1) boolean normalization helpers (frontend & backend)
+    assert(
+      isDbFlagTrue(1) === true &&
+        isDbFlagTrue('1') === true &&
+        isDbFlagTrue(true) === true &&
+        isDbFlagTrue(0) === false &&
+        isDbFlagTrue('0') === false &&
+        isDbFlagTrue(false) === false &&
+        isDbFlagTrue(null) === false &&
+        isDbFlagTrue(undefined) === false &&
+        isDbFlagNotFalse('0', true) === false &&
+        isDbFlagNotFalse(false, true) === false &&
+        isDbFlagNotFalse(0, true) === false &&
+        isDbFlagNotFalse(undefined, true) === true &&
+        isTruthyDbFlag('0') === false &&
+        isTruthyDbFlag(true) === true,
+      'TINYINT(1) boolean normalization handles 0/1, "0"/"1", true/false, null/undefined safely'
+    );
+
+    // -----------------------------------------------------------------------
+    // PHASE 18: Backend & DB Performance Optimization Regression Tests (Phase 3)
+    // -----------------------------------------------------------------------
+    console.log('\n[Phase 18] Phase 3 Backend & Database Performance Optimizations');
+
+    async function captureQueries<T>(fn: () => Promise<T>): Promise<{ result: T; queries: Array<{ sql: string; params: any[] }> }> {
+      const origQuery = db.query.bind(db);
+      const queries: Array<{ sql: string; params: any[] }> = [];
+      (db as any).query = async (sql: string, params?: any[]) => {
+        queries.push({ sql: String(sql).replace(/\s+/g, ' ').trim(), params: params || [] });
+        return origQuery(sql, params);
+      };
+      try {
+        const result = await fn();
+        return { result, queries };
+      } finally {
+        (db as any).query = origQuery;
+      }
+    }
+
+    // 1. Auth middleware single-query & no avatar_url MEDIUMTEXT fetch; /auth/me keeps avatar_url
+    const tinyPngAvatar =
+      'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+    const uploadAvatarForAuthTest = await fetch(`${baseUrl}/users/avatar`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie },
+      body: JSON.stringify({ avatar_url: tinyPngAvatar })
+    });
+    assert(uploadAvatarForAuthTest.status === 200, 'Uploaded avatar cleanly for auth payload parity test');
+
+    const { result: authQueryMeRes, queries: authMeQueries } = await captureQueries(async () => {
+      const r = await fetch(`${baseUrl}/auth/me`, {
+        headers: { Cookie: sadiaNewLogin.cookie }
+      });
+      return { status: r.status, json: (await r.json()) as any };
+    });
+    const authMiddlewareQueries = authMeQueries.filter((q) =>
+      q.sql.toLowerCase().includes('from users where id = ?')
+    );
+    const middlewareSelectQuery = authMiddlewareQueries[0]?.sql.toLowerCase() || '';
+    const meAvatarQuery = authMeQueries.find((q) =>
+      q.sql.toLowerCase().includes('select avatar_url from users where id = ?')
+    );
+    assert(
+      authQueryMeRes.status === 200 &&
+        authQueryMeRes.json.user?.avatar_url === tinyPngAvatar &&
+        !middlewareSelectQuery.includes('avatar_url') &&
+        Boolean(meAvatarQuery),
+      'authenticateToken omits avatar_url in 1 query while GET /api/auth/me explicitly loads avatar_url'
+    );
+
+    const { queries: nonAvatarRouteQueries } = await captureQueries(() =>
+      fetch(`${baseUrl}/notifications`, { headers: { Cookie: sadiaNewLogin.cookie } })
+    );
+    const userTableQueriesOnNotif = nonAvatarRouteQueries.filter((q) =>
+      q.sql.toLowerCase().includes('from users')
+    );
+    assert(
+      userTableQueriesOnNotif.length === 1 &&
+        !userTableQueriesOnNotif[0].sql.toLowerCase().includes('avatar_url'),
+      'Authenticated endpoints execute only 1 users query and never fetch avatar_url MEDIUMTEXT'
+    );
+
+    // 2. getUserRatingSummaries strictly filters WHERE reviewee_id IN (...)
+    const { result: scopedRatings, queries: ratingQueries } = await captureQueries(() =>
+      getUserRatingSummaries([3])
+    );
+    assert(
+      ratingQueries.length === 1 &&
+        ratingQueries[0].sql.toLowerCase().includes('where reviewee_id in (?)') &&
+        scopedRatings.get(3)?.review_count === 1 &&
+        scopedRatings.get(2) === undefined,
+      'getUserRatingSummaries filters strictly by requested user IDs via WHERE reviewee_id IN (...)'
+    );
+
+    // 3. No N+1 queries on rides, my-rides, ride requests, my-requests, admin users, conversations
+    const { queries: ridesQueries } = await captureQueries(() =>
+      fetch(`${baseUrl}/rides?limit=20`)
+    );
+    assert(
+      ridesQueries.length <= 4 &&
+        !ridesQueries.some((q) => q.sql.toLowerCase().startsWith('select email_verified') && !q.sql.toLowerCase().includes('where id in')),
+      `GET /api/rides runs constant batched queries (count=${ridesQueries.length}) with zero per-ride N+1 lookups`
+    );
+
+    const { queries: myRidesQueries } = await captureQueries(() =>
+      fetch(`${baseUrl}/rides/mine?limit=20`, { headers: { Cookie: driverLogin.cookie } })
+    );
+    assert(
+      myRidesQueries.length <= 3 &&
+        !myRidesQueries.some((q) => q.sql.toLowerCase().includes('(select count(*) from ride_requests')),
+      `GET /api/rides/mine uses batched request counts instead of correlated subqueries (count=${myRidesQueries.length})`
+    );
+
+    const { queries: myReqQueries } = await captureQueries(() =>
+      fetch(`${baseUrl}/requests/mine?limit=20`, { headers: { Cookie: sadiaNewLogin.cookie } })
+    );
+    const myReqUserExtQuery = myReqQueries.find(
+      (q) => q.sql.toLowerCase().includes('from users where id in')
+    );
+    const myReqReviewQuery = myReqQueries.find((q) => q.sql.toLowerCase().includes('select ride_id from reviews'));
+    assert(
+      myReqQueries.length <= 5 &&
+        (!myReqUserExtQuery || !myReqUserExtQuery.sql.toLowerCase().includes('avatar_url')) &&
+        (!myReqReviewQuery || myReqReviewQuery.sql.toLowerCase().includes('ride_id in (')),
+      `GET /api/requests/mine batches lookups without avatar_url and scopes reviews by ride_id (count=${myReqQueries.length})`
+    );
+
+    const { queries: adminUsersQueries, result: adminUsersHttp } = await captureQueries(async () => {
+      const r = await fetch(`${baseUrl}/admin/users?limit=10`, { headers: { Cookie: adminLogin.cookie } });
+      return { status: r.status, json: (await r.json()) as any };
+    });
+    assert(
+      adminUsersHttp.status === 200 &&
+        adminUsersQueries.length === 2 &&
+        adminUsersHttp.json.users.every((u: any) => u.avatar_url === null) &&
+        !adminUsersQueries[1].sql.toLowerCase().includes('avatar_url'),
+      'GET /api/admin/users fetches extended metadata in 1 query (2 total incl. auth) and omits avatar_url'
+    );
+
+    // Conversations query count & no per-conversation message loops
+    const { queries: convQueries, result: convHttp } = await captureQueries(async () => {
+      const r = await fetch(`${baseUrl}/chat/conversations?limit=20`, {
+        headers: { Cookie: driverLogin.cookie }
+      });
+      return { status: r.status, json: (await r.json()) as any };
+    });
+    assert(
+      convHttp.status === 200 &&
+        Array.isArray(convHttp.json.conversations) &&
+        convHttp.json.conversations.length >= 1 &&
+        convQueries.length <= 6 &&
+        !convQueries.some((q) => q.sql.toLowerCase().includes('from messages where conversation_id = ?')),
+      `GET /api/chat/conversations loads inbox summary in <= 6 batched queries without loading all messages (count=${convQueries.length})`
+    );
+
+    // 4. getAdminStats executes SQL aggregates rather than full-table selects
+    const { result: statsRes, queries: statsQueries } = await captureQueries(async () => {
+      const r = await fetch(`${baseUrl}/admin/stats`, { headers: { Cookie: adminLogin.cookie } });
+      return { status: r.status, json: (await r.json()) as any };
+    });
+    const nonAuthStatsSql = statsQueries.slice(1).map((q) => q.sql.toLowerCase());
+    assert(
+      statsRes.status === 200 &&
+        statsRes.json.stats.total_users >= 5 &&
+        statsRes.json.stats.total_rides >= 6 &&
+        statsRes.json.stats.total_requests >= 5 &&
+        nonAuthStatsSql.every((s) => s.includes('count(')) &&
+        !nonAuthStatsSql.some((s) => s.startsWith('select id,') || s.startsWith('select status from')),
+      'GET /api/admin/stats executes SQL aggregate COUNT/SUM queries instead of full-table scans'
+    );
+
+    // 5. Chat message pagination & chronological order + before_id
+    const activeConvId = convHttp.json.conversations[0].id;
+    for (let i = 1; i <= 4; i++) {
+      await fetch(`${baseUrl}/chat/conversations/${activeConvId}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: driverLogin.cookie },
+        body: JSON.stringify({ content: `Phase3 pagination msg ${i}` })
+      });
+    }
+    const pageMsgsRes = await fetch(`${baseUrl}/chat/conversations/${activeConvId}/messages?limit=2`, {
+      headers: { Cookie: driverLogin.cookie }
+    });
+    const pageMsgsJson: any = await pageMsgsRes.json();
+    assert(
+      pageMsgsRes.status === 200 &&
+        pageMsgsJson.messages.length === 2 &&
+        pageMsgsJson.messages[0].id < pageMsgsJson.messages[1].id &&
+        pageMsgsJson.pagination?.limit === 2 &&
+        pageMsgsJson.pagination?.has_more === true,
+      'getConversationMessages paginates latest N messages in chronological ASC order with has_more=true'
+    );
+
+    const beforeMsgsRes = await fetch(
+      `${baseUrl}/chat/conversations/${activeConvId}/messages?limit=2&before_id=${pageMsgsJson.messages[0].id}`,
+      { headers: { Cookie: driverLogin.cookie } }
+    );
+    const beforeMsgsJson: any = await beforeMsgsRes.json();
+    assert(
+      beforeMsgsRes.status === 200 &&
+        beforeMsgsJson.messages.length >= 1 &&
+        beforeMsgsJson.messages.every((m: any) => m.id < pageMsgsJson.messages[0].id),
+      'getConversationMessages respects before_id cursor for older message pages'
+    );
+
+    // 6. Bounded pagination on /rides, /notifications (with exact unread_count), /reviews, /admin/rides
+    const ridesPage1Res = await fetch(`${baseUrl}/rides?limit=1&page=1`);
+    const ridesPage1Json: any = await ridesPage1Res.json();
+    const ridesPage2Res = await fetch(`${baseUrl}/rides?limit=1&page=2`);
+    const ridesPage2Json: any = await ridesPage2Res.json();
+    assert(
+      ridesPage1Res.status === 200 &&
+        ridesPage1Json.rides.length === 1 &&
+        ridesPage1Json.pagination?.has_more === true &&
+        ridesPage2Res.status === 200 &&
+        ridesPage2Json.rides.length === 1 &&
+        ridesPage1Json.rides[0].id !== ridesPage2Json.rides[0].id,
+      'GET /api/rides enforces limit/page pagination cleanly'
+    );
+
+    const notifPageRes = await fetch(`${baseUrl}/notifications?limit=1&offset=0`, {
+      headers: { Cookie: driverLogin.cookie }
+    });
+    const notifPageJson: any = await notifPageRes.json();
+    const notifAllRes = await fetch(`${baseUrl}/notifications?limit=100`, {
+      headers: { Cookie: driverLogin.cookie }
+    });
+    const notifAllJson: any = await notifAllRes.json();
+    assert(
+      notifPageRes.status === 200 &&
+        notifPageJson.notifications.length === 1 &&
+        notifPageJson.unread_count === notifAllJson.unread_count &&
+        notifPageJson.pagination?.has_more === (notifAllJson.notifications.length > 1),
+      'GET /api/notifications paginates results while preserving exact total unread_count'
+    );
+
+    const revPageRes = await fetch(`${baseUrl}/reviews/user/3?limit=1&offset=0`);
+    const revPageJson: any = await revPageRes.json();
+    assert(
+      revPageRes.status === 200 &&
+        revPageJson.review_count >= 1 &&
+        revPageJson.pagination?.limit === 1,
+      'GET /api/reviews/user/:userId returns total rating summary alongside paginated reviews'
+    );
+
+    const adminRidesPageRes = await fetch(`${baseUrl}/admin/rides?limit=2&offset=0&status=open`, {
+      headers: { Cookie: adminLogin.cookie }
+    });
+    const adminRidesPageJson: any = await adminRidesPageRes.json();
+    assert(
+      adminRidesPageRes.status === 200 &&
+        adminRidesPageJson.rides.length <= 2 &&
+        adminRidesPageJson.rides.every((r: any) => r.status === 'open') &&
+        adminRidesPageJson.pagination?.limit === 2,
+      'GET /api/admin/rides pushes status filter into SQL and enforces pagination'
+    );
+
+    // 7. SMTP connection & timeout guard test against local hanging TCP socket
+    const blackholeServer = net.createServer(() => {
+      // Intentionally do not write SMTP greeting banner to simulate stalled SMTP endpoint
+    });
+    await new Promise<void>((resolve) => blackholeServer.listen(0, '127.0.0.1', () => resolve()));
+    const blackholeAddr = blackholeServer.address() as net.AddressInfo;
+
+    const smtpEnvKeys = [
+      'SMTP_HOST',
+      'SMTP_PORT',
+      'SMTP_USER',
+      'SMTP_PASS',
+      'SMTP_SECURE',
+      'SMTP_CONNECTION_TIMEOUT_MS',
+      'SMTP_GREETING_TIMEOUT_MS',
+      'SMTP_SOCKET_TIMEOUT_MS',
+      'SMTP_SEND_TIMEOUT_MS'
+    ] as const;
+    const savedSmtpEnv: Record<string, string | undefined> = {};
+    for (const k of smtpEnvKeys) savedSmtpEnv[k] = process.env[k];
+
+    try {
+      resetSmtpTransporterForTesting();
+      process.env.SMTP_HOST = '127.0.0.1';
+      process.env.SMTP_PORT = String(blackholeAddr.port);
+      process.env.SMTP_USER = 'test-noreply@diu.edu.bd';
+      process.env.SMTP_PASS = 'test-smtp-secret';
+      process.env.SMTP_SECURE = 'false';
+      process.env.SMTP_CONNECTION_TIMEOUT_MS = '120';
+      process.env.SMTP_GREETING_TIMEOUT_MS = '120';
+      process.env.SMTP_SOCKET_TIMEOUT_MS = '150';
+      process.env.SMTP_SEND_TIMEOUT_MS = '250';
+
+      const t0 = Date.now();
+      const smtpTimeoutResult = await sendTransactionalEmail({
+        to: 'student@diu.edu.bd',
+        subject: 'Timeout Check',
+        text: 'Testing SMTP timeout bounds',
+        html: '<p>Testing SMTP timeout bounds</p>'
+      });
+      const elapsedMs = Date.now() - t0;
+
+      assert(
+        smtpTimeoutResult.configured === true &&
+          smtpTimeoutResult.delivered === false &&
+          elapsedMs < 2000 &&
+          Boolean(smtpTimeoutResult.reason),
+        `sendTransactionalEmail aborts stalled SMTP connections within bounded timeout (${elapsedMs}ms)`
+      );
+    } finally {
+      resetSmtpTransporterForTesting();
+      for (const k of smtpEnvKeys) {
+        if (savedSmtpEnv[k] === undefined) delete process.env[k];
+        else process.env[k] = savedSmtpEnv[k];
+      }
+      await new Promise<void>((resolve) => blackholeServer.close(() => resolve()));
+    }
+
+    // 8. Notification reminder window query + cooldown cache + cache invalidation
+    resetReminderCheckCacheForTesting();
+    const { queries: firstReminderQueries } = await captureQueries(() =>
+      ensureUpcomingRideRemindersForUser(2)
+    );
+    const reminderRideSql = firstReminderQueries.map((q) => q.sql.toLowerCase()).join(' | ');
+    assert(
+      reminderRideSql.includes("r.status in ('open', 'full', 'scheduled', 'in_progress')") &&
+        reminderRideSql.includes('r.departure_time > ? and r.departure_time <= ?') &&
+        !firstReminderQueries.some((q) => q.sql.toLowerCase().includes('from notifications')),
+      'ensureUpcomingRideRemindersForUser filters active 60m rides in SQL and skips notifications query when none upcoming'
+    );
+
+    const { queries: cachedReminderQueries } = await captureQueries(() =>
+      ensureUpcomingRideRemindersForUser(2)
+    );
+    assert(
+      cachedReminderQueries.length === 0,
+      'ensureUpcomingRideRemindersForUser avoids redundant repeated DB scans via per-user cooldown cache'
+    );
+
+    const soonRideRes = await fetch(`${baseUrl}/rides`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: driverLogin.cookie },
+      body: JSON.stringify({
+        pickup_name: 'DIU Innovation Lab',
+        pickup_lat: 23.8768,
+        pickup_lng: 90.3202,
+        dest_name: 'Dhanmondi 27',
+        dest_lat: 23.7511,
+        dest_lng: 90.3765,
+        departure_time: new Date(Date.now() + 25 * 60 * 1000).toISOString(),
+        fare: 120,
+        seats_total: 2,
+        vehicle_type: 'bike'
+      })
+    });
+    assert(soonRideRes.status === 201, 'Posted ride within 25-minute departure window');
+
+    const { queries: refreshedNotifQueries } = await captureQueries(() =>
+      fetch(`${baseUrl}/notifications`, { headers: { Cookie: driverLogin.cookie } })
+    );
+    const dedupNotifQuery = refreshedNotifQueries.find((q) =>
+      q.sql.toLowerCase().includes("type = 'ride_reminder'")
+    );
+    assert(
+      Boolean(dedupNotifQuery) && dedupNotifQuery!.sql.toLowerCase().includes('and link in ('),
+      'Posting a near-term ride invalidates reminder cache and scopes reminder deduplication with link IN (...)'
+    );
+
+    // 9. Static assertions on composite index migration, schema, and Migration 002 prerequisite guard
+    const migration003Path = path.resolve('server/src/database/migrations/003_performance_indexes.sql');
+    const schemaPath = path.resolve('server/src/database/schema.sql');
+    const migration003RunnerPath = path.resolve('server/src/database/runMigration003.ts');
+    const migration003Sql = fs.readFileSync(migration003Path, 'utf-8');
+    const schemaSql = fs.readFileSync(schemaPath, 'utf-8');
+    const migration003RunnerSrc = fs.readFileSync(migration003RunnerPath, 'utf-8');
+    const expectedIndexes = [
+      'idx_rides_status_departure',
+      'idx_rides_driver_departure',
+      'idx_requests_passenger_created',
+      'idx_requests_passenger_status',
+      'idx_requests_ride_status',
+      'idx_notifications_user_created',
+      'idx_notifications_user_type',
+      'idx_conv_driver_updated',
+      'idx_conv_passenger_updated',
+      'idx_reviews_reviewee_created',
+      'idx_reviews_reviewer_ride',
+      'idx_reports_reporter_created',
+      'idx_reports_status_created',
+      'idx_reports_created',
+      'idx_blocks_blocker_created',
+      'idx_driver_apps_user_created'
+    ];
+    assert(
+      expectedIndexes.every((idx) => migration003Sql.includes(idx) && schemaSql.includes(idx)) &&
+        migration003Sql.includes('idx_rides_status_departure ON rides (status, departure_time)') &&
+        !migration003Sql.includes('idx_requests_passenger_status_created') &&
+        migration003RunnerSrc.includes('ER_NO_SUCH_TABLE') &&
+        !/\b(drop|truncate|delete)\b/i.test(migration003Sql),
+      'Migration 003 and schema.sql define all 16 corrected composite indexes with Migration 002 guard and zero destructive DDL'
+    );
+
+    // -----------------------------------------------------------------------
+    // PHASE 19: Phase 3.2 Critical & High-Priority Fix Regression Tests
+    // -----------------------------------------------------------------------
+    console.log('\n[Phase 19] Phase 3.2 Critical & High-Priority Regression Tests');
+
+    // 1. SMTP late sendMail rejection after timeout race must NEVER cause UnhandledPromiseRejection
+    const smtp32Keys = ['SMTP_HOST', 'SMTP_USER', 'SMTP_PASS', 'SMTP_SEND_TIMEOUT_MS'] as const;
+    const savedSmtp32Env: Record<string, string | undefined> = {};
+    for (const k of smtp32Keys) savedSmtp32Env[k] = process.env[k];
+    const capturedUnhandled: unknown[] = [];
+    const onUnhandledRejection = (reason: unknown) => {
+      capturedUnhandled.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandledRejection);
+    try {
+      resetSmtpTransporterForTesting();
+      process.env.SMTP_HOST = 'smtp.diu-test.local';
+      process.env.SMTP_USER = 'noreply@diu.edu.bd';
+      process.env.SMTP_PASS = 'smtp-pass-v1';
+      process.env.SMTP_SEND_TIMEOUT_MS = '50';
+
+      let closeCalled = 0;
+      setSmtpTransporterForTesting({
+        sendMail: () =>
+          new Promise((_, reject) => {
+            setTimeout(() => reject(new Error('late sendMail rejection after timeout')), 90);
+          }),
+        close: () => {
+          closeCalled++;
+        }
+      } as any);
+
+      const lateRejectRes = await sendTransactionalEmail({
+        to: 'student@diu.edu.bd',
+        subject: 'Late Rejection Guard',
+        text: 'Testing late rejection safety',
+        html: '<p>Testing late rejection safety</p>'
+      });
+
+      // Wait longer than the 90ms delayed rejection so Node microtask/event loop settles
+      await new Promise((r) => setTimeout(r, 150));
+
+      assert(
+        lateRejectRes.configured === true &&
+          lateRejectRes.delivered === false &&
+          lateRejectRes.reason?.toLowerCase().includes('timed out') === true &&
+          capturedUnhandled.length === 0 &&
+          closeCalled >= 0,
+        'SMTP timeout handles late sendMail rejections without throwing UnhandledPromiseRejection'
+      );
+
+      // Transporter fatal failure vs EENVELOPE invalidation test (real blackhole fallback / clean recovery)
+      let attemptCount = 0;
+      setSmtpTransporterForTesting({
+        sendMail: async () => {
+          attemptCount++;
+          if (attemptCount === 1) {
+            const envErr: any = new Error('Recipient syntax error');
+            envErr.code = 'EENVELOPE';
+            throw envErr;
+          }
+          if (attemptCount === 2) {
+            const fatalErr: any = new Error('Connection closed unexpectedly');
+            fatalErr.code = 'ECONNRESET';
+            throw fatalErr;
+          }
+          return { messageId: 'ok-1' };
+        },
+        close: () => {}
+      } as any);
+
+      const envFailRes = await sendTransactionalEmail({
+        to: 'bad@diu.edu.bd',
+        subject: 'Envelope Test',
+        text: 'Envelope',
+        html: '<p>Envelope</p>'
+      });
+      const fatalFailRes = await sendTransactionalEmail({
+        to: 'ok@diu.edu.bd',
+        subject: 'Fatal Test',
+        text: 'Fatal',
+        html: '<p>Fatal</p>'
+      });
+      const recoveredRes = await sendTransactionalEmail({
+        to: 'ok@diu.edu.bd',
+        subject: 'Recovery Test',
+        text: 'Recovery',
+        html: '<p>Recovery</p>'
+      });
+      assert(
+        envFailRes.delivered === false &&
+          fatalFailRes.delivered === false &&
+          recoveredRes.delivered === true,
+        'SMTP mailer preserves failure responses across EENVELOPE and fatal transport errors without masking errors'
+      );
+    } finally {
+      process.off('unhandledRejection', onUnhandledRejection);
+      resetSmtpTransporterForTesting();
+      for (const k of smtp32Keys) {
+        if (savedSmtp32Env[k] === undefined) delete process.env[k];
+        else process.env[k] = savedSmtp32Env[k];
+      }
+    }
+
+    // 2. Chat deterministic (created_at, id) ordering with identical timestamps + non-monotonic IDs
+    const driverId = Number(driverLogin.data?.user?.id || 2);
+    const sadiaId = Number(sadiaNewLogin.data?.user?.id || 5);
+    const identicalTs = '2099-01-01T10:00:00.000Z';
+    const earlierTs = '2099-01-01T09:50:00.000Z';
+    const laterTs = '2099-01-01T10:05:00.000Z';
+
+    const tieId1 = await addTestMessageRecordForTesting({
+      id: 9001,
+      conversation_id: activeConvId,
+      sender_id: driverId,
+      content: 'Tie timestamp A',
+      is_read: 1,
+      created_at: identicalTs
+    });
+    const tieId2 = await addTestMessageRecordForTesting({
+      id: 9002,
+      conversation_id: activeConvId,
+      sender_id: sadiaId,
+      content: 'Tie timestamp B',
+      is_read: 0,
+      created_at: identicalTs
+    });
+    const tieId3 = await addTestMessageRecordForTesting({
+      id: 9003,
+      conversation_id: activeConvId,
+      sender_id: driverId,
+      content: 'Tie timestamp C',
+      is_read: 1,
+      created_at: identicalTs
+    });
+    const latestTimeLowerId = await addTestMessageRecordForTesting({
+      id: 9004,
+      conversation_id: activeConvId,
+      sender_id: sadiaId,
+      content: 'Newer time lower ID',
+      is_read: 0,
+      created_at: laterTs
+    });
+    const olderTimeHigherId = await addTestMessageRecordForTesting({
+      id: 9005,
+      conversation_id: activeConvId,
+      sender_id: driverId,
+      content: 'Older time higher ID',
+      is_read: 1,
+      created_at: earlierTs
+    });
+
+    const convLatestOrderRes = await fetch(`${baseUrl}/chat/conversations?limit=20`, {
+      headers: { Cookie: driverLogin.cookie }
+    });
+    const convLatestOrderJson: any = await convLatestOrderRes.json();
+    const targetConvSummary = convLatestOrderJson.conversations?.find((c: any) => Number(c.id) === Number(activeConvId));
+    assert(
+      convLatestOrderRes.status === 200 &&
+        targetConvSummary?.last_message === 'Newer time lower ID' &&
+        Number(targetConvSummary?.unread_count) >= 2,
+      'getConversations selects latest message by (created_at, id) even when an older timestamp has a higher ID'
+    );
+
+    // Non-participant / participant read endpoint check (without disturbing messages BEFORE cursor test if called on unread,
+    // actually PATCH .../read marks incoming messages read cleanly without mutating timestamps/IDs!)
+    const nonParticipantReadRes = await fetch(`${baseUrl}/chat/conversations/${activeConvId}/read`, {
+      method: 'PATCH',
+      headers: { Origin: trustedOrigin, Cookie: adminLogin.cookie }
+    });
+    const invalidReadRes = await fetch(`${baseUrl}/chat/conversations/not-an-id/read`, {
+      method: 'PATCH',
+      headers: { Origin: trustedOrigin, Cookie: driverLogin.cookie }
+    });
+    const driverReadRes = await fetch(`${baseUrl}/chat/conversations/${activeConvId}/read`, {
+      method: 'PATCH',
+      headers: { Origin: trustedOrigin, Cookie: driverLogin.cookie }
+    });
+    const convAfterReadRes = await fetch(`${baseUrl}/chat/conversations?limit=20`, {
+      headers: { Cookie: driverLogin.cookie }
+    });
+    const convAfterReadJson: any = await convAfterReadRes.json();
+    const targetConvAfterRead = convAfterReadJson.conversations?.find(
+      (c: any) => Number(c.id) === Number(activeConvId)
+    );
+    assert(
+      nonParticipantReadRes.status === 403 &&
+        invalidReadRes.status === 400 &&
+        driverReadRes.status === 200 &&
+        Number(targetConvAfterRead?.unread_count) === 0,
+      'PATCH /api/chat/conversations/:id/read marks incoming messages read without fetching messages and blocks non-participants'
+    );
+
+    // Cursor pagination across latest, identical-timestamp tie-break, and non-monotonic ID
+    const p1Res = await fetch(`${baseUrl}/chat/conversations/${activeConvId}/messages?limit=2`, {
+      headers: { Cookie: driverLogin.cookie }
+    });
+    const p1Json: any = await p1Res.json();
+    const p2Res = await fetch(
+      `${baseUrl}/chat/conversations/${activeConvId}/messages?limit=2&before_id=${tieId3}`,
+      { headers: { Cookie: driverLogin.cookie } }
+    );
+    const p2Json: any = await p2Res.json();
+    const p3Res = await fetch(
+      `${baseUrl}/chat/conversations/${activeConvId}/messages?limit=2&before_id=${tieId1}`,
+      { headers: { Cookie: driverLogin.cookie } }
+    );
+    const p3Json: any = await p3Res.json();
+    const missingAnchorRes = await fetch(
+      `${baseUrl}/chat/conversations/${activeConvId}/messages?limit=2&before_id=9999999`,
+      { headers: { Cookie: driverLogin.cookie } }
+    );
+    const missingAnchorJson: any = await missingAnchorRes.json();
+
+    assert(
+      p1Res.status === 200 &&
+        p1Json.messages.map((m: any) => Number(m.id)).join(',') === `${tieId3},${latestTimeLowerId}` &&
+        p2Res.status === 200 &&
+        p2Json.messages.map((m: any) => Number(m.id)).join(',') === `${tieId1},${tieId2}` &&
+        p3Res.status === 200 &&
+        p3Json.messages.some((m: any) => Number(m.id) === olderTimeHigherId) &&
+        !p1Json.messages.some((m: any) => p2Json.messages.some((m2: any) => m2.id === m.id)) &&
+        missingAnchorRes.status === 200 &&
+        Array.isArray(missingAnchorJson.messages) &&
+        missingAnchorJson.messages.length === 0,
+      'Chat before_id cursor & (created_at, id) ordering paginate identical timestamps and non-monotonic IDs with zero duplicates/skips'
+    );
+
+    // 3. getConversations ER_NO_SUCH_TABLE fallback includes pagination metadata
+    const origDbQueryForConvFallback = db.query.bind(db);
+    (db as any).query = async () => {
+      const tableErr: any = new Error("Table 'conversations' doesn't exist");
+      tableErr.code = 'ER_NO_SUCH_TABLE';
+      throw tableErr;
+    };
+    let convFallbackStatus = 0;
+    let convFallbackBody: any = null;
+    try {
+      const mockReq: any = { user: { id: driverId }, query: { limit: '25', offset: '0' } };
+      const mockRes: any = {
+        status(code: number) {
+          convFallbackStatus = code;
+          return this;
+        },
+        json(payload: any) {
+          convFallbackBody = payload;
+          return this;
+        }
+      };
+      await getConversations(mockReq, mockRes);
+    } finally {
+      (db as any).query = origDbQueryForConvFallback;
+    }
+    assert(
+      convFallbackStatus === 200 &&
+        convFallbackBody?.success === true &&
+        Array.isArray(convFallbackBody?.conversations) &&
+        convFallbackBody.conversations.length === 0 &&
+        convFallbackBody?.pagination?.limit === 25 &&
+        convFallbackBody?.pagination?.offset === 0 &&
+        convFallbackBody?.pagination?.has_more === false,
+      'getConversations ER_NO_SUCH_TABLE fallback preserves pagination metadata'
+    );
+
+    // 4. Reminder cooldown cache must NOT be recorded when notification DB lookup/insert fails
+    const retryRideRes = await fetch(`${baseUrl}/rides`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: driverLogin.cookie },
+      body: JSON.stringify({
+        pickup_name: 'DIU Main Plaza',
+        pickup_lat: 23.8768,
+        pickup_lng: 90.3202,
+        dest_name: 'Mirpur 10',
+        dest_lat: 23.8069,
+        dest_lng: 90.3687,
+        departure_time: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+        fare: 150,
+        seats_total: 2,
+        vehicle_type: 'bike'
+      })
+    });
+    const retryRideJson: any = await retryRideRes.json();
+    assert(retryRideRes.status === 201 && Boolean(retryRideJson.rideId), 'Created ride for reminder retry verification');
+
+    resetReminderCheckCacheForTesting();
+    const origDbQueryForReminder = db.query.bind(db);
+    (db as any).query = async (sql: string, params?: any[]) => {
+      const low = String(sql).toLowerCase();
+      if (low.includes('insert into notifications')) {
+        throw new Error('Simulated transient INSERT failure');
+      }
+      return origDbQueryForReminder(sql, params);
+    };
+    try {
+      await ensureUpcomingRideRemindersForUser(driverId);
+    } finally {
+      (db as any).query = origDbQueryForReminder;
+    }
+
+    const { queries: retryAfterFailureQueries } = await captureQueries(() =>
+      ensureUpcomingRideRemindersForUser(driverId)
+    );
+    const { queries: cachedAfterSuccessQueries } = await captureQueries(() =>
+      ensureUpcomingRideRemindersForUser(driverId)
+    );
+    const retryNotifsAfter = await (
+      await fetch(`${baseUrl}/notifications?limit=100`, { headers: { Cookie: driverLogin.cookie } })
+    ).json();
+    const matchingRetryReminders = ((retryNotifsAfter as any).notifications || []).filter(
+      (n: any) => n.type === 'ride_reminder' && n.link === `/rides/${retryRideJson.rideId}`
+    );
+    assert(
+      retryAfterFailureQueries.some((q) => q.sql.toLowerCase().includes('insert into notifications')) &&
+        cachedAfterSuccessQueries.length === 0 &&
+        matchingRetryReminders.length === 1,
+      'Reminder cooldown cache is skipped after DB write failures and populated only after successful creation'
+    );
+
+    // 5. GET /api/users/dashboard-stats & GET /api/admin/reports?status=...
+    const unauthDashStatsRes = await fetch(`${baseUrl}/users/dashboard-stats`);
+    const authDashStatsRes = await fetch(`${baseUrl}/users/dashboard-stats`, {
+      headers: { Cookie: driverLogin.cookie }
+    });
+    const authDashStatsJson: any = await authDashStatsRes.json();
+    assert(
+      unauthDashStatsRes.status === 401 &&
+        authDashStatsRes.status === 200 &&
+        authDashStatsJson.success === true &&
+        typeof authDashStatsJson.stats?.total_requests === 'number' &&
+        typeof authDashStatsJson.stats?.accepted_requests === 'number' &&
+        typeof authDashStatsJson.stats?.pending_requests === 'number' &&
+        Number(authDashStatsJson.stats?.posted_rides) >= 3,
+      'GET /api/users/dashboard-stats returns accurate per-user SQL aggregates and requires authentication'
+    );
+
+    const pendingReportCreateRes = await fetch(`${baseUrl}/safety/reports`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie },
+      body: JSON.stringify({
+        reported_user_id: driverId,
+        reason: 'unsafe_driving',
+        description: 'Phase 3.2 pending report status filter verification'
+      })
+    });
+    assert(pendingReportCreateRes.status === 201, 'Created pending safety report for status filter verification');
+
+    const adminPendingReportsRes = await fetch(`${baseUrl}/admin/reports?status=pending&limit=20&offset=0`, {
+      headers: { Cookie: adminLogin.cookie }
+    });
+    const adminPendingReportsJson: any = await adminPendingReportsRes.json();
+    const adminResolvedReportsRes = await fetch(`${baseUrl}/admin/reports?status=resolved&limit=20&offset=0`, {
+      headers: { Cookie: adminLogin.cookie }
+    });
+    const adminResolvedReportsJson: any = await adminResolvedReportsRes.json();
+    assert(
+      adminPendingReportsRes.status === 200 &&
+        adminPendingReportsJson.reports.length >= 1 &&
+        adminPendingReportsJson.reports.every((r: any) => r.status === 'pending') &&
+        adminResolvedReportsRes.status === 200 &&
+        adminResolvedReportsJson.reports.length >= 1 &&
+        adminResolvedReportsJson.reports.every((r: any) => r.status === 'resolved') &&
+        typeof adminPendingReportsJson.pagination?.has_more === 'boolean',
+      'GET /api/admin/reports filters reports by status in SQL and returns pagination metadata'
+    );
+
+    // -----------------------------------------------------------------------
+    // PHASE 20: Phase 4 Frontend Reliability & Real-Time Optimization Tests
+    // -----------------------------------------------------------------------
+    console.log('\n[Phase 20] Phase 4 Frontend Reliability & Real-Time Optimization Tests');
+
+    const adminUserSearchRes = await fetch(`${baseUrl}/admin/users?search=Tanvir&limit=10`, {
+      headers: { Cookie: adminLogin.cookie }
+    });
+    const adminUserSearchJson: any = await adminUserSearchRes.json();
+    assert(
+      adminUserSearchRes.status === 200 &&
+        adminUserSearchJson.success === true &&
+        Array.isArray(adminUserSearchJson.users),
+      'Admin user search query parameter filters users successfully'
+    );
+
+    const adminRideSearchRes = await fetch(`${baseUrl}/admin/rides?search=Ashulia&status=open&limit=10`, {
+      headers: { Cookie: adminLogin.cookie }
+    });
+    const adminRideSearchJson: any = await adminRideSearchRes.json();
+    assert(
+      adminRideSearchRes.status === 200 &&
+        adminRideSearchJson.success === true &&
+        Array.isArray(adminRideSearchJson.rides),
+      'Admin rides search query parameter filters rides with status successfully'
     );
 
     // Production guard

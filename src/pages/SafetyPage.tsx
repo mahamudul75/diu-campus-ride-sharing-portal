@@ -20,7 +20,11 @@ export const SafetyPage: React.FC = () => {
 
   const [contacts, setContacts] = useState<EmergencyContact[]>([]);
   const [blocks, setBlocks] = useState<UserBlock[]>([]);
+  const [blocksHasMore, setBlocksHasMore] = useState(false);
+  const [loadingMoreBlocks, setLoadingMoreBlocks] = useState(false);
   const [reports, setReports] = useState<UserReport[]>([]);
+  const [reportsHasMore, setReportsHasMore] = useState(false);
+  const [loadingMoreReports, setLoadingMoreReports] = useState(false);
   const [loading, setLoading] = useState(true);
 
   // Add Contact Form
@@ -33,8 +37,8 @@ export const SafetyPage: React.FC = () => {
     try {
       const [cRes, bRes, rRes] = await Promise.allSettled([
         api.get('/safety/emergency-contacts'),
-        api.get('/safety/blocks'),
-        api.get('/safety/reports/mine')
+        api.get('/safety/blocks', { params: { limit: 50, offset: 0 } }),
+        api.get('/safety/reports/mine', { params: { limit: 50, offset: 0 } })
       ]);
 
       if (cRes.status === 'fulfilled' && cRes.value.data?.success) {
@@ -42,12 +46,54 @@ export const SafetyPage: React.FC = () => {
       }
       if (bRes.status === 'fulfilled' && bRes.value.data?.success) {
         setBlocks(bRes.value.data.blocks || []);
+        setBlocksHasMore(Boolean(bRes.value.data.pagination?.has_more));
       }
       if (rRes.status === 'fulfilled' && rRes.value.data?.success) {
         setReports(rRes.value.data.reports || []);
+        setReportsHasMore(Boolean(rRes.value.data.pagination?.has_more));
       }
     } finally {
       setLoading(false);
+    }
+  };
+
+  const loadMoreBlocks = async () => {
+    if (!blocksHasMore || loadingMoreBlocks) return;
+    setLoadingMoreBlocks(true);
+    try {
+      const res = await api.get('/safety/blocks', {
+        params: { limit: 50, offset: blocks.length }
+      });
+      if (res.data?.success) {
+        const incoming: UserBlock[] = res.data.blocks || [];
+        setBlocks((prev) => {
+          const seen = new Set(prev.map((b) => b.id));
+          return [...prev, ...incoming.filter((b) => !seen.has(b.id))];
+        });
+        setBlocksHasMore(Boolean(res.data.pagination?.has_more) && incoming.length > 0);
+      }
+    } finally {
+      setLoadingMoreBlocks(false);
+    }
+  };
+
+  const loadMoreReports = async () => {
+    if (!reportsHasMore || loadingMoreReports) return;
+    setLoadingMoreReports(true);
+    try {
+      const res = await api.get('/safety/reports/mine', {
+        params: { limit: 50, offset: reports.length }
+      });
+      if (res.data?.success) {
+        const incoming: UserReport[] = res.data.reports || [];
+        setReports((prev) => {
+          const seen = new Set(prev.map((rp) => rp.id));
+          return [...prev, ...incoming.filter((rp) => !seen.has(rp.id))];
+        });
+        setReportsHasMore(Boolean(res.data.pagination?.has_more) && incoming.length > 0);
+      }
+    } finally {
+      setLoadingMoreReports(false);
     }
   };
 
@@ -222,7 +268,7 @@ export const SafetyPage: React.FC = () => {
                 </h2>
               </div>
               <span className="text-[11px] font-mono text-[#626E86] dark:text-[#B0BCD0] tabular-nums">
-                {blocks.length}
+                {blocks.length}{blocksHasMore ? '+' : ''}
               </span>
             </div>
 
@@ -246,6 +292,17 @@ export const SafetyPage: React.FC = () => {
                     </button>
                   </div>
                 ))}
+                {blocksHasMore && (
+                  <div className="pt-3 flex justify-center">
+                    <button
+                      onClick={loadMoreBlocks}
+                      disabled={loadingMoreBlocks}
+                      className="px-3.5 py-1.5 rounded-xl border border-[#D4DAE7] dark:border-[#34445E] text-xs font-bold text-[#515FC5] dark:text-[#818CF8] hover:bg-[#E8ECF4] dark:hover:bg-[#24334B] cursor-pointer disabled:opacity-50"
+                    >
+                      {loadingMoreBlocks ? 'Loading...' : 'Load More'}
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -261,7 +318,7 @@ export const SafetyPage: React.FC = () => {
               </h2>
             </div>
             <span className="text-[11px] font-mono text-[#626E86] dark:text-[#B0BCD0] tabular-nums">
-              {reports.length} filed
+              {reports.length}{reportsHasMore ? '+' : ''} filed
             </span>
           </div>
 
@@ -294,6 +351,17 @@ export const SafetyPage: React.FC = () => {
                   )}
                 </div>
               ))}
+              {reportsHasMore && (
+                <div className="pt-3 flex justify-center">
+                  <button
+                    onClick={loadMoreReports}
+                    disabled={loadingMoreReports}
+                    className="px-4 py-1.5 rounded-xl border border-[#D4DAE7] dark:border-[#34445E] text-xs font-bold text-[#515FC5] dark:text-[#818CF8] hover:bg-[#E8ECF4] dark:hover:bg-[#24334B] cursor-pointer disabled:opacity-50"
+                  >
+                    {loadingMoreReports ? 'Loading...' : 'Load More Reports'}
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </div>

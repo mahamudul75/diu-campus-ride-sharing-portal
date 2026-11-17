@@ -34,7 +34,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastContext.Provider value={{ showToast }}>
       {children}
-      <div className="fixed bottom-5 right-5 z-50 flex flex-col gap-2 max-w-md w-full pointer-events-none px-4 sm:px-0">
+      <div className="fixed bottom-5 right-5 z-[10000] flex flex-col gap-2 max-w-md w-full pointer-events-none px-4 sm:px-0">
         {toasts.map((toast) => {
           let bgClass = 'bg-slate-900 text-white border-slate-700';
           let icon = <Info className="w-5 h-5 text-blue-400 shrink-0" />;

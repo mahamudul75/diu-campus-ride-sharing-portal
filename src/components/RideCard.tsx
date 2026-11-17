@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { Calendar, Clock, Users, Bike, Car, ChevronRight, User, Star, BadgeCheck, Route } from 'lucide-react';
 import { Ride } from '../types/index.ts';
 import StatusBadge from './StatusBadge.tsx';
+import { isDbFlagTrue } from '../utils/boolean.ts';
 
 interface RideCardProps {
   ride: Ride;
@@ -58,7 +59,7 @@ export const RideCard: React.FC<RideCardProps> = ({
             <h4 className="font-bold text-[#253149] dark:text-[#F1F5FC] text-sm truncate">
               {ride.driver_name || 'DIU Student'}
             </h4>
-            {ride.driver_student_verified === 1 && (
+            {isDbFlagTrue(ride.driver_student_verified) && (
               <span title="Verified DIU Student">
                 <BadgeCheck className="w-4 h-4 text-[#4F5FC9] dark:text-[#818CF8] shrink-0" />
               </span>

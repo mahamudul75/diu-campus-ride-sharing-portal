@@ -23,6 +23,7 @@ import EmptyState from '../components/EmptyState.tsx';
 import Modal from '../components/Modal.tsx';
 import RateUserModal from '../components/RateUserModal.tsx';
 import ReportUserModal from '../components/ReportUserModal.tsx';
+import { isDbFlagTrue } from '../utils/boolean.ts';
 
 type BookingFilter = 'all' | 'upcoming' | 'accepted' | 'completed' | 'cancelled';
 
@@ -30,6 +31,8 @@ export const MyRequestsPage: React.FC = () => {
   const navigate = useNavigate();
   const { showToast } = useToast();
   const [requests, setRequests] = useState<RideRequest[]>([]);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<BookingFilter>('all');
 
@@ -42,22 +45,44 @@ export const MyRequestsPage: React.FC = () => {
   const [rateTarget, setRateTarget] = useState<{ rideId: number; driverId: number; driverName: string } | null>(null);
   const [reportTarget, setReportTarget] = useState<{ rideId: number; driverId: number; driverName: string } | null>(null);
 
-  const fetchRequests = async () => {
+  const fetchRequests = async (append = false, preserveCount?: number) => {
+    if (append) {
+      setLoadingMore(true);
+    }
     try {
-      const res = await api.get('/requests/mine');
+      const limit = append ? 100 : Math.min(200, Math.max(100, preserveCount || 100));
+      const res = await api.get('/requests/mine', {
+        params: { limit, offset: append ? requests.length : 0 }
+      });
       if (res.data?.success) {
-        setRequests(res.data.requests || []);
+        const incoming: RideRequest[] = res.data.requests || [];
+        if (append) {
+          setRequests((prev) => {
+            const seen = new Set(prev.map((q) => q.id));
+            return [...prev, ...incoming.filter((q) => !seen.has(q.id))];
+          });
+        } else {
+          setRequests(incoming);
+        }
+        setHasMore(Boolean(res.data.pagination?.has_more) && incoming.length > 0);
       }
     } catch (err) {
       console.warn('Failed to fetch requests:', err);
     } finally {
       setLoading(false);
+      setLoadingMore(false);
     }
   };
 
   useEffect(() => {
-    fetchRequests();
+    fetchRequests(false);
   }, []);
+
+  useEffect(() => {
+    if (filter !== 'all' && hasMore && !loadingMore && requests.length < 1000) {
+      fetchRequests(true);
+    }
+  }, [filter, hasMore, loadingMore, requests.length]);
 
   const openCancelModal = (requestId: number, wasAccepted: boolean) => {
     setSelectedReqToCancel({ id: requestId, wasAccepted });
@@ -73,7 +98,7 @@ export const MyRequestsPage: React.FC = () => {
       if (res.data?.success) {
         showToast(res.data.message || 'Request cancelled.', 'info');
         setCancelModalOpen(false);
-        fetchRequests();
+        fetchRequests(false, requests.length);
       }
     } catch (err: any) {
       showToast(err.response?.data?.message || 'Failed to cancel request.', 'error');
@@ -208,7 +233,7 @@ export const MyRequestsPage: React.FC = () => {
                       <div className="flex flex-wrap items-center gap-2 text-xs text-[#626E86] dark:text-[#B0BCD0]">
                         <span className="inline-flex items-center gap-1 font-semibold text-[#222B42] dark:text-[#F1F4FC]">
                           Driver: {req.driver_name}
-                          {req.driver_student_verified === 1 && (
+                          {isDbFlagTrue(req.driver_student_verified) && (
                             <BadgeCheck className="w-3.5 h-3.5 text-[#515FC5] dark:text-[#818CF8]" />
                           )}
                         </span>
@@ -338,6 +363,17 @@ export const MyRequestsPage: React.FC = () => {
                 </div>
               );
             })}
+            {hasMore && (
+              <div className="flex justify-center pt-1">
+                <button
+                  onClick={() => fetchRequests(true)}
+                  disabled={loadingMore}
+                  className="px-4 py-2 rounded-xl border border-[#D4DAE7] dark:border-[#34445E] bg-[#F5F7FC] dark:bg-[#1C2A40] hover:bg-[#E8ECF4] dark:hover:bg-[#24334B] text-xs font-bold text-[#515FC5] dark:text-[#818CF8] cursor-pointer disabled:opacity-50"
+                >
+                  {loadingMore ? 'Loading...' : 'Load More Bookings'}
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -381,7 +417,7 @@ export const MyRequestsPage: React.FC = () => {
           revieweeId={rateTarget.driverId}
           revieweeName={rateTarget.driverName}
           roleLabel="driver"
-          onSuccess={fetchRequests}
+          onSuccess={() => fetchRequests(false, requests.length)}
         />
       )}
 

@@ -1,68 +1,101 @@
 import type { Response } from 'express';
 import type { AuthRequest } from '../middleware/auth.ts';
-import { db } from '../config/db.ts';
-import { isPositiveIntId } from '../utils/validators.ts';
+import { db, type IDatabaseConnection } from '../config/db.ts';
+import { isPositiveIntId, isTruthyDbFlag, parsePaginationParams } from '../utils/validators.ts';
 import { toUtcIsoString } from '../utils/dateTime.ts';
-import { getUserExtendedFields } from '../utils/dbHelpers.ts';
-import { createNotification } from '../services/notificationService.ts';
+import { getRideRequestCountsBatch } from '../utils/dbHelpers.ts';
+import { createNotification, invalidateReminderCacheForUser } from '../services/notificationService.ts';
 
 export async function getAdminStats(_req: AuthRequest, res: Response): Promise<void> {
   try {
-    const [userRows] = await db.query(
-      `SELECT 
-        COUNT(*) AS total_users,
-        SUM(CASE WHEN driver_status = 'approved' THEN 1 ELSE 0 END) AS approved_drivers,
-        SUM(CASE WHEN driver_status = 'pending' THEN 1 ELSE 0 END) AS pending_drivers
-       FROM users`
-    );
+    const queryUserStats = async () => {
+      try {
+        const [rows] = await db.query(
+          `SELECT
+            COUNT(*) AS total_users,
+            SUM(CASE WHEN driver_status = 'approved' THEN 1 ELSE 0 END) AS approved_drivers,
+            SUM(CASE WHEN driver_status = 'pending' THEN 1 ELSE 0 END) AS pending_drivers,
+            SUM(CASE WHEN student_verified = 1 THEN 1 ELSE 0 END) AS verified_students
+           FROM users`
+        );
+        return Array.isArray(rows) && rows.length > 0 ? (rows[0] as any) : {};
+      } catch (err: any) {
+        if (err?.code === 'ER_BAD_FIELD_ERROR') {
+          const [rows] = await db.query(
+            `SELECT
+              COUNT(*) AS total_users,
+              SUM(CASE WHEN driver_status = 'approved' THEN 1 ELSE 0 END) AS approved_drivers,
+              SUM(CASE WHEN driver_status = 'pending' THEN 1 ELSE 0 END) AS pending_drivers
+             FROM users`
+          );
+          return Array.isArray(rows) && rows.length > 0 ? (rows[0] as any) : {};
+        }
+        throw err;
+      }
+    };
 
-    const [rideRows] = await db.query('SELECT id, status, vehicle_type FROM rides');
-    const [requestRows] = await db.query('SELECT id, status FROM ride_requests');
+    const queryRideStats = async () => {
+      const [rows] = await db.query(
+        `SELECT
+          COUNT(*) AS total_rides,
+          SUM(CASE WHEN status IN ('open', 'scheduled', 'full', 'in_progress') THEN 1 ELSE 0 END) AS active_rides,
+          SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed_rides,
+          SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled_rides,
+          SUM(CASE WHEN vehicle_type = 'bike' THEN 1 ELSE 0 END) AS bike_rides,
+          SUM(CASE WHEN vehicle_type = 'car' THEN 1 ELSE 0 END) AS car_rides
+         FROM rides`
+      );
+      return Array.isArray(rows) && rows.length > 0 ? (rows[0] as any) : {};
+    };
 
-    let pendingReports = 0;
-    let totalReports = 0;
-    try {
-      const [repRows] = await db.query('SELECT status FROM user_reports');
-      const reports = (repRows as any[]) || [];
-      totalReports = reports.length;
-      pendingReports = reports.filter((r) => r.status === 'pending' || r.status === 'under_review').length;
-    } catch (err: any) {
-      if (err?.code !== 'ER_NO_SUCH_TABLE') throw err;
-    }
+    const queryRequestStats = async () => {
+      const [rows] = await db.query(
+        `SELECT
+          COUNT(*) AS total_requests,
+          SUM(CASE WHEN status = 'accepted' THEN 1 ELSE 0 END) AS accepted_requests,
+          SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending_requests,
+          SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) AS rejected_requests,
+          SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled_requests
+         FROM ride_requests`
+      );
+      return Array.isArray(rows) && rows.length > 0 ? (rows[0] as any) : {};
+    };
 
-    let totalReviews = 0;
-    try {
-      const [revRows] = await db.query('SELECT id FROM reviews');
-      totalReviews = Array.isArray(revRows) ? revRows.length : 0;
-    } catch (err: any) {
-      if (err?.code !== 'ER_NO_SUCH_TABLE') throw err;
-    }
+    const queryReportStats = async () => {
+      try {
+        const [rows] = await db.query(
+          `SELECT
+            COUNT(*) AS total_reports,
+            SUM(CASE WHEN status IN ('pending', 'under_review') THEN 1 ELSE 0 END) AS pending_reports
+           FROM user_reports`
+        );
+        return Array.isArray(rows) && rows.length > 0 ? (rows[0] as any) : {};
+      } catch (err: any) {
+        if (err?.code === 'ER_NO_SUCH_TABLE') return {};
+        throw err;
+      }
+    };
 
-    let verifiedStudents = 0;
-    try {
-      const [verRows] = await db.query('SELECT id FROM users WHERE student_verified = 1');
-      verifiedStudents = Array.isArray(verRows) ? verRows.length : 0;
-    } catch (err: any) {
-      if (err?.code !== 'ER_BAD_FIELD_ERROR') throw err;
-    }
+    const queryReviewStats = async () => {
+      try {
+        const [rows] = await db.query('SELECT COUNT(*) AS total_reviews FROM reviews');
+        return Array.isArray(rows) && rows.length > 0 ? (rows[0] as any) : {};
+      } catch (err: any) {
+        if (err?.code === 'ER_NO_SUCH_TABLE') return {};
+        throw err;
+      }
+    };
 
-    const uStats = Array.isArray(userRows) && userRows.length > 0 ? (userRows[0] as any) : {};
-    const allRides = (rideRows as any[]) || [];
-    const allRequests = (requestRows as any[]) || [];
+    const [uStats, rStats, qStats, repStats, revStats] = await Promise.all([
+      queryUserStats(),
+      queryRideStats(),
+      queryRequestStats(),
+      queryReportStats(),
+      queryReviewStats()
+    ]);
 
-    const activeRides = allRides.filter(
-      (r) => r.status === 'open' || r.status === 'scheduled' || r.status === 'full' || r.status === 'in_progress'
-    ).length;
-    const completedRides = allRides.filter((r) => r.status === 'completed').length;
-    const cancelledRides = allRides.filter((r) => r.status === 'cancelled').length;
-    const bikeRides = allRides.filter((r) => r.vehicle_type === 'bike').length;
-    const carRides = allRides.filter((r) => r.vehicle_type === 'car').length;
-
-    const acceptedRequests = allRequests.filter((q) => q.status === 'accepted').length;
-    const pendingRequests = allRequests.filter((q) => q.status === 'pending').length;
-    const rejectedRequests = allRequests.filter((q) => q.status === 'rejected').length;
-    const cancelledRequests = allRequests.filter((q) => q.status === 'cancelled').length;
-
+    const completedRides = Number(rStats.completed_rides || 0);
+    const cancelledRides = Number(rStats.cancelled_rides || 0);
     const finishedRides = completedRides + cancelledRides;
     const completionRate = finishedRides > 0 ? Math.round((completedRides / finishedRides) * 100) : 0;
 
@@ -72,21 +105,21 @@ export async function getAdminStats(_req: AuthRequest, res: Response): Promise<v
         total_users: Number(uStats.total_users || 0),
         approved_drivers: Number(uStats.approved_drivers || 0),
         pending_drivers: Number(uStats.pending_drivers || 0),
-        total_rides: allRides.length,
-        total_requests: allRequests.length,
-        active_rides: activeRides,
+        total_rides: Number(rStats.total_rides || 0),
+        total_requests: Number(qStats.total_requests || 0),
+        active_rides: Number(rStats.active_rides || 0),
         completed_rides: completedRides,
         cancelled_rides: cancelledRides,
-        bike_rides: bikeRides,
-        car_rides: carRides,
-        accepted_requests: acceptedRequests,
-        pending_requests: pendingRequests,
-        rejected_requests: rejectedRequests,
-        cancelled_requests: cancelledRequests,
-        pending_reports: pendingReports,
-        total_reports: totalReports,
-        verified_students: verifiedStudents,
-        total_reviews: totalReviews,
+        bike_rides: Number(rStats.bike_rides || 0),
+        car_rides: Number(rStats.car_rides || 0),
+        accepted_requests: Number(qStats.accepted_requests || 0),
+        pending_requests: Number(qStats.pending_requests || 0),
+        rejected_requests: Number(qStats.rejected_requests || 0),
+        cancelled_requests: Number(qStats.cancelled_requests || 0),
+        pending_reports: Number(repStats.pending_reports || 0),
+        total_reports: Number(repStats.total_reports || 0),
+        verified_students: Number(uStats.verified_students || 0),
+        total_reviews: Number(revStats.total_reviews || 0),
         ride_completion_rate: completionRate
       }
     });
@@ -99,33 +132,87 @@ export async function getAdminStats(_req: AuthRequest, res: Response): Promise<v
 export async function getUsers(req: AuthRequest, res: Response): Promise<void> {
   try {
     const { search } = req.query;
+    const { limit, offset } = parsePaginationParams(req.query as Record<string, unknown>, {
+      defaultLimit: 100,
+      maxLimit: 200
+    });
 
-    let query = `
-      SELECT id, student_id, name, email, phone, role, driver_status, 
-             vehicle_type, vehicle_model, vehicle_plate, is_blocked, created_at
-      FROM users
-    `;
+    const whereParts: string[] = [];
     const params: any[] = [];
 
     if (search && typeof search === 'string' && search.trim()) {
       const term = `%${search.trim().slice(0, 100)}%`;
-      query += ` WHERE name LIKE ? OR email LIKE ? OR student_id LIKE ?`;
+      whereParts.push('(name LIKE ? OR email LIKE ? OR student_id LIKE ?)');
       params.push(term, term, term);
     }
 
-    query += ` ORDER BY id ASC`;
+    const whereClause = whereParts.length > 0 ? `WHERE ${whereParts.join(' AND ')}` : '';
+    const queryParams = [...params, limit + 1, offset];
 
-    const [rows] = await db.query(query, params);
-    const enriched = await Promise.all(
-      (rows as any[]).map(async (u) => {
-        const ext = await getUserExtendedFields(Number(u.id));
-        return { ...u, ...ext };
-      })
-    );
+    let rawUsers: any[] = [];
+    try {
+      const [rows] = await db.query(
+        `SELECT id, student_id, name, email, phone, role, driver_status,
+                vehicle_type, vehicle_model, vehicle_plate, is_blocked, created_at,
+                email_verified, student_verified, show_phone_to_accepted, bio
+         FROM users
+         ${whereClause}
+         ORDER BY id ASC
+         LIMIT ? OFFSET ?`,
+        queryParams
+      );
+      rawUsers = (rows as any[]) || [];
+    } catch (err: any) {
+      if (err?.code !== 'ER_BAD_FIELD_ERROR') throw err;
+      const [rows] = await db.query(
+        `SELECT id, student_id, name, email, phone, role, driver_status,
+                vehicle_type, vehicle_model, vehicle_plate, is_blocked, created_at
+         FROM users
+         ${whereClause}
+         ORDER BY id ASC
+         LIMIT ? OFFSET ?`,
+        queryParams
+      );
+      rawUsers = ((rows as any[]) || []).map((u) => ({
+        ...u,
+        email_verified: 0,
+        student_verified: 0,
+        show_phone_to_accepted: 1,
+        bio: null
+      }));
+    }
+
+    const hasMore = rawUsers.length > limit;
+    const pagedUsers = hasMore ? rawUsers.slice(0, limit) : rawUsers;
+    const sanitizedUsers = pagedUsers.map((u) => ({
+      id: u.id,
+      student_id: u.student_id,
+      name: u.name,
+      email: u.email,
+      phone: u.phone,
+      role: u.role,
+      driver_status: u.driver_status,
+      vehicle_type: u.vehicle_type,
+      vehicle_model: u.vehicle_model,
+      vehicle_plate: u.vehicle_plate,
+      is_blocked: u.is_blocked,
+      created_at: u.created_at,
+      email_verified: Number(u.email_verified || 0),
+      student_verified: Number(u.student_verified || 0),
+      avatar_url: null,
+      show_phone_to_accepted:
+        u.show_phone_to_accepted === undefined ? 1 : Number(u.show_phone_to_accepted),
+      bio: u.bio || null
+    }));
 
     res.status(200).json({
       success: true,
-      users: enriched
+      users: sanitizedUsers,
+      pagination: {
+        limit,
+        offset,
+        has_more: hasMore
+      }
     });
   } catch (error: any) {
     console.error('getUsers error:', error);
@@ -148,7 +235,9 @@ export async function verifyStudent(req: AuthRequest, res: Response): Promise<vo
       return;
     }
 
-    const nextState = req.body?.student_verified === false || req.body?.student_verified === 0 ? 0 : 1;
+    const rawVerify = req.body?.student_verified;
+    const nextState =
+      rawVerify === false || rawVerify === 0 || rawVerify === '0' || rawVerify === 'false' ? 0 : 1;
 
     try {
       await db.query('UPDATE users SET student_verified = ? WHERE id = ?', [nextState, targetUserId]);
@@ -208,7 +297,13 @@ export async function toggleBlockUser(req: AuthRequest, res: Response): Promise<
     }
 
     const newBlockedState =
-      is_blocked !== undefined ? (is_blocked === true || is_blocked === 1 ? 1 : 0) : targetUser.is_blocked ? 0 : 1;
+      is_blocked !== undefined
+        ? isTruthyDbFlag(is_blocked)
+          ? 1
+          : 0
+        : isTruthyDbFlag(targetUser.is_blocked)
+        ? 0
+        : 1;
 
     if (targetUser.role === 'admin' && newBlockedState === 1) {
       const [adminCount] = await db.query("SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND is_blocked = 0");
@@ -283,19 +378,35 @@ export async function deleteUser(req: AuthRequest, res: Response): Promise<void>
   }
 }
 
-export async function getPendingDrivers(_req: AuthRequest, res: Response): Promise<void> {
+export async function getPendingDrivers(req: AuthRequest, res: Response): Promise<void> {
   try {
+    const { limit, offset } = parsePaginationParams(req.query as Record<string, unknown>, {
+      defaultLimit: 100,
+      maxLimit: 200
+    });
+
     const [rows] = await db.query(
       `SELECT id, student_id, name, email, phone, role, driver_status, 
               vehicle_type, vehicle_model, vehicle_plate, created_at
        FROM users 
        WHERE driver_status = 'pending'
-       ORDER BY created_at ASC`
+       ORDER BY created_at ASC
+       LIMIT ? OFFSET ?`,
+      [limit + 1, offset]
     );
+
+    const rawList = (rows as any[]) || [];
+    const hasMore = rawList.length > limit;
+    const drivers = hasMore ? rawList.slice(0, limit) : rawList;
 
     res.status(200).json({
       success: true,
-      drivers: rows
+      drivers,
+      pagination: {
+        limit,
+        offset,
+        has_more: hasMore
+      }
     });
   } catch (error: any) {
     console.error('getPendingDrivers error:', error);
@@ -453,38 +564,71 @@ export async function rejectDriver(req: AuthRequest, res: Response): Promise<voi
 
 export async function getAllRidesAdmin(req: AuthRequest, res: Response): Promise<void> {
   try {
+    const { limit, offset } = parsePaginationParams(req.query as Record<string, unknown>, {
+      defaultLimit: 100,
+      maxLimit: 200
+    });
+
+    const statusFilter = typeof req.query.status === 'string' ? req.query.status.trim() : '';
+    const searchFilter = typeof req.query.search === 'string' ? req.query.search.trim() : '';
+
+    const whereParts: string[] = [];
+    const params: any[] = [];
+
+    if (statusFilter) {
+      whereParts.push('r.status = ?');
+      params.push(statusFilter);
+    }
+
+    if (searchFilter) {
+      const term = `%${searchFilter.slice(0, 100)}%`;
+      whereParts.push('(r.pickup_name LIKE ? OR r.dest_name LIKE ? OR u.name LIKE ?)');
+      params.push(term, term, term);
+    }
+
+    const whereClause = whereParts.length > 0 ? `WHERE ${whereParts.join(' AND ')}` : '';
+    params.push(limit + 1, offset);
+
     const [rows] = await db.query(
       `SELECT r.*,
               u.name AS driver_name, u.email AS driver_email, u.student_id AS driver_student_id,
-              u.vehicle_model AS driver_vehicle_model, u.vehicle_plate AS driver_vehicle_plate,
-              (SELECT COUNT(*) FROM ride_requests req WHERE req.ride_id = r.id AND req.status = 'pending') AS pending_requests_count,
-              (SELECT COUNT(*) FROM ride_requests req WHERE req.ride_id = r.id AND req.status = 'accepted') AS accepted_requests_count
+              u.vehicle_model AS driver_vehicle_model, u.vehicle_plate AS driver_vehicle_plate
        FROM rides r
        JOIN users u ON r.driver_id = u.id
-       ORDER BY r.departure_time DESC`
+       ${whereClause}
+       ORDER BY r.departure_time DESC
+       LIMIT ? OFFSET ?`,
+      params
     );
 
-    const statusFilter = typeof req.query.status === 'string' ? req.query.status.trim() : '';
-    const searchFilter = typeof req.query.search === 'string' ? req.query.search.trim().toLowerCase() : '';
+    const rawList = (rows as any[]) || [];
+    const hasMore = rawList.length > limit;
+    const pagedRides = hasMore ? rawList.slice(0, limit) : rawList;
+    const rideIds = pagedRides.map((r) => Number(r.id));
+    const countsMap = await getRideRequestCountsBatch(rideIds);
 
-    let rides = (rows as any[]).map((r) => ({
-      ...r,
-      departure_time: toUtcIsoString(r.departure_time)
-    }));
+    const rides = pagedRides.map((r) => {
+      const counts = countsMap.get(Number(r.id)) || {
+        pending_requests_count: 0,
+        accepted_requests_count: 0
+      };
+      return {
+        ...r,
+        pending_requests_count: counts.pending_requests_count,
+        accepted_requests_count: counts.accepted_requests_count,
+        departure_time: toUtcIsoString(r.departure_time)
+      };
+    });
 
-    if (statusFilter) {
-      rides = rides.filter((r) => r.status === statusFilter);
-    }
-    if (searchFilter) {
-      rides = rides.filter(
-        (r) =>
-          String(r.pickup_name || '').toLowerCase().includes(searchFilter) ||
-          String(r.dest_name || '').toLowerCase().includes(searchFilter) ||
-          String(r.driver_name || '').toLowerCase().includes(searchFilter)
-      );
-    }
-
-    res.status(200).json({ success: true, rides });
+    res.status(200).json({
+      success: true,
+      rides,
+      pagination: {
+        limit,
+        offset,
+        has_more: hasMore
+      }
+    });
   } catch (error: any) {
     console.error('getAllRidesAdmin error:', error);
     res.status(500).json({ success: false, message: 'Failed to retrieve all rides.' });
@@ -492,31 +636,48 @@ export async function getAllRidesAdmin(req: AuthRequest, res: Response): Promise
 }
 
 export async function moderateRideAdmin(req: AuthRequest, res: Response): Promise<void> {
-  const conn = await db.getConnection();
+  if (!req.user) {
+    res.status(401).json({ success: false, message: 'Not authenticated.' });
+    return;
+  }
+
+  const rideId = isPositiveIntId(req.params.id);
+  if (!rideId) {
+    res.status(400).json({ success: false, message: 'Invalid ride ID.' });
+    return;
+  }
+
+  const reason =
+    typeof req.body?.reason === 'string' && req.body.reason.trim()
+      ? req.body.reason.trim().slice(0, 300)
+      : 'Removed by campus transport administration for policy compliance.';
+
+  let conn: IDatabaseConnection;
   try {
-    const rideId = isPositiveIntId(req.params.id);
-    if (!rideId) {
-      res.status(400).json({ success: false, message: 'Invalid ride ID.' });
-      return;
-    }
+    conn = await db.getConnection();
+  } catch (error: any) {
+    console.error('moderateRideAdmin error:', error);
+    res.status(500).json({ success: false, message: 'Failed to moderate ride.' });
+    return;
+  }
 
-    const reason =
-      typeof req.body?.reason === 'string' && req.body.reason.trim()
-        ? req.body.reason.trim().slice(0, 300)
-        : 'Removed by campus transport administration for policy compliance.';
-
+  let txActive = false;
+  try {
     await conn.beginTransaction();
+    txActive = true;
 
     const [rows] = await conn.query('SELECT * FROM rides WHERE id = ? FOR UPDATE', [rideId]);
     const ride = Array.isArray(rows) && rows.length > 0 ? (rows[0] as any) : null;
     if (!ride) {
       await conn.rollback();
+      txActive = false;
       res.status(404).json({ success: false, message: 'Ride not found.' });
       return;
     }
 
     if (ride.status === 'cancelled' || ride.status === 'completed') {
       await conn.rollback();
+      txActive = false;
       res.status(409).json({ success: false, message: `Ride is already ${ride.status}.` });
       return;
     }
@@ -533,6 +694,8 @@ export async function moderateRideAdmin(req: AuthRequest, res: Response): Promis
     );
 
     await conn.commit();
+    txActive = false;
+    invalidateReminderCacheForUser();
 
     await createNotification({
       userId: Number(ride.driver_id),
@@ -559,7 +722,13 @@ export async function moderateRideAdmin(req: AuthRequest, res: Response): Promis
       message: 'Ride cancelled and affected participants notified.'
     });
   } catch (error: any) {
-    await conn.rollback();
+    if (txActive) {
+      try {
+        await conn.rollback();
+      } catch (rollbackErr) {
+        console.error('moderateRideAdmin rollback error:', rollbackErr);
+      }
+    }
     console.error('moderateRideAdmin error:', error);
     res.status(500).json({ success: false, message: 'Failed to moderate ride.' });
   } finally {
@@ -567,8 +736,13 @@ export async function moderateRideAdmin(req: AuthRequest, res: Response): Promis
   }
 }
 
-export async function getAllBookingsAdmin(_req: AuthRequest, res: Response): Promise<void> {
+export async function getAllBookingsAdmin(req: AuthRequest, res: Response): Promise<void> {
   try {
+    const { limit, offset } = parsePaginationParams(req.query as Record<string, unknown>, {
+      defaultLimit: 100,
+      maxLimit: 200
+    });
+
     const [rows] = await db.query(
       `SELECT req.id, req.ride_id, req.passenger_id, req.status, req.created_at, req.updated_at,
               pu.name AS passenger_name, pu.student_id AS passenger_student_id,
@@ -578,23 +752,48 @@ export async function getAllBookingsAdmin(_req: AuthRequest, res: Response): Pro
        JOIN users pu ON req.passenger_id = pu.id
        JOIN rides r ON req.ride_id = r.id
        JOIN users du ON r.driver_id = du.id
-       ORDER BY req.created_at DESC`
+       ORDER BY req.created_at DESC
+       LIMIT ? OFFSET ?`,
+      [limit + 1, offset]
     );
 
-    const bookings = (rows as any[]).map((b) => ({
+    const rawList = (rows as any[]) || [];
+    const hasMore = rawList.length > limit;
+    const pagedBookings = hasMore ? rawList.slice(0, limit) : rawList;
+
+    const bookings = pagedBookings.map((b) => ({
       ...b,
       departure_time: b.departure_time ? toUtcIsoString(b.departure_time) : b.departure_time
     }));
 
-    res.status(200).json({ success: true, bookings });
+    res.status(200).json({
+      success: true,
+      bookings,
+      pagination: {
+        limit,
+        offset,
+        has_more: hasMore
+      }
+    });
   } catch (error: any) {
     console.error('getAllBookingsAdmin error:', error);
     res.status(500).json({ success: false, message: 'Failed to retrieve booking records.' });
   }
 }
 
-export async function getReportsAdmin(_req: AuthRequest, res: Response): Promise<void> {
+export async function getReportsAdmin(req: AuthRequest, res: Response): Promise<void> {
   try {
+    const { limit, offset } = parsePaginationParams(req.query as Record<string, unknown>, {
+      defaultLimit: 100,
+      maxLimit: 200
+    });
+    const rawStatus = typeof req.query.status === 'string' ? req.query.status.trim() : '';
+    const allowedStatuses = ['pending', 'under_review', 'resolved', 'dismissed'];
+    const statusFilter = allowedStatuses.includes(rawStatus) ? rawStatus : '';
+
+    const whereClause = statusFilter ? 'WHERE rp.status = ?' : '';
+    const params: any[] = statusFilter ? [statusFilter, limit + 1, offset] : [limit + 1, offset];
+
     try {
       const [rows] = await db.query(
         `SELECT rp.id, rp.reporter_id, rp.reported_user_id, rp.ride_id, rp.reason, rp.description,
@@ -604,12 +803,31 @@ export async function getReportsAdmin(_req: AuthRequest, res: Response): Promise
          FROM user_reports rp
          JOIN users ru ON rp.reporter_id = ru.id
          JOIN users tu ON rp.reported_user_id = tu.id
-         ORDER BY rp.created_at DESC`
+         ${whereClause}
+         ORDER BY rp.created_at DESC
+         LIMIT ? OFFSET ?`,
+        params
       );
-      res.status(200).json({ success: true, reports: rows });
+      const rawList = (rows as any[]) || [];
+      const hasMore = rawList.length > limit;
+      const reports = hasMore ? rawList.slice(0, limit) : rawList;
+
+      res.status(200).json({
+        success: true,
+        reports,
+        pagination: {
+          limit,
+          offset,
+          has_more: hasMore
+        }
+      });
     } catch (err: any) {
       if (err?.code === 'ER_NO_SUCH_TABLE') {
-        res.status(200).json({ success: true, reports: [] });
+        res.status(200).json({
+          success: true,
+          reports: [],
+          pagination: { limit, offset, has_more: false }
+        });
         return;
       }
       throw err;

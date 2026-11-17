@@ -1,8 +1,12 @@
 import type { Response } from 'express';
 import type { AuthRequest } from '../middleware/auth.ts';
 import { db } from '../config/db.ts';
-import { isNonEmptyString, isPositiveIntId } from '../utils/validators.ts';
-import { areUsersBlocked, getUserExtendedFields } from '../utils/dbHelpers.ts';
+import { isNonEmptyString, isPositiveIntId, parsePaginationParams } from '../utils/validators.ts';
+import {
+  areUsersBlocked,
+  getBlockedUserIds,
+  getUserExtendedFieldsBatch
+} from '../utils/dbHelpers.ts';
 import { toUtcIsoString } from '../utils/dateTime.ts';
 import { pushToUsers } from '../realtime/wsServer.ts';
 import { createNotification } from '../services/notificationService.ts';
@@ -19,6 +23,11 @@ export async function getConversations(req: AuthRequest, res: Response): Promise
       return;
     }
 
+    const { limit, offset } = parsePaginationParams(req.query as Record<string, unknown>, {
+      defaultLimit: 50,
+      maxLimit: 100
+    });
+
     try {
       const [rows] = await db.query(
         `SELECT c.id, c.ride_id, c.driver_id, c.passenger_id, c.created_at, c.updated_at,
@@ -29,57 +38,118 @@ export async function getConversations(req: AuthRequest, res: Response): Promise
          JOIN users du ON c.driver_id = du.id
          JOIN users pu ON c.passenger_id = pu.id
          WHERE c.driver_id = ? OR c.passenger_id = ?
-         ORDER BY c.updated_at DESC`,
-        [req.user.id, req.user.id]
+         ORDER BY c.updated_at DESC
+         LIMIT ? OFFSET ?`,
+        [req.user.id, req.user.id, limit + 1, offset]
       );
 
-      const list = (rows as any[]) || [];
-      const enriched = await Promise.all(
-        list.map(async (c) => {
-          const isDriver = Number(c.driver_id) === req.user!.id;
-          const peerId = isDriver ? Number(c.passenger_id) : Number(c.driver_id);
-          const peerName = isDriver ? c.passenger_name : c.driver_name;
-          const peerExt = await getUserExtendedFields(peerId);
-          const blocked = await areUsersBlocked(req.user!.id, peerId);
+      const rawList = (rows as any[]) || [];
+      const hasMore = rawList.length > limit;
+      const list = hasMore ? rawList.slice(0, limit) : rawList;
 
-          const [msgRows] = await db.query(
-            `SELECT id, sender_id, content, is_read, created_at
-             FROM messages
-             WHERE conversation_id = ?
-             ORDER BY created_at DESC`,
-            [c.id]
-          );
-          const messages = (msgRows as any[]) || [];
-          const lastMsg = messages.length > 0 ? messages[0] : null;
-          const unreadCount = messages.filter(
-            (m) => Number(m.sender_id) !== req.user!.id && !m.is_read
-          ).length;
+      if (list.length === 0) {
+        res.status(200).json({
+          success: true,
+          conversations: [],
+          pagination: { limit, offset, has_more: false }
+        });
+        return;
+      }
 
-          return {
-            id: c.id,
-            ride_id: c.ride_id,
-            driver_id: c.driver_id,
-            passenger_id: c.passenger_id,
-            pickup_name: c.pickup_name,
-            dest_name: c.dest_name,
-            departure_time: c.departure_time ? toUtcIsoString(c.departure_time) : c.departure_time,
-            ride_status: c.ride_status,
-            peer_id: peerId,
-            peer_name: peerName,
-            peer_avatar_url: peerExt.avatar_url,
-            peer_student_verified: peerExt.student_verified,
-            last_message: lastMsg ? lastMsg.content : null,
-            last_message_at: lastMsg ? lastMsg.created_at : c.updated_at,
-            unread_count: unreadCount,
-            is_blocked_pair: blocked
-          };
-        })
+      const convIds = list.map((c) => Number(c.id));
+      const peerIds = list.map((c) =>
+        Number(c.driver_id) === req.user!.id ? Number(c.passenger_id) : Number(c.driver_id)
       );
+      const convPlaceholders = convIds.map(() => '?').join(', ');
 
-      res.status(200).json({ success: true, conversations: enriched });
+      const [peerExtMap, blockedSet, unreadResult, latestResult] = await Promise.all([
+        getUserExtendedFieldsBatch(peerIds, { includeAvatar: true }),
+        getBlockedUserIds(req.user.id),
+        db.query(
+          `SELECT conversation_id, COUNT(*) AS unread_count
+           FROM messages
+           WHERE conversation_id IN (${convPlaceholders}) AND sender_id != ? AND is_read = 0
+           GROUP BY conversation_id`,
+          [...convIds, req.user.id]
+        ),
+        db.query(
+          `SELECT m.conversation_id, m.content, m.created_at
+           FROM messages m
+           INNER JOIN (
+             SELECT m1.conversation_id, m1.created_at, MAX(m1.id) AS max_id
+             FROM messages m1
+             INNER JOIN (
+               SELECT conversation_id, MAX(created_at) AS max_created_at
+               FROM messages
+               WHERE conversation_id IN (${convPlaceholders})
+               GROUP BY conversation_id
+             ) latest_ts
+               ON m1.conversation_id = latest_ts.conversation_id
+              AND m1.created_at = latest_ts.max_created_at
+             GROUP BY m1.conversation_id, m1.created_at
+           ) latest ON m.id = latest.max_id`,
+          convIds
+        )
+      ]);
+
+      const unreadMap = new Map<number, number>();
+      const unreadRows = Array.isArray(unreadResult[0]) ? (unreadResult[0] as any[]) : [];
+      for (const row of unreadRows) {
+        unreadMap.set(Number(row.conversation_id), Number(row.unread_count || 0));
+      }
+
+      const latestMsgMap = new Map<number, { content: string; created_at: string }>();
+      const latestRows = Array.isArray(latestResult[0]) ? (latestResult[0] as any[]) : [];
+      for (const row of latestRows) {
+        latestMsgMap.set(Number(row.conversation_id), {
+          content: row.content,
+          created_at: row.created_at
+        });
+      }
+
+      const enriched = list.map((c) => {
+        const isDriver = Number(c.driver_id) === req.user!.id;
+        const peerId = isDriver ? Number(c.passenger_id) : Number(c.driver_id);
+        const peerName = isDriver ? c.passenger_name : c.driver_name;
+        const peerExt = peerExtMap.get(peerId);
+        const lastMsg = latestMsgMap.get(Number(c.id)) || null;
+
+        return {
+          id: c.id,
+          ride_id: c.ride_id,
+          driver_id: c.driver_id,
+          passenger_id: c.passenger_id,
+          pickup_name: c.pickup_name,
+          dest_name: c.dest_name,
+          departure_time: c.departure_time ? toUtcIsoString(c.departure_time) : c.departure_time,
+          ride_status: c.ride_status,
+          peer_id: peerId,
+          peer_name: peerName,
+          peer_avatar_url: peerExt?.avatar_url ?? null,
+          peer_student_verified: peerExt?.student_verified ?? 0,
+          last_message: lastMsg ? lastMsg.content : null,
+          last_message_at: lastMsg ? lastMsg.created_at : c.updated_at,
+          unread_count: unreadMap.get(Number(c.id)) ?? 0,
+          is_blocked_pair: blockedSet.has(peerId)
+        };
+      });
+
+      res.status(200).json({
+        success: true,
+        conversations: enriched,
+        pagination: {
+          limit,
+          offset,
+          has_more: hasMore
+        }
+      });
     } catch (err: any) {
       if (err?.code === 'ER_NO_SUCH_TABLE') {
-        res.status(200).json({ success: true, conversations: [] });
+        res.status(200).json({
+          success: true,
+          conversations: [],
+          pagination: { limit, offset, has_more: false }
+        });
         return;
       }
       throw err;
@@ -208,30 +278,76 @@ export async function getConversationMessages(req: AuthRequest, res: Response): 
       return;
     }
 
+    const { limit, offset } = parsePaginationParams(req.query as Record<string, unknown>, {
+      defaultLimit: 100,
+      maxLimit: 200
+    });
+    const beforeId = isPositiveIntId(req.query?.before_id);
+
     // Mark unread incoming messages as read
     await db.query(
       'UPDATE messages SET is_read = 1 WHERE conversation_id = ? AND sender_id != ? AND is_read = 0',
       [convId, req.user.id]
     );
 
-    const [msgRows] = await db.query(
-      `SELECT m.id, m.conversation_id, m.sender_id, m.content, m.is_read, m.created_at,
-              u.name AS sender_name
-       FROM messages m
-       JOIN users u ON m.sender_id = u.id
-       WHERE m.conversation_id = ?
-       ORDER BY m.created_at ASC`,
-      [convId]
-    );
-
     const peerId = Number(conv.driver_id) === req.user.id ? Number(conv.passenger_id) : Number(conv.driver_id);
-    const blocked = await areUsersBlocked(req.user.id, peerId);
+
+    const msgQueryParams: any[] = [convId];
+    let beforeClause = '';
+    if (beforeId) {
+      const [anchorRows] = await db.query(
+        'SELECT id, created_at FROM messages WHERE id = ? AND conversation_id = ?',
+        [beforeId, convId]
+      );
+      const anchor = Array.isArray(anchorRows) && anchorRows.length > 0 ? (anchorRows[0] as any) : null;
+      if (!anchor) {
+        const blocked = await areUsersBlocked(req.user.id, peerId);
+        res.status(200).json({
+          success: true,
+          conversation: conv,
+          is_blocked_pair: blocked,
+          messages: [],
+          pagination: {
+            limit,
+            offset,
+            has_more: false
+          }
+        });
+        return;
+      }
+      beforeClause = ' AND (m.created_at < ? OR (m.created_at = ? AND m.id < ?))';
+      msgQueryParams.push(anchor.created_at, anchor.created_at, anchor.id);
+    }
+    msgQueryParams.push(limit + 1, offset);
+
+    const [[msgRows], blocked] = await Promise.all([
+      db.query(
+        `SELECT m.id, m.conversation_id, m.sender_id, m.content, m.is_read, m.created_at,
+                u.name AS sender_name
+         FROM messages m
+         JOIN users u ON m.sender_id = u.id
+         WHERE m.conversation_id = ?${beforeClause}
+         ORDER BY m.created_at DESC, m.id DESC
+         LIMIT ? OFFSET ?`,
+        msgQueryParams
+      ),
+      areUsersBlocked(req.user.id, peerId)
+    ]);
+
+    const rawMsgs = (msgRows as any[]) || [];
+    const hasMore = rawMsgs.length > limit;
+    const pagedMsgs = (hasMore ? rawMsgs.slice(0, limit) : rawMsgs).slice().reverse();
 
     res.status(200).json({
       success: true,
       conversation: conv,
       is_blocked_pair: blocked,
-      messages: msgRows
+      messages: pagedMsgs,
+      pagination: {
+        limit,
+        offset,
+        has_more: hasMore
+      }
     });
   } catch (error: any) {
     if (error?.code === 'ER_NO_SUCH_TABLE') {
@@ -240,6 +356,50 @@ export async function getConversationMessages(req: AuthRequest, res: Response): 
     }
     console.error('getConversationMessages error:', error);
     res.status(500).json({ success: false, message: 'Failed to load messages.' });
+  }
+}
+
+export async function markConversationMessagesRead(req: AuthRequest, res: Response): Promise<void> {
+  try {
+    if (!req.user) {
+      res.status(401).json({ success: false, message: 'Not authenticated.' });
+      return;
+    }
+
+    const convId = isPositiveIntId(req.params.id);
+    if (!convId) {
+      res.status(400).json({ success: false, message: 'Invalid conversation ID.' });
+      return;
+    }
+
+    const [convRows] = await db.query(
+      'SELECT id, driver_id, passenger_id FROM conversations WHERE id = ?',
+      [convId]
+    );
+    const conv = Array.isArray(convRows) && convRows.length > 0 ? (convRows[0] as any) : null;
+    if (!conv) {
+      res.status(404).json({ success: false, message: 'Conversation not found.' });
+      return;
+    }
+
+    if (Number(conv.driver_id) !== req.user.id && Number(conv.passenger_id) !== req.user.id) {
+      res.status(403).json({ success: false, message: 'Access denied: You are not a participant in this conversation.' });
+      return;
+    }
+
+    await db.query(
+      'UPDATE messages SET is_read = 1 WHERE conversation_id = ? AND sender_id != ? AND is_read = 0',
+      [convId, req.user.id]
+    );
+
+    res.status(200).json({ success: true });
+  } catch (error: any) {
+    if (error?.code === 'ER_NO_SUCH_TABLE') {
+      res.status(503).json({ success: false, message: 'Chat tables require Migration 002.' });
+      return;
+    }
+    console.error('markConversationMessagesRead error:', error);
+    res.status(500).json({ success: false, message: 'Failed to mark messages as read.' });
   }
 }
 

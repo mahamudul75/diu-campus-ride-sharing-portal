@@ -18,14 +18,17 @@ import StatusBadge from '../components/StatusBadge.tsx';
 import Spinner from '../components/Spinner.tsx';
 import EmptyState from '../components/EmptyState.tsx';
 import ReportUserModal from '../components/ReportUserModal.tsx';
+import { isDbFlagTrue } from '../utils/boolean.ts';
 
 export const MessagesPage: React.FC = () => {
   const { user } = useAuth();
   const { showToast } = useToast();
-  const { lastWsMessage, refreshUnreadChatCount } = useNotifications();
+  const { lastWsMessage, refreshUnreadChatCount, setActiveConversationId } = useNotifications();
   const [searchParams, setSearchParams] = useSearchParams();
 
   const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [convHasMore, setConvHasMore] = useState(false);
+  const [loadingMoreConvs, setLoadingMoreConvs] = useState(false);
   const [loadingList, setLoadingList] = useState(true);
 
   const selectedIdParam = Number(searchParams.get('conversation') || 0);
@@ -33,28 +36,45 @@ export const MessagesPage: React.FC = () => {
     selectedIdParam > 0 ? selectedIdParam : null
   );
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [messagesHasMore, setMessagesHasMore] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(false);
+  const [loadingOlderMessages, setLoadingOlderMessages] = useState(false);
   const [isBlockedPair, setIsBlockedPair] = useState(false);
 
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [showReportModal, setShowReportModal] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const skipNextAutoScrollRef = useRef(false);
 
-  const fetchConversations = async () => {
+  const fetchConversations = async (append = false) => {
+    if (append) {
+      setLoadingMoreConvs(true);
+    }
     try {
-      const res = await api.get('/chat/conversations');
+      const res = await api.get('/chat/conversations', {
+        params: { limit: 50, offset: append ? conversations.length : 0 }
+      });
       if (res.data?.success) {
         const list: Conversation[] = res.data.conversations || [];
-        setConversations(list);
-        if (!selectedConvId && list.length > 0) {
-          setSelectedConvId(list[0].id);
+        if (append) {
+          setConversations((prev) => {
+            const seen = new Set(prev.map((c) => c.id));
+            return [...prev, ...list.filter((c) => !seen.has(c.id))];
+          });
+        } else {
+          setConversations(list);
+          if (!selectedConvId && list.length > 0) {
+            setSelectedConvId(list[0].id);
+          }
         }
+        setConvHasMore(Boolean(res.data.pagination?.has_more) && list.length > 0);
       }
     } catch (err) {
       console.warn('Failed to fetch conversations:', err);
     } finally {
       setLoadingList(false);
+      setLoadingMoreConvs(false);
     }
   };
 
@@ -70,10 +90,14 @@ export const MessagesPage: React.FC = () => {
 
   const fetchMessages = async (convId: number) => {
     setLoadingMessages(true);
+    setMessagesHasMore(false);
     try {
-      const res = await api.get(`/chat/conversations/${convId}/messages`);
+      const res = await api.get(`/chat/conversations/${convId}/messages`, {
+        params: { limit: 100 }
+      });
       if (res.data?.success) {
         setMessages(res.data.messages || []);
+        setMessagesHasMore(Boolean(res.data.pagination?.has_more));
         setIsBlockedPair(Boolean(res.data.is_blocked_pair));
         setConversations((prev) =>
           prev.map((c) => (c.id === convId ? { ...c, unread_count: 0 } : c))
@@ -87,15 +111,48 @@ export const MessagesPage: React.FC = () => {
     }
   };
 
+  const loadOlderMessages = async () => {
+    if (!selectedConvId || !messagesHasMore || loadingOlderMessages || messages.length === 0) return;
+    const oldestId = messages[0].id;
+    setLoadingOlderMessages(true);
+    try {
+      const res = await api.get(`/chat/conversations/${selectedConvId}/messages`, {
+        params: { limit: 100, before_id: oldestId }
+      });
+      if (res.data?.success) {
+        const older: ChatMessage[] = res.data.messages || [];
+        skipNextAutoScrollRef.current = true;
+        setMessages((prev) => {
+          const seen = new Set(prev.map((m) => m.id));
+          return [...older.filter((m) => !seen.has(m.id)), ...prev];
+        });
+        setMessagesHasMore(Boolean(res.data.pagination?.has_more) && older.length > 0);
+      }
+    } catch (err: any) {
+      showToast(err.response?.data?.message || 'Failed to load older messages.', 'error');
+    } finally {
+      setLoadingOlderMessages(false);
+    }
+  };
+
   useEffect(() => {
+    setActiveConversationId(selectedConvId);
     if (selectedConvId) {
       fetchMessages(selectedConvId);
     } else {
       setMessages([]);
+      setMessagesHasMore(false);
     }
-  }, [selectedConvId]);
+    return () => {
+      setActiveConversationId(null);
+    };
+  }, [selectedConvId, setActiveConversationId]);
 
   useEffect(() => {
+    if (skipNextAutoScrollRef.current) {
+      skipNextAutoScrollRef.current = false;
+      return;
+    }
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages.length]);
 
@@ -127,6 +184,9 @@ export const MessagesPage: React.FC = () => {
         if (prev.some((m) => m.id === message.id)) return prev;
         return [...prev, message];
       });
+      if (Number(message.sender_id) !== user?.id) {
+        api.patch(`/chat/conversations/${conversationId}/read`).catch(() => {});
+      }
     }
   }, [lastWsMessage, selectedConvId, user?.id]);
 
@@ -224,7 +284,7 @@ export const MessagesPage: React.FC = () => {
                       <span className="text-xs font-bold text-[#222B42] dark:text-[#F1F4FC] truncate">
                         {conv.peer_name}
                       </span>
-                      {conv.peer_student_verified === 1 && (
+                      {isDbFlagTrue(conv.peer_student_verified) && (
                         <BadgeCheck className="w-3.5 h-3.5 text-[#515FC5] dark:text-[#818CF8] shrink-0" />
                       )}
                     </div>
@@ -243,6 +303,17 @@ export const MessagesPage: React.FC = () => {
                 </button>
               );
             })}
+            {convHasMore && (
+              <div className="p-3 text-center">
+                <button
+                  onClick={() => fetchConversations(true)}
+                  disabled={loadingMoreConvs}
+                  className="w-full py-1.5 rounded-lg border border-[#D4DAE7] dark:border-[#34445E] text-[11px] font-bold text-[#515FC5] dark:text-[#818CF8] hover:bg-[#E8ECF4] dark:hover:bg-[#24334B] cursor-pointer disabled:opacity-50"
+                >
+                  {loadingMoreConvs ? 'Loading...' : 'Load More Conversations'}
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Right Pane: Active Thread */}
@@ -296,7 +367,19 @@ export const MessagesPage: React.FC = () => {
                       Start coordinating pickup time and campus meeting point below.
                     </div>
                   ) : (
-                    messages.map((msg) => {
+                    <>
+                      {messagesHasMore && (
+                        <div className="flex justify-center pb-2">
+                          <button
+                            onClick={loadOlderMessages}
+                            disabled={loadingOlderMessages}
+                            className="px-3.5 py-1.5 rounded-xl border border-[#D4DAE7] dark:border-[#34445E] bg-white dark:bg-[#24334B] text-[11px] font-bold text-[#515FC5] dark:text-[#818CF8] hover:bg-[#E8ECF4] dark:hover:bg-[#1C2A40] cursor-pointer disabled:opacity-50"
+                          >
+                            {loadingOlderMessages ? 'Loading older messages...' : 'Load Older Messages'}
+                          </button>
+                        </div>
+                      )}
+                      {messages.map((msg) => {
                       const isMine = msg.sender_id === user?.id;
                       return (
                         <div
@@ -320,7 +403,8 @@ export const MessagesPage: React.FC = () => {
                           </span>
                         </div>
                       );
-                    })
+                    })}
+                    </>
                   )}
                   <div ref={messagesEndRef} />
                 </div>

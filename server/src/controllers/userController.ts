@@ -305,3 +305,46 @@ export async function getPublicStudentProfile(req: AuthRequest, res: Response): 
     res.status(500).json({ success: false, message: 'Failed to load student profile.' });
   }
 }
+
+export async function getDashboardStats(req: AuthRequest, res: Response): Promise<void> {
+  try {
+    if (!req.user) {
+      res.status(401).json({ success: false, message: 'Not authenticated.' });
+      return;
+    }
+
+    const [[reqRows], [rideRows]] = await Promise.all([
+      db.query(
+        `SELECT
+          COUNT(*) AS total_requests,
+          SUM(CASE WHEN status = 'accepted' THEN 1 ELSE 0 END) AS accepted_requests,
+          SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending_requests
+         FROM ride_requests
+         WHERE passenger_id = ?`,
+        [req.user.id]
+      ),
+      db.query(
+        `SELECT COUNT(*) AS posted_rides
+         FROM rides
+         WHERE driver_id = ?`,
+        [req.user.id]
+      )
+    ]);
+
+    const qStats = Array.isArray(reqRows) && reqRows.length > 0 ? (reqRows[0] as any) : {};
+    const rStats = Array.isArray(rideRows) && rideRows.length > 0 ? (rideRows[0] as any) : {};
+
+    res.status(200).json({
+      success: true,
+      stats: {
+        total_requests: Number(qStats.total_requests || 0),
+        accepted_requests: Number(qStats.accepted_requests || 0),
+        pending_requests: Number(qStats.pending_requests || 0),
+        posted_rides: Number(rStats.posted_rides || 0)
+      }
+    });
+  } catch (error: any) {
+    console.error('getDashboardStats error:', error);
+    res.status(500).json({ success: false, message: 'Failed to load dashboard statistics.' });
+  }
+}

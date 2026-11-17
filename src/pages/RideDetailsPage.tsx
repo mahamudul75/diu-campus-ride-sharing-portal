@@ -28,6 +28,7 @@ import StatusBadge from '../components/StatusBadge.tsx';
 import Spinner from '../components/Spinner.tsx';
 import Modal from '../components/Modal.tsx';
 import Breadcrumb from '../components/Breadcrumb.tsx';
+import { isDbFlagTrue } from '../utils/boolean.ts';
 import RateUserModal from '../components/RateUserModal.tsx';
 import ReportUserModal from '../components/ReportUserModal.tsx';
 
@@ -46,6 +47,7 @@ export const RideDetailsPage: React.FC = () => {
 
   const [loading, setLoading] = useState(true);
   const [requesting, setRequesting] = useState(false);
+  const [cancellingRequest, setCancellingRequest] = useState(false);
   const [openingChat, setOpeningChat] = useState(false);
   const [blockingDriver, setBlockingDriver] = useState(false);
 
@@ -106,6 +108,7 @@ export const RideDetailsPage: React.FC = () => {
 
   const handleCancelMyRequest = async () => {
     if (!userRequest) return;
+    setCancellingRequest(true);
     try {
       const res = await api.patch(`/requests/${userRequest.id}/cancel`);
       if (res.data?.success) {
@@ -115,6 +118,8 @@ export const RideDetailsPage: React.FC = () => {
       }
     } catch (err: any) {
       showToast(err.response?.data?.message || 'Cancellation failed.', 'error');
+    } finally {
+      setCancellingRequest(false);
     }
   };
 
@@ -509,7 +514,7 @@ export const RideDetailsPage: React.FC = () => {
                   <h4 className="font-bold text-[#222B42] dark:text-[#F1F4FC] text-sm truncate">
                     {ride.driver_name}
                   </h4>
-                  {ride.driver_student_verified === 1 && (
+                  {isDbFlagTrue(ride.driver_student_verified) && (
                     <BadgeCheck className="w-4 h-4 text-[#515FC5] dark:text-[#818CF8] shrink-0" />
                   )}
                 </div>
@@ -650,9 +655,10 @@ export const RideDetailsPage: React.FC = () => {
             </button>
             <button
               onClick={handleCancelMyRequest}
-              className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl shadow-xs"
+              disabled={cancellingRequest}
+              className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl shadow-xs disabled:opacity-50 cursor-pointer"
             >
-              Cancel Seat
+              {cancellingRequest ? 'Cancelling...' : 'Cancel Seat'}
             </button>
           </div>
         </div>

@@ -1,4 +1,4 @@
-import React, { useState, ReactNode } from 'react';
+import React, { useState, useEffect, useRef, ReactNode } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import {
   Car,
@@ -48,6 +48,17 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({
 
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [profileDropdownOpen, setProfileDropdownOpen] = useState(false);
+  const profileDropdownRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (profileDropdownRef.current && !profileDropdownRef.current.contains(e.target as Node)) {
+        setProfileDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   const isActive = (path: string) => {
     if (path === '/dashboard') return location.pathname === '/dashboard';
@@ -269,7 +280,7 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({
             <NotificationBell />
             <ThemeToggle showDropdown={true} />
 
-            <div className="relative">
+            <div className="relative" ref={profileDropdownRef}>
               <button
                 onClick={() => setProfileDropdownOpen(!profileDropdownOpen)}
                 className="flex items-center gap-2 p-1 pl-2 rounded-xl hover:bg-[#EEF0FA] dark:hover:bg-[#1B2940] transition-colors cursor-pointer border border-transparent hover:border-[#DCE2EC] dark:hover:border-[#34445D]"
@@ -387,7 +398,14 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({
               location.pathname === '/messages' ? 'text-[#4F5FC9] dark:text-[#818CF8]' : 'text-[#66738A] dark:text-[#B4C0D3]'
             }`}
           >
-            <MessageSquare className="w-4 h-4" />
+            <div className="relative">
+              <MessageSquare className="w-4 h-4" />
+              {unreadChatCount > 0 && (
+                <span className="absolute -top-1 -right-2 min-w-[14px] h-3.5 px-1 rounded-full bg-rose-600 text-white text-[9px] font-bold flex items-center justify-center tabular-nums">
+                  {unreadChatCount > 99 ? '99+' : unreadChatCount}
+                </span>
+              )}
+            </div>
             <span>Chat</span>
           </Link>
           <Link

@@ -288,7 +288,7 @@ export const CampusMapPreview: React.FC = () => {
           </div>
 
           {/* Interactive Map Column (8 cols) */}
-          <div className="lg:col-span-8 relative rounded-2xl overflow-hidden border border-[#D4DAE7] dark:border-[#34445E] bg-[#E8ECF4] dark:bg-[#111827] min-h-[360px] sm:min-h-[420px]">
+          <div className="lg:col-span-8 relative z-0 isolate rounded-2xl overflow-hidden border border-[#D4DAE7] dark:border-[#34445E] bg-[#E8ECF4] dark:bg-[#111827] min-h-[360px] sm:min-h-[420px]">
             <div
               ref={mapContainerRef}
               className="w-full h-full min-h-[360px] sm:min-h-[420px]"

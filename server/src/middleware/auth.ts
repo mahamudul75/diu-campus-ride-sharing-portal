@@ -2,7 +2,7 @@ import type { Request, Response, NextFunction } from 'express';
 import { verifyToken } from '../utils/jwt.ts';
 import type { TokenPayload } from '../utils/jwt.ts';
 import { db } from '../config/db.ts';
-import { getUserExtendedFields } from '../utils/dbHelpers.ts';
+import { isTruthyDbFlag } from '../utils/validators.ts';
 
 export interface AuthenticatedUser {
   id: number;
@@ -25,6 +25,67 @@ export interface AuthenticatedUser {
 
 export interface AuthRequest extends Request {
   user?: AuthenticatedUser;
+}
+
+const AUTH_USER_QUERY_WITH_EXT = `
+  SELECT id, student_id, name, email, phone, role, driver_status,
+         vehicle_type, vehicle_model, vehicle_plate, is_blocked,
+         email_verified, student_verified, show_phone_to_accepted, bio
+  FROM users WHERE id = ?
+`;
+
+const AUTH_USER_QUERY_BASE = `
+  SELECT id, student_id, name, email, phone, role, driver_status,
+         vehicle_type, vehicle_model, vehicle_plate, is_blocked
+  FROM users WHERE id = ?
+`;
+
+async function fetchAuthUserById(userId: number): Promise<AuthenticatedUser | null> {
+  try {
+    const [rows] = await db.query(AUTH_USER_QUERY_WITH_EXT, [userId]);
+    if (!Array.isArray(rows) || rows.length === 0) return null;
+    const row = rows[0] as any;
+    return {
+      id: Number(row.id),
+      student_id: row.student_id,
+      name: row.name,
+      email: row.email,
+      phone: row.phone,
+      role: row.role,
+      driver_status: row.driver_status,
+      vehicle_type: row.vehicle_type ?? null,
+      vehicle_model: row.vehicle_model ?? null,
+      vehicle_plate: row.vehicle_plate ?? null,
+      is_blocked: row.is_blocked,
+      email_verified: Number(row.email_verified || 0),
+      student_verified: Number(row.student_verified || 0),
+      show_phone_to_accepted:
+        row.show_phone_to_accepted === undefined ? 1 : Number(row.show_phone_to_accepted),
+      bio: row.bio || null
+    };
+  } catch (err: any) {
+    if (err?.code !== 'ER_BAD_FIELD_ERROR') throw err;
+    const [rows] = await db.query(AUTH_USER_QUERY_BASE, [userId]);
+    if (!Array.isArray(rows) || rows.length === 0) return null;
+    const row = rows[0] as any;
+    return {
+      id: Number(row.id),
+      student_id: row.student_id,
+      name: row.name,
+      email: row.email,
+      phone: row.phone,
+      role: row.role,
+      driver_status: row.driver_status,
+      vehicle_type: row.vehicle_type ?? null,
+      vehicle_model: row.vehicle_model ?? null,
+      vehicle_plate: row.vehicle_plate ?? null,
+      is_blocked: row.is_blocked,
+      email_verified: 0,
+      student_verified: 0,
+      show_phone_to_accepted: 1,
+      bio: null
+    };
+  }
 }
 
 export async function authenticateToken(
@@ -56,12 +117,7 @@ export async function authenticateToken(
       return;
     }
 
-    const [rows] = await db.query(
-      'SELECT id, student_id, name, email, phone, role, driver_status, vehicle_type, vehicle_model, vehicle_plate, is_blocked FROM users WHERE id = ?',
-      [decoded.id]
-    );
-
-    const user = Array.isArray(rows) && rows.length > 0 ? (rows[0] as AuthenticatedUser) : null;
+    const user = await fetchAuthUserById(decoded.id);
 
     if (!user) {
       res.status(401).json({
@@ -71,7 +127,7 @@ export async function authenticateToken(
       return;
     }
 
-    if (user.is_blocked === 1 || Boolean(user.is_blocked)) {
+    if (isTruthyDbFlag(user.is_blocked)) {
       res.status(403).json({
         success: false,
         message: 'Your account has been suspended by campus administration.'
@@ -79,8 +135,7 @@ export async function authenticateToken(
       return;
     }
 
-    const ext = await getUserExtendedFields(user.id);
-    req.user = { ...user, ...ext };
+    req.user = user;
     next();
   } catch (error: any) {
     console.error('Auth middleware error:', error);
@@ -112,15 +167,9 @@ export async function optionalAuthenticateToken(
       return next();
     }
 
-    const [rows] = await db.query(
-      'SELECT id, student_id, name, email, phone, role, driver_status, vehicle_type, vehicle_model, vehicle_plate, is_blocked FROM users WHERE id = ?',
-      [decoded.id]
-    );
-
-    const user = Array.isArray(rows) && rows.length > 0 ? (rows[0] as AuthenticatedUser) : null;
-    if (user && user.is_blocked !== 1 && !Boolean(user.is_blocked)) {
-      const ext = await getUserExtendedFields(user.id);
-      req.user = { ...user, ...ext };
+    const user = await fetchAuthUserById(decoded.id);
+    if (user && !isTruthyDbFlag(user.is_blocked)) {
+      req.user = user;
     }
     next();
   } catch {

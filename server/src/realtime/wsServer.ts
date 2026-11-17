@@ -2,6 +2,7 @@ import type http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { verifyToken } from '../utils/jwt.ts';
 import { db } from '../config/db.ts';
+import { isTruthyDbFlag } from '../utils/validators.ts';
 
 interface AuthenticatedWebSocket extends WebSocket {
   userId?: number;
@@ -71,7 +72,7 @@ export function initWebSocketServer(
 
       const [rows] = await db.query('SELECT id, is_blocked FROM users WHERE id = ?', [decoded.id]);
       const user = Array.isArray(rows) && rows.length > 0 ? (rows[0] as any) : null;
-      if (!user || user.is_blocked === 1 || Boolean(user.is_blocked)) {
+      if (!user || isTruthyDbFlag(user.is_blocked)) {
         socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
         socket.destroy();
         return;

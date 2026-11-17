@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { ShieldCheck, User, Mail, Phone, Lock, Hash, ArrowRight } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.tsx';
 import Spinner from '../components/Spinner.tsx';
+import { isValidDiuStudentId, isValidDiuEmail, isValidBdPhone } from '../utils/validators.ts';
 
 export const RegisterPage: React.FC = () => {
   const { register } = useAuth();
@@ -32,15 +33,19 @@ export const RegisterPage: React.FC = () => {
     e.preventDefault();
     setError(null);
 
-    // Validation rules
-    const idRegex = /^\d{3}-\d{2}-\d{3}$/;
-    if (!idRegex.test(formData.student_id.trim())) {
+    // Validation rules aligned with backend validators
+    if (!isValidDiuStudentId(formData.student_id)) {
       setError('DIU Student ID must match 000-00-000 format (e.g. 211-15-401).');
       return;
     }
 
-    if (!formData.email.trim().toLowerCase().endsWith('diu.edu.bd')) {
+    if (!isValidDiuEmail(formData.email)) {
       setError('Registration is restricted to official DIU emails (@diu.edu.bd).');
+      return;
+    }
+
+    if (!isValidBdPhone(formData.phone)) {
+      setError('Please enter a valid 11-digit Bangladesh phone number (e.g. 01712345678).');
       return;
     }
 

@@ -105,6 +105,7 @@
 .leaflet-container {
   font-family: inherit !important;
   background-color: var(--bg-card) !important;
+  z-index: 0 !important;
 }
 
 /* Animations */

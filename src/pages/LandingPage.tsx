@@ -65,7 +65,7 @@ export const LandingPage: React.FC = () => {
             <span>Exclusively for Verified DIU Students</span>
           </div>
 
-          <h1 className="text-3xl sm:text-5xl lg:text-6xl font-black tracking-tight text-[#253149] dark:text-[#F1F5FC] leading-[1.15] whitespace-nowrap">
+          <h1 className="text-3xl sm:text-5xl lg:text-6xl font-black tracking-tight text-[#253149] dark:text-[#F1F5FC] leading-[1.15]">
             Smarter Journeys{' '}
             <span className="text-transparent bg-clip-text bg-gradient-to-r from-[#4F5FC9] via-[#777DE0] to-[#299E9A] dark:from-[#818CF8] dark:via-[#A5A6F6] dark:to-[#54C5C0]">
               Stronger Connections

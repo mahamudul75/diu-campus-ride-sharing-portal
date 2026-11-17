@@ -28,25 +28,43 @@ export const BecomeDriverPage: React.FC = () => {
   const [agreedToSafety, setAgreedToSafety] = useState(false);
 
   const [history, setHistory] = useState<DriverApplication[]>([]);
+  const [historyHasMore, setHistoryHasMore] = useState(false);
+  const [loadingMoreHistory, setLoadingMoreHistory] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchHistory = async () => {
+  const fetchHistory = async (append = false, preserveCount?: number) => {
+    if (append) {
+      setLoadingMoreHistory(true);
+    }
     try {
-      const res = await api.get('/drivers/history');
+      const limit = append ? 50 : Math.min(100, Math.max(50, preserveCount || 50));
+      const res = await api.get('/drivers/history', {
+        params: { limit, offset: append ? history.length : 0 }
+      });
       if (res.data?.success) {
-        setHistory(res.data.applications || []);
+        const incoming: DriverApplication[] = res.data.applications || [];
+        if (append) {
+          setHistory((prev) => {
+            const seen = new Set(prev.map((a) => a.id));
+            return [...prev, ...incoming.filter((a) => !seen.has(a.id))];
+          });
+        } else {
+          setHistory(incoming);
+        }
+        setHistoryHasMore(Boolean(res.data.pagination?.has_more) && incoming.length > 0);
       }
     } catch {
       // Optional history section fails gracefully if pre-migration
     } finally {
       setLoadingHistory(false);
+      setLoadingMoreHistory(false);
     }
   };
 
   useEffect(() => {
-    fetchHistory();
+    fetchHistory(false);
   }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -76,7 +94,7 @@ export const BecomeDriverPage: React.FC = () => {
         if (res.data.user) {
           updateUser(res.data.user);
         }
-        fetchHistory();
+        fetchHistory(false, history.length);
       }
     } catch (err: any) {
       setError(err.response?.data?.message || 'Failed to submit driver application.');
@@ -262,7 +280,7 @@ export const BecomeDriverPage: React.FC = () => {
               Application History
             </h2>
             <span className="text-[11px] font-mono text-[#626E86] dark:text-[#B0BCD0] tabular-nums">
-              {history.length} record{history.length === 1 ? '' : 's'}
+              {history.length}{historyHasMore ? '+' : ''} record{history.length === 1 && !historyHasMore ? '' : 's'}
             </span>
           </div>
 
@@ -308,6 +326,17 @@ export const BecomeDriverPage: React.FC = () => {
                   )}
                 </div>
               ))}
+              {historyHasMore && (
+                <div className="pt-3 flex justify-center">
+                  <button
+                    onClick={() => fetchHistory(true)}
+                    disabled={loadingMoreHistory}
+                    className="px-4 py-1.5 rounded-xl border border-[#D4DAE7] dark:border-[#34445E] text-xs font-bold text-[#515FC5] dark:text-[#818CF8] hover:bg-[#E8ECF4] dark:hover:bg-[#24334B] cursor-pointer disabled:opacity-50"
+                  >
+                    {loadingMoreHistory ? 'Loading...' : 'Load More History'}
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </div>

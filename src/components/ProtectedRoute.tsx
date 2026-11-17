@@ -2,6 +2,7 @@ import React from 'react';
 import { Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.tsx';
 import Spinner from './Spinner.tsx';
+import { isDbFlagTrue } from '../utils/boolean.ts';
 
 interface ProtectedRouteProps {
   children: React.ReactNode;
@@ -32,7 +33,7 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
     return <Navigate to={`/login?redirect=${encodeURIComponent(location.pathname)}`} replace />;
   }
 
-  if (user.is_blocked === 1) {
+  if (isDbFlagTrue(user.is_blocked)) {
     return (
       <div className="max-w-md mx-auto my-16 p-8 bg-rose-50 border border-rose-200 rounded-2xl text-center">
         <h2 className="text-lg font-bold text-rose-900 mb-2">Account Suspended</h2>

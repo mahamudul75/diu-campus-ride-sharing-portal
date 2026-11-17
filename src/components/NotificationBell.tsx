@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Bell, CheckCheck, ChevronRight } from 'lucide-react';
 import { useNotifications } from '../context/NotificationContext.tsx';
+import { isDbFlagTrue } from '../utils/boolean.ts';
 
 export const NotificationBell: React.FC = () => {
   const { notifications, unreadCount, markAsRead, markAllAsRead } = useNotifications();
@@ -37,7 +38,7 @@ export const NotificationBell: React.FC = () => {
       </button>
 
       {open && (
-        <div className="absolute right-0 mt-2 w-80 bg-white dark:bg-[#1C2A40] rounded-2xl shadow-xl border border-[#D4DAE7] dark:border-[#34445E] z-50 overflow-hidden text-xs">
+        <div className="absolute right-0 mt-2 w-80 max-w-[calc(100vw-2rem)] bg-white dark:bg-[#1C2A40] rounded-2xl shadow-xl border border-[#D4DAE7] dark:border-[#34445E] z-50 overflow-hidden text-xs">
           <div className="px-4 py-3 border-b border-[#D4DAE7] dark:border-[#34445E] flex items-center justify-between bg-[#F5F7FC] dark:bg-[#151F32]">
             <span className="font-bold text-[#222B42] dark:text-[#F1F4FC]">
               Notifications {unreadCount > 0 && `(${unreadCount})`}
@@ -62,17 +63,17 @@ export const NotificationBell: React.FC = () => {
                 <button
                   key={n.id}
                   onClick={async () => {
-                    if (!n.is_read) await markAsRead(n.id);
+                    if (!isDbFlagTrue(n.is_read)) await markAsRead(n.id);
                     setOpen(false);
                     if (n.link) navigate(n.link);
                   }}
                   className={`w-full text-left px-4 py-3 hover:bg-[#F5F7FC] dark:hover:bg-[#24334B]/60 transition-colors cursor-pointer block ${
-                    !n.is_read ? 'bg-[#DDE2FA]/40 dark:bg-[#24334B]/40' : ''
+                    !isDbFlagTrue(n.is_read) ? 'bg-[#DDE2FA]/40 dark:bg-[#24334B]/40' : ''
                   }`}
                 >
                   <div className="flex items-start justify-between gap-2">
                     <p className="font-bold text-[#222B42] dark:text-[#F1F4FC] leading-snug">{n.title}</p>
-                    {!n.is_read && <span className="w-2 h-2 rounded-full bg-[#515FC5] dark:bg-[#818CF8] shrink-0 mt-1" />}
+                    {!isDbFlagTrue(n.is_read) && <span className="w-2 h-2 rounded-full bg-[#515FC5] dark:bg-[#818CF8] shrink-0 mt-1" />}
                   </div>
                   <p className="text-[11px] text-[#626E86] dark:text-[#B0BCD0] mt-0.5 line-clamp-2">
                     {n.message}

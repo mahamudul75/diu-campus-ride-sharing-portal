@@ -1,7 +1,7 @@
 import type { Response } from 'express';
 import type { AuthRequest } from '../middleware/auth.ts';
 import { db } from '../config/db.ts';
-import { isNonEmptyString } from '../utils/validators.ts';
+import { isNonEmptyString, parsePaginationParams } from '../utils/validators.ts';
 import { getUserExtendedFields } from '../utils/dbHelpers.ts';
 
 export async function applyForDriver(req: AuthRequest, res: Response): Promise<void> {
@@ -99,6 +99,11 @@ export async function getDriverApplicationHistory(req: AuthRequest, res: Respons
       return;
     }
 
+    const { limit, offset } = parsePaginationParams(req.query as Record<string, unknown>, {
+      defaultLimit: 20,
+      maxLimit: 50
+    });
+
     try {
       const [rows] = await db.query(
         `SELECT da.id, da.user_id, da.vehicle_type, da.vehicle_model, da.vehicle_plate,
@@ -107,13 +112,30 @@ export async function getDriverApplicationHistory(req: AuthRequest, res: Respons
          FROM driver_applications da
          LEFT JOIN users u ON da.reviewed_by = u.id
          WHERE da.user_id = ?
-         ORDER BY da.created_at DESC`,
-        [req.user.id]
+         ORDER BY da.created_at DESC
+         LIMIT ? OFFSET ?`,
+        [req.user.id, limit + 1, offset]
       );
-      res.status(200).json({ success: true, applications: rows });
+      const rawList = (rows as any[]) || [];
+      const hasMore = rawList.length > limit;
+      const applications = hasMore ? rawList.slice(0, limit) : rawList;
+
+      res.status(200).json({
+        success: true,
+        applications,
+        pagination: {
+          limit,
+          offset,
+          has_more: hasMore
+        }
+      });
     } catch (err: any) {
       if (err?.code === 'ER_NO_SUCH_TABLE') {
-        res.status(200).json({ success: true, applications: [] });
+        res.status(200).json({
+          success: true,
+          applications: [],
+          pagination: { limit, offset, has_more: false }
+        });
         return;
       }
       throw err;

@@ -23,17 +23,27 @@ export const DashboardPage: React.FC = () => {
   const [myRequests, setMyRequests] = useState<RideRequest[]>([]);
   const [myRides, setMyRides] = useState<Ride[]>([]);
   const [upcomingRides, setUpcomingRides] = useState<Ride[]>([]);
+  const [stats, setStats] = useState<{
+    total_requests: number;
+    accepted_requests: number;
+    pending_requests: number;
+    posted_rides: number;
+  } | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     async function loadDashboardData() {
       try {
-        const [reqRes, ridesRes, openRidesRes] = await Promise.allSettled([
-          api.get('/requests/mine'),
-          isApprovedDriver ? api.get('/rides/mine') : Promise.resolve({ data: { rides: [] } }),
-          api.get('/rides')
+        const [statsRes, reqRes, ridesRes, openRidesRes] = await Promise.allSettled([
+          api.get('/users/dashboard-stats'),
+          api.get('/requests/mine', { params: { limit: 10 } }),
+          isApprovedDriver ? api.get('/rides/mine', { params: { limit: 10 } }) : Promise.resolve({ data: { rides: [] } }),
+          api.get('/rides', { params: { limit: 3 } })
         ]);
 
+        if (statsRes.status === 'fulfilled' && statsRes.value.data?.success && statsRes.value.data.stats) {
+          setStats(statsRes.value.data.stats);
+        }
         if (reqRes.status === 'fulfilled' && reqRes.value.data?.success) {
           setMyRequests(reqRes.value.data.requests || []);
         }
@@ -57,6 +67,10 @@ export const DashboardPage: React.FC = () => {
 
   const pendingRequests = myRequests.filter((r) => r.status === 'pending');
   const acceptedRequests = myRequests.filter((r) => r.status === 'accepted');
+  const activeCount = stats ? stats.accepted_requests : acceptedRequests.length;
+  const pendingCount = stats ? stats.pending_requests : pendingRequests.length;
+  const totalReqCount = stats ? stats.total_requests : myRequests.length;
+  const postedRidesCount = stats ? stats.posted_rides : myRides.length;
 
   // Mini map focal route: first accepted request, or first driver ride, or DIU corridor
   const focalRoute = acceptedRequests[0] || myRides[0] || upcomingRides[0];
@@ -110,7 +124,7 @@ export const DashboardPage: React.FC = () => {
             <span className="text-[10px] font-bold text-[#626E86] dark:text-[#B0BCD0] uppercase tracking-wider block">
               Active Bookings
             </span>
-            <p className="text-2xl font-black text-[#222B42] dark:text-[#F1F4FC] font-mono tabular-nums">{acceptedRequests.length}</p>
+            <p className="text-2xl font-black text-[#222B42] dark:text-[#F1F4FC] font-mono tabular-nums">{activeCount}</p>
             <p className="text-[10px] text-[#515FC5] dark:text-[#818CF8] font-medium">Confirmed seats</p>
           </div>
 
@@ -118,7 +132,7 @@ export const DashboardPage: React.FC = () => {
             <span className="text-[10px] font-bold text-[#626E86] dark:text-[#B0BCD0] uppercase tracking-wider block">
               Pending Requests
             </span>
-            <p className="text-2xl font-black text-[#222B42] dark:text-[#F1F4FC] font-mono tabular-nums">{pendingRequests.length}</p>
+            <p className="text-2xl font-black text-[#222B42] dark:text-[#F1F4FC] font-mono tabular-nums">{pendingCount}</p>
             <p className="text-[10px] text-amber-600 dark:text-amber-400 font-medium">Awaiting driver</p>
           </div>
 
@@ -126,7 +140,7 @@ export const DashboardPage: React.FC = () => {
             <span className="text-[10px] font-bold text-[#626E86] dark:text-[#B0BCD0] uppercase tracking-wider block">
               Total Requests
             </span>
-            <p className="text-2xl font-black text-[#222B42] dark:text-[#F1F4FC] font-mono tabular-nums">{myRequests.length}</p>
+            <p className="text-2xl font-black text-[#222B42] dark:text-[#F1F4FC] font-mono tabular-nums">{totalReqCount}</p>
             <p className="text-[10px] text-[#626E86] dark:text-[#B0BCD0] font-medium">All-time bookings</p>
           </div>
 
@@ -138,7 +152,7 @@ export const DashboardPage: React.FC = () => {
               {isApprovedDriver ? 'Approved Driver' : isPendingDriver ? 'Review Pending' : 'Student Rider'}
             </p>
             <p className="text-[10px] text-[#626E86] dark:text-[#B0BCD0] font-medium">
-              {isApprovedDriver ? `${myRides.length} posted rides` : 'Eligible to apply'}
+              {isApprovedDriver ? `${postedRidesCount} posted rides` : 'Eligible to apply'}
             </p>
           </div>
         </div>

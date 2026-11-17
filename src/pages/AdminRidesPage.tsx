@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { Search, Compass, Ban, FileCheck } from 'lucide-react';
 import api from '../services/api.ts';
@@ -30,45 +30,121 @@ export const AdminRidesPage: React.FC = () => {
 
   const [rides, setRides] = useState<Ride[]>([]);
   const [bookings, setBookings] = useState<AdminBooking[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [ridesHasMore, setRidesHasMore] = useState(false);
+  const [bookingsHasMore, setBookingsHasMore] = useState(false);
+  const [loadingMoreRides, setLoadingMoreRides] = useState(false);
+  const [loadingMoreBookings, setLoadingMoreBookings] = useState(false);
+  const [loadingRides, setLoadingRides] = useState(true);
+  const [loadingBookings, setLoadingBookings] = useState(true);
 
   const [searchTerm, setSearchTerm] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
+  const ridesSeqRef = useRef(0);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   // Moderate modal
   const [targetRide, setTargetRide] = useState<Ride | null>(null);
   const [reason, setReason] = useState('');
   const [moderating, setModerating] = useState(false);
 
-  const loadData = async () => {
-    setLoading(true);
-    try {
-      const [ridesRes, bookingsRes] = await Promise.allSettled([
-        api.get('/admin/rides', {
-          params: {
-            search: searchTerm.trim() || undefined,
-            status: statusFilter || undefined
-          }
-        }),
-        api.get('/admin/bookings')
-      ]);
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(searchTerm);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchTerm]);
 
-      if (ridesRes.status === 'fulfilled' && ridesRes.value.data?.success) {
-        setRides(ridesRes.value.data.rides || []);
+  const fetchRides = async (append = false, preserveCount?: number) => {
+    const seq = ++ridesSeqRef.current;
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
+    if (append) {
+      setLoadingMoreRides(true);
+    } else {
+      setLoadingRides(true);
+    }
+    try {
+      const limit = append ? 100 : Math.min(200, Math.max(100, preserveCount || 100));
+      const res = await api.get('/admin/rides', {
+        params: {
+          search: debouncedSearch.trim() || undefined,
+          status: statusFilter || undefined,
+          limit,
+          offset: append ? rides.length : 0
+        },
+        signal: controller.signal
+      });
+      if (seq !== ridesSeqRef.current) return;
+      if (res.data?.success) {
+        const incoming: Ride[] = res.data.rides || [];
+        if (append) {
+          setRides((prev) => {
+            const seen = new Set(prev.map((r) => r.id));
+            return [...prev, ...incoming.filter((r) => !seen.has(r.id))];
+          });
+        } else {
+          setRides(incoming);
+        }
+        setRidesHasMore(Boolean(res.data.pagination?.has_more) && incoming.length > 0);
       }
-      if (bookingsRes.status === 'fulfilled' && bookingsRes.value.data?.success) {
-        setBookings(bookingsRes.value.data.bookings || []);
+    } catch (err: any) {
+      if (err?.name === 'CanceledError' || err?.code === 'ERR_CANCELED') {
+        return;
+      }
+      if (seq === ridesSeqRef.current) {
+        console.warn('Admin rides load error:', err);
+      }
+    } finally {
+      if (seq === ridesSeqRef.current) {
+        setLoadingRides(false);
+        setLoadingMoreRides(false);
+      }
+    }
+  };
+
+  const fetchBookings = async (append = false, preserveCount?: number) => {
+    if (append) {
+      setLoadingMoreBookings(true);
+    } else {
+      setLoadingBookings(true);
+    }
+    try {
+      const limit = append ? 100 : Math.min(200, Math.max(100, preserveCount || 100));
+      const res = await api.get('/admin/bookings', {
+        params: { limit, offset: append ? bookings.length : 0 }
+      });
+      if (res.data?.success) {
+        const incoming: AdminBooking[] = res.data.bookings || [];
+        if (append) {
+          setBookings((prev) => {
+            const seen = new Set(prev.map((b) => b.id));
+            return [...prev, ...incoming.filter((b) => !seen.has(b.id))];
+          });
+        } else {
+          setBookings(incoming);
+        }
+        setBookingsHasMore(Boolean(res.data.pagination?.has_more) && incoming.length > 0);
       }
     } catch (err) {
-      console.warn('Admin rides load error:', err);
+      console.warn('Admin bookings load error:', err);
     } finally {
-      setLoading(false);
+      setLoadingBookings(false);
+      setLoadingMoreBookings(false);
     }
   };
 
   useEffect(() => {
-    loadData();
-  }, [searchTerm, statusFilter]);
+    fetchRides(false);
+  }, [debouncedSearch, statusFilter]);
+
+  useEffect(() => {
+    fetchBookings(false);
+  }, []);
 
   const handleModerateCancel = async () => {
     if (!targetRide) return;
@@ -81,7 +157,8 @@ export const AdminRidesPage: React.FC = () => {
         showToast(res.data.message || 'Ride cancelled.', 'success');
         setTargetRide(null);
         setReason('');
-        loadData();
+        fetchRides(false, rides.length);
+        fetchBookings(false, bookings.length);
       }
     } catch (err: any) {
       showToast(err.response?.data?.message || 'Moderation failed.', 'error');
@@ -89,6 +166,8 @@ export const AdminRidesPage: React.FC = () => {
       setModerating(false);
     }
   };
+
+  const loading = activeTab === 'rides' ? loadingRides : loadingBookings;
 
   return (
     <DashboardLayout
@@ -107,7 +186,7 @@ export const AdminRidesPage: React.FC = () => {
                   : 'text-[#626E86] hover:text-[#222B42] dark:text-[#B0BCD0] dark:hover:text-white'
               }`}
             >
-              <Compass className="w-3.5 h-3.5" /> Rides ({rides.length})
+              <Compass className="w-3.5 h-3.5" /> Rides ({rides.length}{ridesHasMore ? '+' : ''})
             </button>
             <button
               onClick={() => setActiveTab('bookings')}
@@ -117,7 +196,7 @@ export const AdminRidesPage: React.FC = () => {
                   : 'text-[#626E86] hover:text-[#222B42] dark:text-[#B0BCD0] dark:hover:text-white'
               }`}
             >
-              <FileCheck className="w-3.5 h-3.5" /> Bookings ({bookings.length})
+              <FileCheck className="w-3.5 h-3.5" /> Bookings ({bookings.length}{bookingsHasMore ? '+' : ''})
             </button>
           </div>
 
@@ -221,6 +300,17 @@ export const AdminRidesPage: React.FC = () => {
                   </tbody>
                 </table>
               </div>
+              {ridesHasMore && (
+                <div className="px-4 py-3 border-t border-[#D4DAE7]/50 dark:border-[#34445E] flex justify-center">
+                  <button
+                    onClick={() => fetchRides(true)}
+                    disabled={loadingMoreRides}
+                    className="px-4 py-1.5 rounded-xl border border-[#D4DAE7] dark:border-[#34445E] text-xs font-bold text-[#515FC5] dark:text-[#818CF8] hover:bg-[#E8ECF4] dark:hover:bg-[#24334B] cursor-pointer disabled:opacity-50"
+                  >
+                    {loadingMoreRides ? 'Loading...' : 'Load More Rides'}
+                  </button>
+                </div>
+              )}
             </div>
           )
         ) : bookings.length === 0 ? (
@@ -270,6 +360,17 @@ export const AdminRidesPage: React.FC = () => {
                 </tbody>
               </table>
             </div>
+            {bookingsHasMore && (
+              <div className="px-4 py-3 border-t border-[#D4DAE7]/50 dark:border-[#34445E] flex justify-center">
+                <button
+                  onClick={() => fetchBookings(true)}
+                  disabled={loadingMoreBookings}
+                  className="px-4 py-1.5 rounded-xl border border-[#D4DAE7] dark:border-[#34445E] text-xs font-bold text-[#515FC5] dark:text-[#818CF8] hover:bg-[#E8ECF4] dark:hover:bg-[#24334B] cursor-pointer disabled:opacity-50"
+                >
+                  {loadingMoreBookings ? 'Loading...' : 'Load More Bookings'}
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>

@@ -36,7 +36,7 @@ export const Modal: React.FC<ModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#222B42]/50 dark:bg-[#111827]/80 backdrop-blur-xs animate-fade-in">
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-[#222B42]/50 dark:bg-[#111827]/80 backdrop-blur-xs animate-fade-in">
       <div
         className={`w-full ${maxWidthMap[maxWidth]} bg-[#F5F7FC] dark:bg-[#1C2A40] rounded-2xl shadow-2xl border border-[#D4DAE7] dark:border-[#34445E] overflow-hidden transform transition-all animate-scale-up text-[#222B42] dark:text-[#F1F4FC]`}
         onClick={(e) => e.stopPropagation()}

@@ -22,6 +22,7 @@ import { useToast } from '../context/ToastContext.tsx';
 import DashboardLayout from '../components/DashboardLayout.tsx';
 import StatusBadge from '../components/StatusBadge.tsx';
 import Spinner from '../components/Spinner.tsx';
+import { isDbFlagTrue, isDbFlagNotFalse } from '../utils/boolean.ts';
 
 export const ProfilePage: React.FC = () => {
   const { user, updateUser } = useAuth();
@@ -34,7 +35,9 @@ export const ProfilePage: React.FC = () => {
   const [name, setName] = useState(user?.name || '');
   const [phone, setPhone] = useState(user?.phone || '');
   const [bio, setBio] = useState(user?.bio || '');
-  const [showPhoneToAccepted, setShowPhoneToAccepted] = useState(user?.show_phone_to_accepted !== 0);
+  const [showPhoneToAccepted, setShowPhoneToAccepted] = useState(
+    isDbFlagNotFalse(user?.show_phone_to_accepted, true)
+  );
   const [savingProfile, setSavingProfile] = useState(false);
 
   // Avatar State
@@ -45,6 +48,8 @@ export const ProfilePage: React.FC = () => {
   const [reviews, setReviews] = useState<Review[]>([]);
   const [avgRating, setAvgRating] = useState<number | null>(null);
   const [reviewCount, setReviewCount] = useState(0);
+  const [reviewsHasMore, setReviewsHasMore] = useState(false);
+  const [loadingMoreReviews, setLoadingMoreReviews] = useState(false);
   const [loadingReviews, setLoadingReviews] = useState(true);
 
   // Password Form State
@@ -58,27 +63,43 @@ export const ProfilePage: React.FC = () => {
       setName(user.name || '');
       setPhone(user.phone || '');
       setBio(user.bio || '');
-      setShowPhoneToAccepted(user.show_phone_to_accepted !== 0);
+      setShowPhoneToAccepted(isDbFlagNotFalse(user.show_phone_to_accepted, true));
     }
   }, [user]);
 
-  useEffect(() => {
-    async function loadReviews() {
-      if (!user) return;
-      try {
-        const res = await api.get(`/reviews/user/${user.id}`);
-        if (res.data?.success) {
-          setReviews(res.data.reviews || []);
-          setAvgRating(res.data.avg_rating ?? null);
-          setReviewCount(Number(res.data.review_count || 0));
-        }
-      } catch {
-        // Non-fatal
-      } finally {
-        setLoadingReviews(false);
-      }
+  const loadReviews = async (append = false) => {
+    if (!user) return;
+    if (append) {
+      setLoadingMoreReviews(true);
     }
-    loadReviews();
+    try {
+      const res = await api.get(`/reviews/user/${user.id}`, {
+        params: { limit: 50, offset: append ? reviews.length : 0 }
+      });
+      if (res.data?.success) {
+        const incoming: Review[] = res.data.reviews || [];
+        if (append) {
+          setReviews((prev) => {
+            const seen = new Set(prev.map((rv) => rv.id));
+            return [...prev, ...incoming.filter((rv) => !seen.has(rv.id))];
+          });
+        } else {
+          setReviews(incoming);
+        }
+        setAvgRating(res.data.avg_rating ?? null);
+        setReviewCount(Number(res.data.review_count || 0));
+        setReviewsHasMore(Boolean(res.data.pagination?.has_more) && incoming.length > 0);
+      }
+    } catch {
+      // Non-fatal
+    } finally {
+      setLoadingReviews(false);
+      setLoadingMoreReviews(false);
+    }
+  };
+
+  useEffect(() => {
+    loadReviews(false);
   }, [user?.id]);
 
   const handleAvatarChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -268,13 +289,13 @@ export const ProfilePage: React.FC = () => {
                     <h2 className="text-base font-bold text-[#222B42] dark:text-[#F1F4FC]">
                       {user.name}
                     </h2>
-                    {user.student_verified === 1 && (
+                    {isDbFlagTrue(user.student_verified) && (
                       <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#515FC5] dark:text-[#818CF8]">
                         <BadgeCheck className="w-3.5 h-3.5" />
                         Verified Student
                       </span>
                     )}
-                    {user.email_verified === 1 && (
+                    {isDbFlagTrue(user.email_verified) && (
                       <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 dark:text-emerald-400">
                         <MailCheck className="w-3.5 h-3.5" />
                         Email Verified
@@ -331,7 +352,7 @@ export const ProfilePage: React.FC = () => {
                   <h2 className="text-xs font-bold text-[#222B42] dark:text-[#F1F4FC] uppercase tracking-wider">
                     University Credentials
                   </h2>
-                  {user.email_verified !== 1 && (
+                  {!isDbFlagTrue(user.email_verified) && (
                     <button
                       type="button"
                       disabled={resendingVerify}
@@ -556,6 +577,18 @@ export const ProfilePage: React.FC = () => {
                       )}
                     </div>
                   ))}
+                  {reviewsHasMore && (
+                    <div className="pt-3 flex justify-center">
+                      <button
+                        type="button"
+                        onClick={() => loadReviews(true)}
+                        disabled={loadingMoreReviews}
+                        className="px-4 py-1.5 rounded-xl border border-[#D4DAE7] dark:border-[#34445E] text-xs font-bold text-[#515FC5] dark:text-[#818CF8] hover:bg-[#E8ECF4] dark:hover:bg-[#24334B] cursor-pointer disabled:opacity-50"
+                      >
+                        {loadingMoreReviews ? 'Loading...' : 'Load More Reviews'}
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
             </div>

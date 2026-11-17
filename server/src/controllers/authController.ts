@@ -4,7 +4,7 @@ import bcrypt from 'bcryptjs';
 import type { AuthRequest } from '../middleware/auth.ts';
 import { db } from '../config/db.ts';
 import { generateToken, setAuthCookie, clearAuthCookie } from '../utils/jwt.ts';
-import { isValidStudentId, isValidDiuEmail, isValidPhone, sanitizePhone, isNonEmptyString } from '../utils/validators.ts';
+import { isValidStudentId, isValidDiuEmail, isValidPhone, sanitizePhone, isNonEmptyString, isTruthyDbFlag } from '../utils/validators.ts';
 import { getUserExtendedFields } from '../utils/dbHelpers.ts';
 import { formatDateToMySqlUtc, parseRideDateTime } from '../utils/dateTime.ts';
 import { sendTransactionalEmail, isSmtpConfigured } from '../utils/mailer.ts';
@@ -204,12 +204,28 @@ export async function login(req: AuthRequest, res: Response): Promise<void> {
 
     const cleanEmail = email.trim().toLowerCase();
 
-    const [rows] = await db.query(
-      `SELECT id, student_id, name, email, phone, password_hash, role, driver_status, 
-              vehicle_type, vehicle_model, vehicle_plate, is_blocked 
-       FROM users WHERE email = ?`,
-      [cleanEmail]
-    );
+    let rows: any[];
+    let hasExtendedCols = true;
+    try {
+      const [extRows] = await db.query(
+        `SELECT id, student_id, name, email, phone, password_hash, role, driver_status,
+                vehicle_type, vehicle_model, vehicle_plate, is_blocked,
+                email_verified, student_verified, avatar_url, show_phone_to_accepted, bio
+         FROM users WHERE email = ?`,
+        [cleanEmail]
+      );
+      rows = extRows as any[];
+    } catch (err: any) {
+      if (err?.code !== 'ER_BAD_FIELD_ERROR') throw err;
+      hasExtendedCols = false;
+      const [baseRows] = await db.query(
+        `SELECT id, student_id, name, email, phone, password_hash, role, driver_status,
+                vehicle_type, vehicle_model, vehicle_plate, is_blocked
+         FROM users WHERE email = ?`,
+        [cleanEmail]
+      );
+      rows = baseRows as any[];
+    }
 
     const user = Array.isArray(rows) && rows.length > 0 ? (rows[0] as any) : null;
 
@@ -218,7 +234,7 @@ export async function login(req: AuthRequest, res: Response): Promise<void> {
       return;
     }
 
-    if (user.is_blocked === 1 || Boolean(user.is_blocked)) {
+    if (isTruthyDbFlag(user.is_blocked)) {
       res.status(403).json({
         success: false,
         message: 'Your account has been suspended by campus administration.'
@@ -242,8 +258,6 @@ export async function login(req: AuthRequest, res: Response): Promise<void> {
 
     setAuthCookie(res, token);
 
-    const ext = await getUserExtendedFields(user.id);
-
     const safeUser = {
       id: user.id,
       student_id: user.student_id,
@@ -256,7 +270,15 @@ export async function login(req: AuthRequest, res: Response): Promise<void> {
       vehicle_model: user.vehicle_model,
       vehicle_plate: user.vehicle_plate,
       is_blocked: user.is_blocked,
-      ...ext
+      email_verified: hasExtendedCols ? Number(user.email_verified || 0) : 0,
+      student_verified: hasExtendedCols ? Number(user.student_verified || 0) : 0,
+      avatar_url: hasExtendedCols ? user.avatar_url || null : null,
+      show_phone_to_accepted: hasExtendedCols
+        ? user.show_phone_to_accepted === undefined
+          ? 1
+          : Number(user.show_phone_to_accepted)
+        : 1,
+      bio: hasExtendedCols ? user.bio || null : null
     };
 
     res.status(200).json({
@@ -281,7 +303,21 @@ export async function getMe(req: AuthRequest, res: Response): Promise<void> {
     return;
   }
 
-  res.status(200).json({ success: true, user: req.user });
+  let avatarUrl: string | null = req.user.avatar_url ?? null;
+  if (avatarUrl === null) {
+    try {
+      const [rows] = await db.query('SELECT avatar_url FROM users WHERE id = ?', [req.user.id]);
+      if (Array.isArray(rows) && rows.length > 0) {
+        avatarUrl = (rows[0] as any).avatar_url || null;
+      }
+    } catch (err: any) {
+      if (err?.code !== 'ER_BAD_FIELD_ERROR') {
+        console.error('getMe avatar fetch warning:', err?.message || err);
+      }
+    }
+  }
+
+  res.status(200).json({ success: true, user: { ...req.user, avatar_url: avatarUrl } });
 }
 
 export async function requestPasswordReset(req: AuthRequest, res: Response): Promise<void> {

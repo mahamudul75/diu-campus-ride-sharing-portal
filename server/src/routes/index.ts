@@ -55,7 +55,16 @@ apiRouter.get('/health', async (_req, res) => {
   });
 });
 
-// 2. General API rate limiter
+// 2. Lightweight liveness check (process up, independent of DB readiness & rate limiter)
+apiRouter.get('/live', (_req, res) => {
+  res.status(200).json({
+    status: 'ok',
+    service: 'DIU Campus Ride Sharing API',
+    timestamp: new Date().toISOString()
+  });
+});
+
+// 3. General API rate limiter
 apiRouter.use(apiGeneralLimiter);
 
 // 3. Database availability guard
@@ -89,15 +98,6 @@ apiRouter.use('/reviews', reviewRoutes);
 apiRouter.use('/notifications', notificationRoutes);
 apiRouter.use('/chat', chatRoutes);
 apiRouter.use('/safety', safetyRoutes);
-
-// 5. Lightweight liveness check (process up, independent of DB readiness)
-apiRouter.get('/live', (_req, res) => {
-  res.status(200).json({
-    status: 'ok',
-    service: 'DIU Campus Ride Sharing API',
-    timestamp: new Date().toISOString()
-  });
-});
 
 // 6. 404 JSON fallback for unmatched API routes
 apiRouter.use((_req, res) => {

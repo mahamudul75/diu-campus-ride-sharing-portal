@@ -1,7 +1,8 @@
 import type { Response } from 'express';
 import type { AuthRequest } from '../middleware/auth.ts';
 import { db } from '../config/db.ts';
-import { isPositiveIntId } from '../utils/validators.ts';
+import { isPositiveIntId, parsePaginationParams } from '../utils/validators.ts';
+import { getUserRatingSummaries } from '../utils/dbHelpers.ts';
 import { createNotification } from '../services/notificationService.ts';
 
 /**
@@ -226,47 +227,51 @@ export async function getUserReviews(
       return;
     }
 
+    const { limit, offset } = parsePaginationParams(req.query as Record<string, unknown>, {
+      defaultLimit: 20,
+      maxLimit: 100
+    });
+
     try {
-      const [rows] = await db.query(
-        `SELECT
-           rv.id,
-           rv.ride_id,
-           rv.reviewer_id,
-           rv.reviewee_id,
-           rv.rating,
-           rv.comment,
-           rv.created_at,
-           u.name AS reviewer_name,
-           r.pickup_name,
-           r.dest_name
-         FROM reviews rv
-         JOIN users u ON rv.reviewer_id = u.id
-         JOIN rides r ON rv.ride_id = r.id
-         WHERE rv.reviewee_id = ?
-         ORDER BY rv.created_at DESC`,
-        [userId]
-      );
+      const [[rows], ratingMap] = await Promise.all([
+        db.query(
+          `SELECT
+             rv.id,
+             rv.ride_id,
+             rv.reviewer_id,
+             rv.reviewee_id,
+             rv.rating,
+             rv.comment,
+             rv.created_at,
+             u.name AS reviewer_name,
+             r.pickup_name,
+             r.dest_name
+           FROM reviews rv
+           JOIN users u ON rv.reviewer_id = u.id
+           JOIN rides r ON rv.ride_id = r.id
+           WHERE rv.reviewee_id = ?
+           ORDER BY rv.created_at DESC
+           LIMIT ? OFFSET ?`,
+          [userId, limit + 1, offset]
+        ),
+        getUserRatingSummaries([userId])
+      ]);
 
-      const list = rows as any[];
-      const count = list.length;
-
-      const avgRating =
-        count > 0
-          ? Number(
-              (
-                list.reduce(
-                  (sum, item) => sum + Number(item.rating || 0),
-                  0
-                ) / count
-              ).toFixed(1)
-            )
-          : null;
+      const rawList = (rows as any[]) || [];
+      const hasMore = rawList.length > limit;
+      const reviews = hasMore ? rawList.slice(0, limit) : rawList;
+      const summary = ratingMap.get(userId) || { avg_rating: null, review_count: 0 };
 
       res.status(200).json({
         success: true,
-        avg_rating: avgRating,
-        review_count: count,
-        reviews: list
+        avg_rating: summary.avg_rating,
+        review_count: summary.review_count,
+        reviews,
+        pagination: {
+          limit,
+          offset,
+          has_more: hasMore
+        }
       });
     } catch (err: any) {
       if (err?.code === 'ER_NO_SUCH_TABLE') {
@@ -274,7 +279,8 @@ export async function getUserReviews(
           success: true,
           avg_rating: null,
           review_count: 0,
-          reviews: []
+          reviews: [],
+          pagination: { limit, offset, has_more: false }
         });
         return;
       }
@@ -310,43 +316,38 @@ export async function getRideReviewsAndEligibility(
       return;
     }
 
-    let reviews: any[] = [];
-
-    try {
-      const [rows] = await db.query(
-        `SELECT
-           rv.id,
-           rv.ride_id,
-           rv.reviewer_id,
-           rv.reviewee_id,
-           rv.rating,
-           rv.comment,
-           rv.created_at,
-           u.name AS reviewer_name,
-           u2.name AS reviewee_name
-         FROM reviews rv
-         JOIN users u ON rv.reviewer_id = u.id
-         JOIN users u2 ON rv.reviewee_id = u2.id
-         WHERE rv.ride_id = ?
-         ORDER BY rv.created_at DESC`,
-        [rideId]
-      );
-
-      reviews = rows as any[];
-    } catch (err: any) {
-      if (err?.code !== 'ER_NO_SUCH_TABLE') {
+    const fetchRideReviews = async (): Promise<any[]> => {
+      try {
+        const [rows] = await db.query(
+          `SELECT
+             rv.id,
+             rv.ride_id,
+             rv.reviewer_id,
+             rv.reviewee_id,
+             rv.rating,
+             rv.comment,
+             rv.created_at,
+             u.name AS reviewer_name,
+             u2.name AS reviewee_name
+           FROM reviews rv
+           JOIN users u ON rv.reviewer_id = u.id
+           JOIN users u2 ON rv.reviewee_id = u2.id
+           WHERE rv.ride_id = ?
+           ORDER BY rv.created_at DESC
+           LIMIT 100`,
+          [rideId]
+        );
+        return (rows as any[]) || [];
+      } catch (err: any) {
+        if (err?.code === 'ER_NO_SUCH_TABLE') {
+          return [];
+        }
         throw err;
       }
-    }
+    };
 
-    const eligibleTargets: Array<{
-      user_id: number;
-      name: string;
-      role: 'driver' | 'passenger';
-      already_reviewed: boolean;
-    }> = [];
-
-    if (req.user) {
+    const fetchRide = async (): Promise<any | null> => {
+      if (!req.user) return null;
       const [rideRows] = await db.query(
         `SELECT
            r.id,
@@ -358,11 +359,19 @@ export async function getRideReviewsAndEligibility(
          WHERE r.id = ?`,
         [rideId]
       );
+      return Array.isArray(rideRows) && rideRows.length > 0 ? (rideRows[0] as any) : null;
+    };
 
-      const ride =
-        Array.isArray(rideRows) && rideRows.length > 0
-          ? (rideRows[0] as any)
-          : null;
+    const [reviews, ride] = await Promise.all([fetchRideReviews(), fetchRide()]);
+
+    const eligibleTargets: Array<{
+      user_id: number;
+      name: string;
+      role: 'driver' | 'passenger';
+      already_reviewed: boolean;
+    }> = [];
+
+    if (req.user) {
 
       if (ride && ride.status === 'completed') {
         const myReviewedIds = new Set(

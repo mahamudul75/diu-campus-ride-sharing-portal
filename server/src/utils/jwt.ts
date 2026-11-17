@@ -7,6 +7,11 @@ if (!JWT_SECRET || typeof JWT_SECRET !== 'string' || JWT_SECRET.trim() === '') {
   process.exit(1);
 }
 
+if (JWT_SECRET.trim().length < 32) {
+  console.error('FATAL: JWT_SECRET environment variable is too short (minimum 32 characters required). Server startup aborted.');
+  process.exit(1);
+}
+
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
 const COOKIE_SECURE = process.env.COOKIE_SECURE === 'true' || process.env.NODE_ENV === 'production';
 

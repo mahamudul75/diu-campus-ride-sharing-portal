@@ -26,6 +26,7 @@ import EmptyState from '../components/EmptyState.tsx';
 import Modal from '../components/Modal.tsx';
 import RateUserModal from '../components/RateUserModal.tsx';
 import ReportUserModal from '../components/ReportUserModal.tsx';
+import { isDbFlagTrue } from '../utils/boolean.ts';
 
 function toLocalDateTimeInputValue(isoString: string): string {
   const date = new Date(isoString);
@@ -38,11 +39,15 @@ export const MyRidesPage: React.FC = () => {
   const navigate = useNavigate();
   const { showToast } = useToast();
   const [rides, setRides] = useState<Ride[]>([]);
+  const [ridesHasMore, setRidesHasMore] = useState(false);
+  const [loadingMoreRides, setLoadingMoreRides] = useState(false);
   const [loading, setLoading] = useState(true);
 
   // Requests Modal State
   const [activeRideForRequests, setActiveRideForRequests] = useState<Ride | null>(null);
   const [requests, setRequests] = useState<RideRequest[]>([]);
+  const [requestsHasMore, setRequestsHasMore] = useState(false);
+  const [loadingMoreRequests, setLoadingMoreRequests] = useState(false);
   const [reviewedPassengerIds, setReviewedPassengerIds] = useState<Set<number>>(new Set());
   const [loadingRequests, setLoadingRequests] = useState(false);
 
@@ -65,12 +70,28 @@ export const MyRidesPage: React.FC = () => {
   const [rateTarget, setRateTarget] = useState<{ rideId: number; passengerId: number; passengerName: string } | null>(null);
   const [reportTarget, setReportTarget] = useState<{ rideId: number; userId: number; userName: string } | null>(null);
 
-  const fetchMyRides = async (): Promise<Ride[]> => {
+  const fetchMyRides = async (append = false, preserveCount?: number): Promise<Ride[]> => {
+    if (append) {
+      setLoadingMoreRides(true);
+    }
     try {
-      const res = await api.get('/rides/mine');
+      const limit = append ? 50 : Math.min(100, Math.max(50, preserveCount || 50));
+      const res = await api.get('/rides/mine', {
+        params: { limit, offset: append ? rides.length : 0 }
+      });
       if (res.data?.success) {
-        const nextRides: Ride[] = res.data.rides || [];
-        setRides(nextRides);
+        const incoming: Ride[] = res.data.rides || [];
+        let nextRides = incoming;
+        if (append) {
+          setRides((prev) => {
+            const seen = new Set(prev.map((r) => r.id));
+            nextRides = [...prev, ...incoming.filter((r) => !seen.has(r.id))];
+            return nextRides;
+          });
+        } else {
+          setRides(incoming);
+        }
+        setRidesHasMore(Boolean(res.data.pagination?.has_more) && incoming.length > 0);
         setActiveRideForRequests((curr) =>
           curr ? nextRides.find((r) => r.id === curr.id) || curr : null
         );
@@ -80,27 +101,45 @@ export const MyRidesPage: React.FC = () => {
       console.warn('Failed to fetch my rides:', err);
     } finally {
       setLoading(false);
+      setLoadingMoreRides(false);
     }
     return [];
   };
 
   useEffect(() => {
-    fetchMyRides();
+    fetchMyRides(false);
   }, []);
 
-  const openRequestsModal = async (ride: Ride) => {
+  const openRequestsModal = async (ride: Ride, append = false) => {
     setActiveRideForRequests(ride);
-    setLoadingRequests(true);
+    if (append) {
+      setLoadingMoreRequests(true);
+    } else {
+      setLoadingRequests(true);
+      setRequestsHasMore(false);
+    }
     try {
+      const reqPromise = api.get(`/rides/${ride.id}/requests`, {
+        params: { limit: 100, offset: append ? requests.length : 0 }
+      });
       const [reqRes, revRes] = await Promise.allSettled([
-        api.get(`/rides/${ride.id}/requests`),
-        api.get(`/reviews/ride/${ride.id}`)
+        reqPromise,
+        append ? Promise.resolve(null) : api.get(`/reviews/ride/${ride.id}`)
       ]);
       if (reqRes.status === 'fulfilled' && reqRes.value.data?.success) {
-        setRequests(reqRes.value.data.requests || []);
+        const incoming: RideRequest[] = reqRes.value.data.requests || [];
+        if (append) {
+          setRequests((prev) => {
+            const seen = new Set(prev.map((q) => q.id));
+            return [...prev, ...incoming.filter((q) => !seen.has(q.id))];
+          });
+        } else {
+          setRequests(incoming);
+        }
+        setRequestsHasMore(Boolean(reqRes.value.data.pagination?.has_more) && incoming.length > 0);
       }
-      if (revRes.status === 'fulfilled' && revRes.value.data?.success) {
-        const eligible = revRes.value.data.eligible_targets || [];
+      if (!append && revRes.status === 'fulfilled' && (revRes.value as any)?.data?.success) {
+        const eligible = (revRes.value as any).data.eligible_targets || [];
         const reviewedSet = new Set<number>(
           eligible.filter((t: any) => t.already_reviewed).map((t: any) => Number(t.user_id))
         );
@@ -110,6 +149,7 @@ export const MyRidesPage: React.FC = () => {
       console.warn('Failed to load ride requests:', err);
     } finally {
       setLoadingRequests(false);
+      setLoadingMoreRequests(false);
     }
   };
 
@@ -118,7 +158,7 @@ export const MyRidesPage: React.FC = () => {
       const res = await api.patch(`/requests/${requestId}/accept`);
       if (res.data?.success) {
         showToast(res.data.message || 'Request accepted!', 'success');
-        const updatedRides = await fetchMyRides();
+        const updatedRides = await fetchMyRides(false, rides.length);
         if (activeRideForRequests) {
           const updatedRide = updatedRides.find((r) => r.id === activeRideForRequests.id) || activeRideForRequests;
           openRequestsModal(updatedRide);
@@ -134,7 +174,7 @@ export const MyRidesPage: React.FC = () => {
       const res = await api.patch(`/requests/${requestId}/reject`);
       if (res.data?.success) {
         showToast(res.data.message || 'Request rejected.', 'info');
-        const updatedRides = await fetchMyRides();
+        const updatedRides = await fetchMyRides(false, rides.length);
         if (activeRideForRequests) {
           const updatedRide = updatedRides.find((r) => r.id === activeRideForRequests.id) || activeRideForRequests;
           openRequestsModal(updatedRide);
@@ -176,7 +216,7 @@ export const MyRidesPage: React.FC = () => {
       if (res.data?.success) {
         showToast(res.data.message || 'Ride cancelled.', 'info');
         setCancelRideId(null);
-        fetchMyRides();
+        fetchMyRides(false, rides.length);
       }
     } catch (err: any) {
       showToast(err.response?.data?.message || 'Failed to cancel ride.', 'error');
@@ -190,7 +230,7 @@ export const MyRidesPage: React.FC = () => {
       const res = await api.patch(`/rides/${rideId}/status`, { status });
       if (res.data?.success) {
         showToast(res.data.message || 'Ride status updated.', 'success');
-        fetchMyRides();
+        fetchMyRides(false, rides.length);
       }
     } catch (err: any) {
       showToast(err.response?.data?.message || 'Failed to update ride status.', 'error');
@@ -232,7 +272,7 @@ export const MyRidesPage: React.FC = () => {
       if (res.data?.success) {
         showToast('Ride details updated.', 'success');
         setEditingRide(null);
-        fetchMyRides();
+        fetchMyRides(false, rides.length);
       }
     } catch (err: any) {
       showToast(err.response?.data?.message || 'Failed to update ride.', 'error');
@@ -402,6 +442,17 @@ export const MyRidesPage: React.FC = () => {
                 </div>
               );
             })}
+            {ridesHasMore && (
+              <div className="flex justify-center pt-1">
+                <button
+                  onClick={() => fetchMyRides(true)}
+                  disabled={loadingMoreRides}
+                  className="px-4 py-2 rounded-xl border border-[#D4DAE7] dark:border-[#34445E] bg-[#F5F7FC] dark:bg-[#1C2A40] hover:bg-[#E8ECF4] dark:hover:bg-[#24334B] text-xs font-bold text-[#515FC5] dark:text-[#818CF8] cursor-pointer disabled:opacity-50"
+                >
+                  {loadingMoreRides ? 'Loading...' : 'Load More Rides'}
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -442,7 +493,7 @@ export const MyRidesPage: React.FC = () => {
                         <span className="font-bold text-[#222B42] dark:text-[#F1F4FC]">
                           {req.passenger_name}
                         </span>
-                        {req.passenger_student_verified === 1 && (
+                        {isDbFlagTrue(req.passenger_student_verified) && (
                           <BadgeCheck className="w-3.5 h-3.5 text-[#515FC5] dark:text-[#818CF8]" />
                         )}
                         {req.passenger_avg_rating !== null && req.passenger_avg_rating !== undefined && (
@@ -529,6 +580,17 @@ export const MyRidesPage: React.FC = () => {
                   </div>
                 );
               })}
+              {requestsHasMore && activeRideForRequests && (
+                <div className="pt-3 flex justify-center">
+                  <button
+                    onClick={() => openRequestsModal(activeRideForRequests, true)}
+                    disabled={loadingMoreRequests}
+                    className="px-3.5 py-1.5 rounded-xl border border-[#D4DAE7] dark:border-[#34445E] text-xs font-bold text-[#515FC5] dark:text-[#818CF8] hover:bg-[#E8ECF4] dark:hover:bg-[#24334B] cursor-pointer disabled:opacity-50"
+                  >
+                    {loadingMoreRequests ? 'Loading...' : 'Load More Requests'}
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </div>

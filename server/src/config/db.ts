@@ -561,6 +561,17 @@ function toEpochMs(val: unknown): number {
   return Number.isNaN(ts) ? 0 : ts;
 }
 
+function applyLimitOffset<T>(rows: T[], lower: string, params: any[]): T[] {
+  if (lower.includes('limit ? offset ?') && params.length >= 2) {
+    const limit = Number(params[params.length - 2]);
+    const offset = Number(params[params.length - 1]);
+    if (Number.isFinite(limit) && Number.isFinite(offset) && limit >= 0 && offset >= 0) {
+      return rows.slice(offset, offset + limit);
+    }
+  }
+  return rows;
+}
+
 async function executeMemoryQuery(sql: string, params: any[] = []): Promise<[any, any]> {
   await initMemoryStore();
   const cleanSql = sql.replace(/\s+/g, ' ').trim();
@@ -601,14 +612,22 @@ async function executeMemoryQuery(sql: string, params: any[] = []): Promise<[any
         rows = rows.filter((r) => r.user_id === Number(params[0]));
       }
       rows.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-      return [rows, []];
+      return [applyLimitOffset(rows, lower, params), []];
     }
 
     // reviews
     if (lower.includes('from reviews')) {
+      if (lower.includes('count(*) as total_reviews')) {
+        return [[{ total_reviews: memoryStore.reviews.length }], []];
+      }
+
       if (lower.includes('group by reviewee_id')) {
+        const filterSet = lower.includes('reviewee_id in (')
+          ? new Set(params.map(Number))
+          : null;
         const grouped = new Map<number, number[]>();
         for (const rv of memoryStore.reviews) {
+          if (filterSet && !filterSet.has(rv.reviewee_id)) continue;
           if (!grouped.has(rv.reviewee_id)) grouped.set(rv.reviewee_id, []);
           grouped.get(rv.reviewee_id)!.push(rv.rating);
         }
@@ -640,6 +659,10 @@ async function executeMemoryQuery(sql: string, params: any[] = []): Promise<[any
             rv.reviewer_id === Number(params[1]) &&
             rv.reviewee_id === Number(params[2])
         );
+      } else if (lower.includes('reviewer_id = ? and ride_id in (')) {
+        const reviewerId = Number(params[0]);
+        const rideIdSet = new Set(params.slice(1).map(Number));
+        rows = rows.filter((rv) => rv.reviewer_id === reviewerId && rideIdSet.has(rv.ride_id));
       } else if (lower.includes('rv.reviewee_id = ?')) {
         rows = rows.filter((rv) => rv.reviewee_id === Number(params[0]));
       } else if (lower.includes('rv.ride_id = ?')) {
@@ -649,11 +672,21 @@ async function executeMemoryQuery(sql: string, params: any[] = []): Promise<[any
       }
 
       rows.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+      rows = applyLimitOffset(rows, lower, params);
+      if (lower.includes('limit 100')) {
+        rows = rows.slice(0, 100);
+      }
       return [rows, []];
     }
 
     // notifications
     if (lower.includes('from notifications')) {
+      if (lower.includes('count(*) as unread_count')) {
+        const uid = Number(params[0]);
+        const count = memoryStore.notifications.filter((n) => n.user_id === uid && !n.is_read).length;
+        return [[{ unread_count: count }], []];
+      }
+
       let rows = [...memoryStore.notifications];
       if (lower.includes('where id = ?')) {
         rows = rows.filter((n) => n.id === Number(params[0]));
@@ -662,9 +695,13 @@ async function executeMemoryQuery(sql: string, params: any[] = []): Promise<[any
         if (lower.includes("type = 'ride_reminder'")) {
           rows = rows.filter((n) => n.type === 'ride_reminder');
         }
+        if (lower.includes('link in (')) {
+          const linkSet = new Set(params.slice(1).map(String));
+          rows = rows.filter((n) => n.link !== null && linkSet.has(String(n.link)));
+        }
       }
       rows.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-      return [rows, []];
+      return [applyLimitOffset(rows, lower, params), []];
     }
 
     // conversations
@@ -694,11 +731,67 @@ async function executeMemoryQuery(sql: string, params: any[] = []): Promise<[any
       }
 
       rows.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
-      return [rows, []];
+      return [applyLimitOffset(rows, lower, params), []];
     }
 
     // messages
     if (lower.includes('from messages')) {
+      if (lower.includes('count(*) as unread_count') && lower.includes('group by conversation_id')) {
+        const myId = Number(params[params.length - 1]);
+        const convIdSet = new Set(params.slice(0, -1).map(Number));
+        const counts = new Map<number, number>();
+        for (const m of memoryStore.messages) {
+          if (convIdSet.has(m.conversation_id) && m.sender_id !== myId && m.is_read === 0) {
+            counts.set(m.conversation_id, (counts.get(m.conversation_id) || 0) + 1);
+          }
+        }
+        return [
+          Array.from(counts.entries()).map(([conversation_id, unread_count]) => ({
+            conversation_id,
+            unread_count
+          })),
+          []
+        ];
+      }
+
+      if (
+        (lower.includes('max(created_at) as max_created_at') || lower.includes('max(id) as max_id')) &&
+        lower.includes('group by conversation_id')
+      ) {
+        const convIdSet = new Set(params.map(Number));
+        const latestByConv = new Map<number, MessageRecord>();
+        for (const m of memoryStore.messages) {
+          if (!convIdSet.has(m.conversation_id)) continue;
+          const prev = latestByConv.get(m.conversation_id);
+          if (!prev) {
+            latestByConv.set(m.conversation_id, m);
+            continue;
+          }
+          const mTs = toEpochMs(m.created_at);
+          const prevTs = toEpochMs(prev.created_at);
+          if (mTs > prevTs || (mTs === prevTs && m.id > prev.id)) {
+            latestByConv.set(m.conversation_id, m);
+          }
+        }
+        return [
+          Array.from(latestByConv.values()).map((m) => ({
+            conversation_id: m.conversation_id,
+            content: m.content,
+            created_at: m.created_at
+          })),
+          []
+        ];
+      }
+
+      if (lower.includes('where id = ? and conversation_id = ?')) {
+        const msgId = Number(params[0]);
+        const convId = Number(params[1]);
+        const match = memoryStore.messages
+          .filter((m) => m.id === msgId && m.conversation_id === convId)
+          .map((m) => ({ id: m.id, created_at: m.created_at }));
+        return [match, []];
+      }
+
       let rows = memoryStore.messages.map((m) => {
         const sender = memoryStore.users.find((u) => u.id === m.sender_id);
         return { ...m, sender_name: sender?.name || 'DIU Student' };
@@ -706,12 +799,27 @@ async function executeMemoryQuery(sql: string, params: any[] = []): Promise<[any
       if (lower.includes('conversation_id = ?')) {
         rows = rows.filter((m) => m.conversation_id === Number(params[0]));
       }
-      if (lower.includes('order by created_at desc') || lower.includes('order by m.created_at desc')) {
-        rows.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-      } else {
-        rows.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+      if (lower.includes('m.created_at < ?') && lower.includes('m.id < ?')) {
+        const anchorTs = toEpochMs(params[1]);
+        const anchorId = Number(params[3]);
+        rows = rows.filter((m) => {
+          const ts = toEpochMs(m.created_at);
+          return ts < anchorTs || (ts === anchorTs && m.id < anchorId);
+        });
+      } else if (lower.includes('m.id < ?')) {
+        const beforeId = Number(params[1]);
+        rows = rows.filter((m) => m.id < beforeId);
       }
-      return [rows, []];
+      if (lower.includes('order by m.created_at desc, m.id desc')) {
+        rows.sort((a, b) => toEpochMs(b.created_at) - toEpochMs(a.created_at) || b.id - a.id);
+      } else if (lower.includes('order by m.id desc') || lower.includes('order by id desc')) {
+        rows.sort((a, b) => b.id - a.id);
+      } else if (lower.includes('order by created_at desc') || lower.includes('order by m.created_at desc')) {
+        rows.sort((a, b) => toEpochMs(b.created_at) - toEpochMs(a.created_at) || b.id - a.id);
+      } else {
+        rows.sort((a, b) => toEpochMs(a.created_at) - toEpochMs(b.created_at) || a.id - b.id);
+      }
+      return [applyLimitOffset(rows, lower, params), []];
     }
 
     // emergency_contacts
@@ -728,6 +836,20 @@ async function executeMemoryQuery(sql: string, params: any[] = []): Promise<[any
 
     // user_reports
     if (lower.includes('from user_reports')) {
+      if (lower.includes('count(*) as total_reports')) {
+        return [
+          [
+            {
+              total_reports: memoryStore.userReports.length,
+              pending_reports: memoryStore.userReports.filter(
+                (r) => r.status === 'pending' || r.status === 'under_review'
+              ).length
+            }
+          ],
+          []
+        ];
+      }
+
       let rows = memoryStore.userReports.map((rp) => {
         const reporter = memoryStore.users.find((u) => u.id === rp.reporter_id);
         const reported = memoryStore.users.find((u) => u.id === rp.reported_user_id);
@@ -745,9 +867,11 @@ async function executeMemoryQuery(sql: string, params: any[] = []): Promise<[any
         rows = rows.filter((r) => r.id === Number(params[0]));
       } else if (lower.includes('rp.reporter_id = ?')) {
         rows = rows.filter((r) => r.reporter_id === Number(params[0]));
+      } else if (lower.includes('rp.status = ?')) {
+        rows = rows.filter((r) => r.status === String(params[0]));
       }
       rows.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-      return [rows, []];
+      return [applyLimitOffset(rows, lower, params), []];
     }
 
     // user_blocks
@@ -773,7 +897,10 @@ async function executeMemoryQuery(sql: string, params: any[] = []): Promise<[any
       } else if (lower.includes('ub.blocker_id = ?')) {
         rows = rows.filter((r) => r.blocker_id === Number(params[0]));
       }
-      return [rows, []];
+      if (lower.includes('order by ub.created_at desc')) {
+        rows.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+      }
+      return [applyLimitOffset(rows, lower, params), []];
     }
 
     // Aggregates on users / rides / ride_requests
@@ -788,12 +915,68 @@ async function executeMemoryQuery(sql: string, params: any[] = []): Promise<[any
       return [[{ count: filtered.length }], []];
     }
 
-    if (lower.includes('count(*) as total_rides from rides')) {
-      return [[{ total_rides: memoryStore.rides.length }], []];
+    if (lower.includes('from rides') && (lower.includes('sum(case when status') || lower.includes('count(*) as total_rides'))) {
+      return [
+        [
+          {
+            total_rides: memoryStore.rides.length,
+            active_rides: memoryStore.rides.filter((r) =>
+              ['open', 'scheduled', 'full', 'in_progress'].includes(r.status)
+            ).length,
+            completed_rides: memoryStore.rides.filter((r) => r.status === 'completed').length,
+            cancelled_rides: memoryStore.rides.filter((r) => r.status === 'cancelled').length,
+            bike_rides: memoryStore.rides.filter((r) => r.vehicle_type === 'bike').length,
+            car_rides: memoryStore.rides.filter((r) => r.vehicle_type === 'car').length
+          }
+        ],
+        []
+      ];
     }
 
-    if (lower.includes('count(*) as total_requests from ride_requests')) {
-      return [[{ total_requests: memoryStore.requests.length }], []];
+    if (lower.includes('count(*) as posted_rides') && lower.includes('from rides')) {
+      const driverId = Number(params[0]);
+      return [
+        [{ posted_rides: memoryStore.rides.filter((r) => r.driver_id === driverId).length }],
+        []
+      ];
+    }
+
+    if (lower.includes('from ride_requests') && lower.includes('group by ride_id')) {
+      const rideIdSet = new Set(params.map(Number));
+      const grouped = new Map<number, { pending: number; accepted: number }>();
+      for (const req of memoryStore.requests) {
+        if (!rideIdSet.has(req.ride_id)) continue;
+        const entry = grouped.get(req.ride_id) || { pending: 0, accepted: 0 };
+        if (req.status === 'pending') entry.pending += 1;
+        if (req.status === 'accepted') entry.accepted += 1;
+        grouped.set(req.ride_id, entry);
+      }
+      return [
+        Array.from(grouped.entries()).map(([ride_id, c]) => ({
+          ride_id,
+          pending_requests_count: c.pending,
+          accepted_requests_count: c.accepted
+        })),
+        []
+      ];
+    }
+
+    if (lower.includes('from ride_requests') && (lower.includes('sum(case when status') || lower.includes('count(*) as total_requests'))) {
+      const scoped = lower.includes('where passenger_id = ?')
+        ? memoryStore.requests.filter((q) => q.passenger_id === Number(params[0]))
+        : memoryStore.requests;
+      return [
+        [
+          {
+            total_requests: scoped.length,
+            accepted_requests: scoped.filter((q) => q.status === 'accepted').length,
+            pending_requests: scoped.filter((q) => q.status === 'pending').length,
+            rejected_requests: scoped.filter((q) => q.status === 'rejected').length,
+            cancelled_requests: scoped.filter((q) => q.status === 'cancelled').length
+          }
+        ],
+        []
+      ];
     }
 
     if (lower.includes('sum(case when driver_status') || (lower.includes('count(*)') && lower.includes('from users'))) {
@@ -803,6 +986,7 @@ async function executeMemoryQuery(sql: string, params: any[] = []): Promise<[any
             total_users: memoryStore.users.length,
             approved_drivers: memoryStore.users.filter((u) => u.driver_status === 'approved').length,
             pending_drivers: memoryStore.users.filter((u) => u.driver_status === 'pending').length,
+            verified_students: memoryStore.users.filter((u) => u.student_verified === 1).length,
             total_rides: memoryStore.rides.length,
             total_requests: memoryStore.requests.length
           }
@@ -864,6 +1048,19 @@ async function executeMemoryQuery(sql: string, params: any[] = []): Promise<[any
         results = results.filter((r) => r.ride_id === Number(params[0]));
       } else if (lower.includes('passenger_id = ?') && lower.includes("status = 'accepted'")) {
         results = results.filter((r) => r.passenger_id === Number(params[0]) && r.status === 'accepted');
+        if (lower.includes("r.status in ('open', 'full', 'scheduled', 'in_progress')")) {
+          results = results.filter((r) =>
+            ['open', 'full', 'scheduled', 'in_progress'].includes(String(r.ride_status))
+          );
+        }
+        if (lower.includes('r.departure_time > ? and r.departure_time <= ?')) {
+          const startMs = toEpochMs(params[1]);
+          const endMs = toEpochMs(params[2]);
+          results = results.filter((r) => {
+            const depMs = toEpochMs(r.departure_time);
+            return depMs > startMs && depMs <= endMs;
+          });
+        }
       } else if (lower.includes('passenger_id = ?')) {
         results = results.filter((r) => r.passenger_id === Number(params[0]));
       } else if (lower.includes('r.driver_id = ?')) {
@@ -871,7 +1068,7 @@ async function executeMemoryQuery(sql: string, params: any[] = []): Promise<[any
       }
 
       results.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-      return [results, []];
+      return [applyLimitOffset(results, lower, params), []];
     }
 
     // Select users
@@ -885,6 +1082,9 @@ async function executeMemoryQuery(sql: string, params: any[] = []): Promise<[any
           filtered = filtered.filter((u) => u.email.toLowerCase() === String(params[0]).toLowerCase());
         } else if (/\bwhere\s+(?:u\.)?id\s*=\s*\?/.test(lower)) {
           filtered = filtered.filter((u) => u.id === Number(params[0]));
+        } else if (/\bwhere\s+(?:u\.)?id\s+in\s*\(/.test(lower)) {
+          const idSet = new Set(params.map(Number));
+          filtered = filtered.filter((u) => idSet.has(u.id));
         } else if (lower.includes("role = 'admin' and is_blocked = 0")) {
           filtered = filtered.filter((u) => u.role === 'admin' && !u.is_blocked);
         } else if (lower.includes('student_verified = 1')) {
@@ -906,10 +1106,12 @@ async function executeMemoryQuery(sql: string, params: any[] = []): Promise<[any
 
       if (lower.includes('order by id asc')) {
         filtered.sort((a, b) => a.id - b.id);
+      } else if (lower.includes('order by created_at asc')) {
+        filtered.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
       } else {
         filtered.sort((a, b) => b.id - a.id);
       }
-      return [filtered, []];
+      return [applyLimitOffset(filtered, lower, params), []];
     }
 
     // Select rides
@@ -942,7 +1144,9 @@ async function executeMemoryQuery(sql: string, params: any[] = []): Promise<[any
         return [results, []];
       }
 
-      if (lower.includes("r.status in ('open', 'scheduled')")) {
+      if (lower.includes("r.status in ('open', 'full', 'scheduled', 'in_progress')")) {
+        results = results.filter((r) => ['open', 'full', 'scheduled', 'in_progress'].includes(r.status));
+      } else if (lower.includes("r.status in ('open', 'scheduled')")) {
         results = results.filter((r) => r.status === 'open' || r.status === 'scheduled');
       } else if (lower.includes("r.status = 'open'") || lower.includes("status = 'open'")) {
         results = results.filter((r) => r.status === 'open');
@@ -958,19 +1162,49 @@ async function executeMemoryQuery(sql: string, params: any[] = []): Promise<[any
       }
 
       let paramIdx = 0;
+      const blockedNotInMatch = lower.match(/r\.driver_id not in \(([^)]+)\)/);
+      if (blockedNotInMatch) {
+        const qCount = (blockedNotInMatch[1].match(/\?/g) || []).length;
+        const blockedIds = new Set(params.slice(paramIdx, paramIdx + qCount).map(Number));
+        paramIdx += qCount;
+        results = results.filter((r) => !blockedIds.has(r.driver_id));
+      }
       if (lower.includes('r.driver_id = ?') || lower.includes('driver_id = ?')) {
         const driverId = Number(params[paramIdx++]);
         results = results.filter((r) => r.driver_id === driverId);
       }
-      if (lower.includes('r.pickup_name like ?')) {
-        const term = String(params[paramIdx++] || '').replace(/%/g, '').toLowerCase();
-        results = results.filter((r) => r.pickup_name.toLowerCase().includes(term));
+      if (lower.includes('r.status = ?')) {
+        const targetStatus = String(params[paramIdx++]);
+        results = results.filter((r) => r.status === targetStatus);
       }
-      if (lower.includes('r.dest_name like ?')) {
-        const term = String(params[paramIdx++] || '').replace(/%/g, '').toLowerCase();
-        results = results.filter((r) => r.dest_name.toLowerCase().includes(term));
-      } else if (lower.includes('dest_name like')) {
-        results = results.filter((r) => r.dest_name.toLowerCase().includes('dhanmondi'));
+      if (lower.includes('(r.pickup_name like ? or r.dest_name like ? or u.name like ?)')) {
+        const term = String(params[paramIdx] || '').replace(/%/g, '').toLowerCase();
+        paramIdx += 3;
+        results = results.filter(
+          (r) =>
+            String(r.pickup_name || '').toLowerCase().includes(term) ||
+            String(r.dest_name || '').toLowerCase().includes(term) ||
+            String(r.driver_name || '').toLowerCase().includes(term)
+        );
+      } else {
+        if (lower.includes('r.pickup_name like ?')) {
+          const term = String(params[paramIdx++] || '').replace(/%/g, '').toLowerCase();
+          results = results.filter((r) => String(r.pickup_name || '').toLowerCase().includes(term));
+        }
+        if (lower.includes('r.dest_name like ?')) {
+          const term = String(params[paramIdx++] || '').replace(/%/g, '').toLowerCase();
+          results = results.filter((r) => String(r.dest_name || '').toLowerCase().includes(term));
+        } else if (lower.includes('dest_name like')) {
+          results = results.filter((r) => String(r.dest_name || '').toLowerCase().includes('dhanmondi'));
+        }
+      }
+      if (lower.includes('r.departure_time > ? and r.departure_time <= ?')) {
+        const startMs = toEpochMs(params[paramIdx++]);
+        const endMs = toEpochMs(params[paramIdx++]);
+        results = results.filter((r) => {
+          const depMs = toEpochMs(r.departure_time);
+          return depMs > startMs && depMs <= endMs;
+        });
       }
       if (lower.includes('r.departure_time >= ? and r.departure_time < ?')) {
         const startMs = toEpochMs(params[paramIdx++]);
@@ -998,7 +1232,7 @@ async function executeMemoryQuery(sql: string, params: any[] = []): Promise<[any
       } else {
         results.sort((a, b) => toEpochMs(a.departure_time) - toEpochMs(b.departure_time));
       }
-      return [results, []];
+      return [applyLimitOffset(results, lower, params), []];
     }
   }
 
@@ -1638,6 +1872,33 @@ export async function enableIsolatedTestMemoryDb(): Promise<void> {
   lastAuthFailureMessage = '';
   memoryStore.initialized = false;
   await initMemoryStore();
+}
+
+export async function addTestMessageRecordForTesting(msg: {
+  id?: number;
+  conversation_id: number;
+  sender_id: number;
+  content: string;
+  is_read?: number;
+  created_at: string;
+}): Promise<number> {
+  if (process.env.NODE_ENV === 'production' || !useFallback) {
+    throw new Error('addTestMessageRecordForTesting is only available when isolated test memory DB is active.');
+  }
+  await initMemoryStore();
+  const id = typeof msg.id === 'number' ? msg.id : memoryStore.nextMessageId++;
+  if (id >= memoryStore.nextMessageId) {
+    memoryStore.nextMessageId = id + 1;
+  }
+  memoryStore.messages.push({
+    id,
+    conversation_id: msg.conversation_id,
+    sender_id: msg.sender_id,
+    content: msg.content,
+    is_read: msg.is_read ?? 0,
+    created_at: msg.created_at
+  });
+  return id;
 }
 
 function isNonTransientDbConfigError(err: any): boolean {

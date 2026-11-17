@@ -7,6 +7,7 @@ import { useToast } from '../context/ToastContext.tsx';
 import MapPicker, { LocationPoint } from '../components/MapPicker.tsx';
 import DashboardLayout from '../components/DashboardLayout.tsx';
 import Spinner from '../components/Spinner.tsx';
+import { isValidRideCoordinate } from '../utils/validators.ts';
 
 export const PostRidePage: React.FC = () => {
   const { user } = useAuth();
@@ -37,12 +38,12 @@ export const PostRidePage: React.FC = () => {
     e.preventDefault();
     setError(null);
 
-    if (!pickup.lat || !pickup.lng || !pickup.name.trim()) {
+    if (!isValidRideCoordinate(pickup.lat, pickup.lng) || !pickup.name.trim()) {
       setError('Please select a valid pickup location on the map.');
       return;
     }
 
-    if (!dest.lat || !dest.lng || !dest.name.trim()) {
+    if (!isValidRideCoordinate(dest.lat, dest.lng) || !dest.name.trim()) {
       setError('Please select a valid destination location on the map.');
       return;
     }
@@ -89,8 +90,8 @@ export const PostRidePage: React.FC = () => {
     }
 
     const seats = Number(seatsTotal);
-    if (isNaN(seats) || seats < 1 || seats > 8) {
-      setError('Seats must be between 1 and 8.');
+    if (!Number.isInteger(seats) || seats < 1 || seats > 8) {
+      setError('Seats must be an integer between 1 and 8.');
       return;
     }
 
@@ -146,14 +147,14 @@ export const PostRidePage: React.FC = () => {
                 </p>
               </div>
               <div className="flex items-center gap-2">
-                <span className={`w-2 h-2 rounded-full ${pickup.lat ? 'bg-emerald-500' : 'bg-[#D4DAE7] dark:bg-[#34445E]'}`}></span>
-                <span className={`w-2 h-2 rounded-full ${dest.lat ? 'bg-emerald-500' : 'bg-[#D4DAE7] dark:bg-[#34445E]'}`}></span>
+                <span className={`w-2 h-2 rounded-full ${isValidRideCoordinate(pickup.lat, pickup.lng) ? 'bg-emerald-500' : 'bg-[#D4DAE7] dark:bg-[#34445E]'}`}></span>
+                <span className={`w-2 h-2 rounded-full ${isValidRideCoordinate(dest.lat, dest.lng) ? 'bg-emerald-500' : 'bg-[#D4DAE7] dark:bg-[#34445E]'}`}></span>
               </div>
             </div>
 
             <MapPicker
-              initialPickup={pickup.lat ? pickup : undefined}
-              initialDest={dest.lat ? dest : undefined}
+              initialPickup={isValidRideCoordinate(pickup.lat, pickup.lng) ? pickup : undefined}
+              initialDest={isValidRideCoordinate(dest.lat, dest.lng) ? dest : undefined}
               onPickupChange={(p) => setPickup(p)}
               onDestChange={(d) => setDest(d)}
               height="380px"
@@ -252,8 +253,9 @@ export const PostRidePage: React.FC = () => {
                   <input
                     type="number"
                     required
-                    min="1"
-                    max={vehicleType === 'bike' ? 2 : 6}
+                    min={1}
+                    max={8}
+                    step={1}
                     value={seatsTotal}
                     onChange={(e) => setSeatsTotal(e.target.value)}
                     className="w-full text-sm pl-10 pr-4 py-2 bg-white dark:bg-[#24334B] text-[#222B42] dark:text-[#F1F4FC] border border-[#D4DAE7] dark:border-[#34445E] rounded-xl focus:outline-hidden focus:ring-2 focus:ring-[#515FC5]/20 focus:border-[#515FC5] dark:focus:border-[#818CF8] transition-all font-bold font-mono"
@@ -270,8 +272,10 @@ export const PostRidePage: React.FC = () => {
                   <button
                     type="button"
                     onClick={() => {
+                      if (vehicleType !== 'bike' && Number(seatsTotal) > 1) {
+                        setSeatsTotal('1');
+                      }
                       setVehicleType('bike');
-                      if (Number(seatsTotal) > 1) setSeatsTotal('1');
                     }}
                     className={`py-3 px-4 rounded-2xl border text-xs font-black flex items-center justify-center gap-3 transition-all cursor-pointer ${
                       vehicleType === 'bike'

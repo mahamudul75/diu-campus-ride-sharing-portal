@@ -5,7 +5,8 @@ import {
   updatePassword,
   uploadAvatar,
   removeAvatar,
-  getPublicStudentProfile
+  getPublicStudentProfile,
+  getDashboardStats
 } from '../controllers/userController.ts';
 import { authenticateToken } from '../middleware/auth.ts';
 import { sensitiveWriteLimiter } from '../middleware/rateLimiter.ts';
@@ -13,6 +14,7 @@ import { sensitiveWriteLimiter } from '../middleware/rateLimiter.ts';
 const router = express.Router();
 
 router.get('/profile', authenticateToken, getProfile);
+router.get('/dashboard-stats', authenticateToken, getDashboardStats);
 router.put('/profile', authenticateToken, updateProfile);
 router.put('/password', authenticateToken, updatePassword);
 router.post('/avatar', authenticateToken, sensitiveWriteLimiter, uploadAvatar);

@@ -251,7 +251,7 @@ export const MapView: React.FC<MapViewProps> = ({
   }, [pickupLat, pickupLng, pickupName, destLat, destLng, destName, isDark]);
 
   return (
-    <div className={`relative rounded-3xl overflow-hidden border border-[#D4DAE7] dark:border-[#34445E] shadow-sm ${className}`}>
+    <div className={`relative z-0 isolate rounded-3xl overflow-hidden border border-[#D4DAE7] dark:border-[#34445E] shadow-sm ${className}`}>
       <div ref={mapContainerRef} style={{ height, width: '100%' }} />
 
       {/* Info Badge */}
