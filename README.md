@@ -1,19 +1,27 @@
 # 🚗 Campus Ride Sharing Portal — Daffodil International University (DIU)
 
 > **DIU Capstone Engineering Project**  
-> An exclusive, safe, cost-splitting campus ride-sharing and carpooling web platform designed exclusively for students of Daffodil International University.
+> A secure, student-exclusive ride-sharing and carpooling web platform designed to connect Daffodil International University students, share commuting costs, and make campus transportation more convenient.
 
 ---
 
-## 📌 Project Concept
+## 📌 Project Overview
 
-**Campus Ride Sharing Portal — DIU** is not a public commercial ride-hailing app. It is a closed, secure student-to-student network connecting DIU classmates commuting between **Daffodil Smart City (Ashulia Campus)**, **Dhanmondi (Sobhanbag)**, **Mirpur 10**, **Uttara**, **Savar**, and Dhaka city.
+**Campus Ride Sharing Portal — DIU** is a university-exclusive ride-sharing platform designed specifically for students of Daffodil International University.
 
-### 🌟 Key Differentiators:
-- **100% Student-Only Community:** Every user is verified via their DIU Student ID (`000-00-000` format) and institutional email (`@diu.edu.bd`).
-- **Unified Account Model:** There are no separate driver and passenger accounts. Every user is a student who can commute as a passenger or apply with their bike/car to offer rides on days they commute.
-- **Fair Cost-Sharing:** Passengers save significant travel time and commute costs; student drivers offset their daily fuel expenses.
-- **Privacy Protection (F17):** Driver phone numbers and vehicle registration plates remain strictly protected until a booking request is accepted by the driver.
+Unlike public commercial ride-hailing applications, this platform provides a closed student-to-student network connecting students travelling between **Daffodil Smart City (Ashulia Campus), Dhanmondi (Sobhanbag), Mirpur 10, Uttara, Savar, and other locations across Dhaka.**
+
+### 🌟 Key Features & Differentiators
+
+- **100% Student-Only Community:** Students register using their DIU Student ID (`000-00-000` format) and institutional email (`@diu.edu.bd`).
+- **Unified Account Model:** Every user has a single student account and can act as a passenger or apply to become a driver.
+- **Driver Verification:** Students must submit a driver application and receive admin approval before publishing rides.
+- **Fair Cost-Sharing:** Students travelling along similar routes can share transportation expenses.
+- **Secure Booking System:** Passengers can request rides, while drivers can accept or reject booking requests.
+- **Seat Management:** Transactional booking operations help prevent overbooking and maintain seat availability.
+- **Interactive Maps:** Students can select pickup and destination locations using Leaflet and OpenStreetMap.
+- **Privacy Protection (F17):** Driver phone numbers and vehicle registration details remain protected until the applicable booking request is accepted.
+- **Admin Management:** Administrators can manage student accounts, approve drivers, and monitor platform activity.
 
 ---
 
@@ -21,75 +29,112 @@
 
 | Layer | Technologies |
 |---|---|
-| **Frontend** | React 19, Tailwind CSS, React Router 7, Axios, Leaflet, Lucide Icons |
-| **Backend** | Node.js, Express.js, REST API Architecture, Helmet, CORS, Cookie-Parser |
-| **Authentication** | JWT (JSON Web Tokens), bcryptjs password hashing, HttpOnly secure cookies |
-| **Database** | MySQL 8.0+ (`mysql2` with connection pooling & parameterized queries) |
-| **Database Fallback** | Seamless transactional in-memory relational store with ACID transactions |
-| **Mapping & GIS** | Leaflet 1.9, OpenStreetMap tiles, Nominatim geocoding & route paths |
-| **Testing** | Node.js / tsx automated test runner |
+| Frontend | React 19, TypeScript, Tailwind CSS |
+| Routing | React Router 7 |
+| API Communication | Axios |
+| UI Icons | Lucide Icons |
+| Backend | Node.js, Express.js |
+| API Architecture | REST API |
+| Security | Helmet, CORS, Cookie-Parser |
+| Authentication | JWT, bcryptjs, HttpOnly Cookies |
+| Database | MySQL 8.0+, mysql2 |
+| Database Fallback | Transactional in-memory relational store |
+| Mapping | Leaflet 1.9, OpenStreetMap |
+| Geocoding | Nominatim |
+| Testing | Node.js, tsx |
 
 ---
 
 ## 📂 Project Architecture
 
-```
-campus-ride-sharing/
-├── client/ (or src/)
-│   ├── components/         # Reusable UI (Navbar, Footer, RideCard, MapPicker, MapView, Modal, Toast, StatusBadge)
-│   ├── context/            # AuthContext, ToastContext
-│   ├── pages/              # 16 Complete Pages (Landing, Register, Login, Dashboard, Search, Post, My Rides, etc.)
-│   ├── services/           # Axios API client with credentials & token interceptor
-│   └── types/              # TypeScript models for User, Ride, RideRequest, AdminStats
+```text
+diu-campus-ride-sharing-portal/
+│
+├── src/                         # Frontend application
+│   ├── components/              # Reusable UI components
+│   ├── context/                 # Authentication and toast contexts
+│   ├── pages/                   # Application pages
+│   ├── services/                # Axios API services
+│   └── types/                   # TypeScript interfaces and models
+│
 ├── server/
-│   ├── src/
-│   │   ├── config/         # db.ts (MySQL pool & graceful container fallback)
-│   │   ├── controllers/    # authController, userController, driverController, rideController, requestController, adminController
-│   │   ├── middleware/     # auth.ts (JWT verify, requireAdmin, requireApprovedDriver, isBlocked check)
-│   │   ├── routes/         # authRoutes, userRoutes, driverRoutes, rideRoutes, requestRoutes, adminRoutes, index.ts
-│   │   ├── utils/          # jwt.ts, validators.ts (DIU Student ID & email checks)
-│   │   └── database/
-│   │       ├── schema.sql  # MySQL table definitions, constraints, indexes
-│   │       └── seed.sql    # Seed data (1 admin, 4 students, 6 rides, requests)
+│   └── src/
+│       ├── config/              # Database configuration
+│       ├── controllers/         # Backend controllers
+│       ├── middleware/          # Authentication and authorization
+│       ├── routes/              # REST API routes
+│       ├── utils/                # JWT and validation utilities
+│       └── database/
+│           ├── schema.sql       # Database schema
+│           ├── seed.sql         # Development seed data
+│           └── migrations/      # Versioned database migrations
+│
 ├── test/
-│   └── run-tests.ts        # Automated backend test suite
-├── .env.example            # Environment variables template
-├── CONTRIBUTING.md         # Team collaboration & git branching workflow
-├── package.json            # Scripts & dependencies
-├── server.ts               # Full-stack server entry point (Express + Vite)
-└── README.md               # Project documentation
+│   └── run-tests.ts             # Automated backend tests
+│
+├── public/                      # Static assets
+├── .env.example                 # Environment configuration template
+├── CONTRIBUTING.md              # Team contribution guidelines
+├── package.json                 # Dependencies and npm scripts
+├── server.ts                    # Application server entry point
+└── README.md                    # Project documentation
 ```
+
+*Note: The architecture above describes the main logical structure. Individual filenames and directories may vary as the project evolves.*
 
 ---
 
-## ⚙️ Local Installation & Setup Instructions
+## ⚙️ Local Installation & Setup
 
 ### Prerequisites
-- Node.js (v18 or higher)
-- npm (v9 or higher)
-- MySQL 8.0+ (optional: an automatic transactional in-memory relational engine runs if MySQL is absent)
 
-### Step 1: Clone Repository & Install Dependencies
+- Node.js v18 or higher
+- npm v9 or higher
+- MySQL 8.0+ (for persistent local database storage)
+- Git
+
+### Step 1: Clone the Repository
+
 ```bash
-git clone https://github.com/<your-username>/campus-ride-sharing.git
-cd campus-ride-sharing
+git clone https://github.com/<your-username>/diu-campus-ride-sharing-portal.git
+
+cd diu-campus-ride-sharing-portal
+```
+
+### Step 2: Install Dependencies
+
+```bash
 npm install
 ```
 
-### Step 2: Configure Environment Variables
-Copy `.env.example` to `.env`:
+### Step 3: Configure Environment Variables
+
+Create a `.env` file using the existing `.env.example` template.
+
+On Windows PowerShell:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+On Linux/macOS:
+
 ```bash
 cp .env.example .env
 ```
-Update `.env` with your settings:
+
+Configure the required environment variables:
+
 ```env
 PORT=3000
 NODE_ENV=development
-JWT_SECRET=diu_campus_ride_jwt_secret_capstone_2026_key_secure
+
+JWT_SECRET=replace_with_a_random_secret_of_at_least_32_characters
 JWT_EXPIRES_IN=7d
+
 DIU_EMAIL_DOMAIN=diu.edu.bd
 
-# MySQL Configuration (when running locally)
+# MySQL Configuration
 DB_HOST=localhost
 DB_PORT=3306
 DB_USER=root
@@ -97,134 +142,266 @@ DB_PASSWORD=your_mysql_password
 DB_NAME=diu_ride_sharing
 ```
 
-### Step 3: MySQL Database Setup & Seeding
-If you have MySQL installed locally:
-```bash
-# 1. Log in to MySQL
-mysql -u root -p
+**Security Notice:**
+- Generate a unique, sufficiently random JWT secret for each environment.
+- Never commit `.env` files or actual credentials to GitHub.
+- Use `.env.example` only for placeholder configuration values.
 
-# 2. Run the Schema SQL script
-mysql -u root -p < server/src/database/schema.sql
+### Step 4: Database Setup
 
-# 3. Seed the database with sample users and rides
-mysql -u root -p < server/src/database/seed.sql
+If you are using MySQL locally:
+
+1. Create the project database.
+2. Review the existing database schema.
+3. Apply the required database migrations in the correct order.
+4. Insert development seed data if required.
+
+Example:
+
+```sql
+CREATE DATABASE diu_ride_sharing;
 ```
 
-### Step 4: Run the Application
-Start the full-stack development server:
+The project includes database schema and migration files under:
+
+```text
+server/src/database/
+```
+
+**Important:** Follow the project's existing migration instructions and migration sequence. Do not execute the base schema or seed scripts repeatedly against an existing database without checking their compatibility.
+
+### Step 5: Run the Application
+
+Start the development server:
+
 ```bash
 npm run dev
 ```
-Open your browser at: **`http://localhost:3000`**
+
+Open your browser:
+
+```text
+http://localhost:3000
+```
 
 ---
 
-## 🔑 Pre-Seeded Demo Accounts
+## 🔑 Demo Accounts
 
-For instant grading, testing, and team review:
+The following accounts are intended for development, demonstration, and academic evaluation, provided they are available in the configured seed database.
 
-| Role | Email | Password | Details |
-|---|---|---|---|
-| **Campus Admin** | `admin@diu.edu.bd` | `Admin123!` | Full admin privileges, user management, driver approvals |
-| **Approved Driver** | `tanvir.cse@diu.edu.bd` | `Password123!` | Motorbike driver (`Yamaha FZ-S`), active posted rides |
-| **Approved Driver** | `nusrat.swe@diu.edu.bd` | `Password123!` | Car driver (`Toyota Aqua`), active posted rides |
-| **Pending Driver** | `rahat.eee@diu.edu.bd` | `Password123!` | Driver application submitted, pending review |
-| **Student Passenger** | `sadia.bba@diu.edu.bd` | `Password123!` | Regular passenger with active bookings |
+| Role | Email | Password |
+|---|---|---|
+| Campus Admin | `admin@diu.edu.bd` | `Admin123!` |
+| Approved Driver | `tanvir.cse@diu.edu.bd` | `Password123!` |
+| Approved Driver | `nusrat.swe@diu.edu.bd` | `Password123!` |
+| Pending Driver | `rahat.eee@diu.edu.bd` | `Password123!` |
+| Student Passenger | `sadia.bba@diu.edu.bd` | `Password123!` |
 
-*(Note: The login page includes quick 1-click test buttons to instantly fill these credentials!)*
+**Note:** Demo account availability depends on the configured development seed data. Do not use these credentials in a production environment.
 
 ---
 
-## 🧪 Running Automated Backend Tests
+## 🧪 Automated Backend Testing
 
-Execute the automated test suite with:
+Run the automated backend test suite:
+
 ```bash
 npm test
 ```
-The test suite verifies 20 critical assertions across:
-1. DIU Student ID regex validation (`000-00-000`).
-2. Institutional email domain enforcement (`@diu.edu.bd`).
-3. Student registration & duplicate detection.
-4. Bcrypt password hashing & verification.
-5. JWT token generation & payload verification.
-6. Driver application submissions.
-7. Admin driver approvals.
-8. Ride publishing & route storage.
-9. Filtered ride search queries.
+
+The test suite is designed to verify important application functionality, including:
+
+1. DIU Student ID validation (`000-00-000`).
+2. Institutional email domain validation.
+3. Student registration and duplicate detection.
+4. Bcrypt password hashing and verification.
+5. JWT token generation and verification.
+6. Driver application submission.
+7. Admin driver approval.
+8. Ride creation and route information.
+9. Filtered ride searches.
 10. Passenger booking requests.
-11. Transactional seat decrements & full-ride status locking.
-12. Request cancellations with exact single-seat restoration.
-13. Student account blocking / suspension governance.
-14. Admin account protection rules.
+11. Transactional seat allocation.
+12. Booking cancellation and seat restoration.
+13. Student account blocking and suspension.
+14. Admin account protection.
+
+Additional tests may cover booking concurrency, authorization, validation, and other edge cases.
+
+Run the available quality checks:
+
+```bash
+npm run build
+npm test
+npm run lint
+```
+
+Only use scripts available in the project's `package.json`.
 
 ---
 
-## 📡 REST API Documentation (`/api`)
+## 📡 REST API Documentation
 
-### Authentication
-- `POST /api/auth/register` — Register new student with DIU ID & email verification.
-- `POST /api/auth/login` — Sign in with email and password (sets HttpOnly cookie).
-- `POST /api/auth/logout` — Clear authentication cookie.
-- `GET  /api/auth/me` — Get currently authenticated student.
+Base URL:
 
-### User Profile
-- `GET  /api/users/profile` — Retrieve student profile details.
-- `PUT  /api/users/profile` — Update name, phone, and vehicle information.
-- `PUT  /api/users/password` — Change account password.
+```text
+http://localhost:3000/api
+```
 
-### Driver Operations
-- `POST /api/drivers/apply` — Submit student vehicle details for driver approval.
+### 1. Authentication
 
-### Rides
-- `GET   /api/rides` — Search rides with filters (pickup, destination, date, max_fare, vehicle_type).
-- `GET   /api/rides/:id` — Get detailed ride view with map coordinates and driver details.
-- `POST  /api/rides` — Create new ride (Approved drivers only).
-- `PUT   /api/rides/:id` — Edit open ride details.
-- `PATCH /api/rides/:id/cancel` — Cancel a scheduled ride.
-- `PATCH /api/rides/:id/complete` — Mark ride completed.
-- `GET   /api/rides/mine` — Retrieve all rides posted by the logged-in driver.
+| Method | Endpoint | Description |
+|---|---|---|
+| POST | `/auth/register` | Register a DIU student |
+| POST | `/auth/login` | Authenticate student and set cookie |
+| POST | `/auth/logout` | Clear authentication cookie |
+| GET | `/auth/me` | Retrieve authenticated student |
 
-### Ride Requests & Bookings
-- `POST  /api/rides/:id/requests` — Submit booking request for a ride.
-- `GET   /api/rides/:id/requests` — Driver views incoming requests for their ride.
-- `PATCH /api/requests/:id/accept` — Driver accepts request (seats decrement transactionally).
-- `PATCH /api/requests/:id/reject` — Driver rejects request.
-- `PATCH /api/requests/:id/cancel` — Passenger cancels booking (restores seat count).
-- `GET   /api/requests/mine` — Passenger views all their ride requests and unlocked driver contact info.
+### 2. User Profile
 
-### Administration
-- `GET    /api/admin/stats` — Platform metrics (total users, approved drivers, rides, requests).
-- `GET    /api/admin/users` — Search and view all student accounts.
-- `PATCH  /api/admin/users/:id/block` — Suspend or reactivate student account.
-- `DELETE /api/admin/users/:id` — Remove student account and cascade associated data.
-- `GET    /api/admin/drivers/pending` — List pending driver applications.
-- `PATCH  /api/admin/drivers/:id/approve` — Approve student driver application.
-- `PATCH  /api/admin/drivers/:id/reject` — Reject driver application.
+| Method | Endpoint | Description |
+|---|---|---|
+| GET | `/users/profile` | Retrieve student profile |
+| PUT | `/users/profile` | Update profile information |
+| PUT | `/users/password` | Change account password |
+
+### 3. Driver Operations
+
+| Method | Endpoint | Description |
+|---|---|---|
+| POST | `/drivers/apply` | Submit driver application |
+
+### 4. Ride Management
+
+| Method | Endpoint | Description |
+|---|---|---|
+| GET | `/rides` | Search rides with filters |
+| GET | `/rides/:id` | Retrieve ride details |
+| POST | `/rides` | Publish a ride (approved drivers only) |
+| PUT | `/rides/:id` | Update an open ride |
+| PATCH | `/rides/:id/cancel` | Cancel a scheduled ride |
+| PATCH | `/rides/:id/complete` | Mark a ride as completed |
+| GET | `/rides/mine` | Retrieve posted rides |
+
+### 5. Ride Requests & Bookings
+
+| Method | Endpoint | Description |
+|---|---|---|
+| POST | `/rides/:id/requests` | Submit a booking request |
+| GET | `/rides/:id/requests` | Retrieve incoming ride requests |
+| PATCH | `/requests/:id/accept` | Accept a booking request |
+| PATCH | `/requests/:id/reject` | Reject a booking request |
+| PATCH | `/requests/:id/cancel` | Cancel a booking request |
+| GET | `/requests/mine` | Retrieve personal booking requests |
+
+### 6. Administration
+
+| Method | Endpoint | Description |
+|---|---|---|
+| GET | `/admin/stats` | Retrieve platform statistics |
+| GET | `/admin/users` | View student accounts |
+| PATCH | `/admin/users/:id/block` | Block or reactivate an account |
+| DELETE | `/admin/users/:id` | Remove a student account |
+| GET | `/admin/drivers/pending` | View pending driver applications |
+| PATCH | `/admin/drivers/:id/approve` | Approve a driver application |
+| PATCH | `/admin/drivers/:id/reject` | Reject a driver application |
+
+*All protected endpoints require the appropriate authentication and authorization.*
 
 ---
 
-## ✅ Feature Verification Matrix (F1 – F21)
+## ✅ Feature Verification Matrix (F1–F21)
 
-| Feature ID | Feature Description | Backend Implementation | Frontend Implementation | Test Status |
-|:---:|:---|:---:|:---:|:---:|
-| **F1** | Student Registration | `POST /api/auth/register`, DIU ID & email validation | `RegisterPage.tsx` | Verified & Passed |
-| **F2** | Login and Logout | `POST /api/auth/login`, `POST /api/auth/logout` | `LoginPage.tsx` | Verified & Passed |
-| **F3** | Student Authentication | `authenticateToken` middleware, blocked account check | `ProtectedRoute.tsx` | Verified & Passed |
-| **F4** | Role-Based Permissions | `requireAdmin`, `requireApprovedDriver` middleware | Role-aware `Navbar.tsx`, Route Guards | Verified & Passed |
-| **F5** | Student Profile | `GET/PUT /api/users/profile`, `PUT /api/users/password` | `ProfilePage.tsx` | Verified & Passed |
-| **F6** | Become a Driver | `POST /api/drivers/apply` | `BecomeDriverPage.tsx` | Verified & Passed |
-| **F7** | Admin Approval | `PATCH /api/admin/drivers/:id/approve` | `AdminDriverApprovalsPage.tsx` | Verified & Passed |
-| **F8** | Create Ride | `POST /api/rides` with seat & fare validation | `PostRidePage.tsx` | Verified & Passed |
-| **F9** | Map Location Selection | Coordinates stored in MySQL (`pickup_lat`, `dest_lat`) | Leaflet `MapPicker.tsx` with OSM & Nominatim | Verified & Passed |
-| **F10** | My Posted Rides | `GET /api/rides/mine`, `PATCH complete/cancel` | `MyRidesPage.tsx` | Verified & Passed |
-| **F11** | Incoming Requests | `GET /api/rides/:id/requests`, `PATCH accept/reject` | `MyRidesPage.tsx` Requests Modal | Verified & Passed |
-| **F12** | Search Rides | `GET /api/rides` with multi-parameter SQL filters | `SearchRidesPage.tsx` (Split/List/Map) | Verified & Passed |
-| **F13** | Ride Details | `GET /api/rides/:id` with joined driver details | `RideDetailsPage.tsx` | Verified & Passed |
-| **F14** | Request a Ride | `POST /api/rides/:id/requests` (self-booking blocked) | `RideDetailsPage.tsx` Confirmation Modal | Verified & Passed |
-| **F15** | My Requests | `GET /api/requests/mine` | `MyRequestsPage.tsx` | Verified & Passed |
-| **F16** | Cancel Request | `PATCH /api/requests/:id/cancel` with seat restoration | `MyRequestsPage.tsx` | Verified & Passed |
-| **F17** | Driver Contact Info | Privacy gate: phone & plate masked unless accepted | `RideDetailsPage.tsx`, `MyRequestsPage.tsx` | Verified & Passed |
-| **F18** | Status Transitions | Valid state machine enforcement | Semantic `StatusBadge.tsx` | Verified & Passed |
-| **F19** | Admin Dashboard | `GET /api/admin/stats` | `AdminDashboardPage.tsx` | Verified & Passed |
-| **F20** | User Management | `GET/PATCH/DELETE /api/admin/users` with safety check | `AdminUsersPage.tsx` | Verified & Passed |
-| **F21** | Driver Approvals | `GET /api/admin/drivers/pending` | `AdminDriverApprovalsPage.tsx` | Verified & Passed |
+The following matrix documents the project's 21 defined functional requirements.
+
+| Feature ID | Feature Description | Backend Implementation | Frontend Implementation |
+|:---:|---|---|---|
+| F1 | Student Registration | Registration API and validation | RegisterPage |
+| F2 | Login and Logout | Authentication APIs | LoginPage |
+| F3 | Student Authentication | JWT middleware and blocked account checks | ProtectedRoute |
+| F4 | Role-Based Permissions | Admin and approved-driver middleware | Navbar and route guards |
+| F5 | Student Profile | Profile and password APIs | ProfilePage |
+| F6 | Become a Driver | Driver application API | BecomeDriverPage |
+| F7 | Admin Approval | Driver approval API | AdminDriverApprovalsPage |
+| F8 | Create Ride | Ride creation and validation | PostRidePage |
+| F9 | Map Location Selection | Coordinate storage | MapPicker |
+| F10 | My Posted Rides | Ride management APIs | MyRidesPage |
+| F11 | Incoming Requests | Request management APIs | MyRidesPage |
+| F12 | Search Rides | Filtered ride search API | SearchRidesPage |
+| F13 | Ride Details | Ride details API | RideDetailsPage |
+| F14 | Request a Ride | Booking request API | RideDetailsPage |
+| F15 | My Requests | Personal booking requests API | MyRequestsPage |
+| F16 | Cancel Request | Cancellation and seat restoration | MyRequestsPage |
+| F17 | Driver Contact Privacy | Conditional contact information access | RideDetailsPage and MyRequestsPage |
+| F18 | Status Transitions | Booking state validation | StatusBadge |
+| F19 | Admin Dashboard | Admin statistics API | AdminDashboardPage |
+| F20 | User Management | Student management APIs | AdminUsersPage |
+| F21 | Driver Approvals | Driver approval management APIs | AdminDriverApprovalsPage |
+
+*Feature implementation and test status should be confirmed against the current codebase and test results before being reported as verified.*
+
+---
+
+## 🔐 Security & Privacy
+
+Security and student privacy are important aspects of this project.
+
+- Institutional email validation for DIU students.
+- Student ID format validation.
+- Password hashing using bcryptjs.
+- JWT-based authentication.
+- HttpOnly authentication cookies.
+- Protected backend routes and authorization middleware.
+- Parameterized database queries.
+- Restricted driver contact information.
+- Admin-controlled driver approval.
+- Student account blocking and access control.
+
+---
+
+## 🤝 Team Collaboration
+
+This project follows a structured Git and GitHub collaboration workflow.
+
+All contributors should:
+
+- Use their own GitHub accounts.
+- Create dedicated feature branches.
+- Make meaningful code contributions.
+- Use descriptive commit messages.
+- Test changes before pushing.
+- Submit Pull Requests for review.
+- Avoid committing secrets and unnecessary files.
+
+For detailed contribution instructions, see:
+
+**[CONTRIBUTING.md](CONTRIBUTING.md)**
+
+---
+
+## 🎯 Project Objectives
+
+The Campus Ride Sharing Portal aims to:
+
+1. Connect DIU students travelling along similar routes.
+2. Reduce individual commuting expenses through fair cost-sharing.
+3. Provide a secure student-only transportation network.
+4. Improve ride discovery and booking convenience.
+5. Maintain reliable seat availability and booking management.
+6. Protect student privacy through controlled information access.
+7. Provide administrators with tools for platform management.
+
+---
+
+## 👨‍💻 Project Information
+
+**Project Name:** Campus Ride Sharing Portal — DIU  
+**Institution:** Daffodil International University  
+**Project Type:** Software Engineering Capstone Project  
+**Platform:** Web Application  
+**Target Users:** Verified DIU Students
+
+---
+
+**Developed with dedication for the DIU student community.** 🚗
