@@ -444,7 +444,7 @@ export const MyRidesPage: React.FC = () => {
                       <MessageSquare className="w-3.5 h-3.5 text-[#515FC5] dark:text-[#818CF8]" />
                       Passengers
                       <span className="px-1.5 py-0.2 bg-[#515FC5] dark:bg-[#818CF8] text-white rounded-full text-[10px] font-mono tabular-nums">
-                        {ride.pending_requests_count || 0}
+                        {(Number(ride.pending_requests_count) || 0) + (Number(ride.accepted_requests_count) || 0)}
                       </span>
                     </button>
 
