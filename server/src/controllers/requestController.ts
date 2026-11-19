@@ -10,6 +10,7 @@ import {
 } from '../utils/dbHelpers.ts';
 import { calculateHaversineDistanceKm, estimateDurationMinutes } from '../utils/distance.ts';
 import { createNotification, invalidateReminderCacheForUser } from '../services/notificationService.ts';
+import { syncPassengerRequestOnBookingCancelled } from './passengerRequestController.ts';
 
 export async function createRideRequest(req: AuthRequest, res: Response): Promise<void> {
   if (!req.user) {
@@ -548,6 +549,13 @@ export async function cancelRequest(req: AuthRequest, res: Response): Promise<vo
   try {
     conn = await db.getConnection();
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({
+        success: false,
+        message: error.message || 'Database service is temporarily unavailable. Please try again shortly.'
+      });
+      return;
+    }
     console.error('cancelRequest error:', error);
     res.status(500).json({ success: false, message: 'Failed to cancel request.' });
     return;
@@ -623,14 +631,35 @@ export async function cancelRequest(req: AuthRequest, res: Response): Promise<vo
       return;
     }
 
+    let cancelledSingleSeatMatchedRide = false;
     if (wasAccepted) {
-      await conn.query(
-        `UPDATE rides
-         SET seats_available = LEAST(seats_total, seats_available + 1),
-             status = IF(status = 'full', 'open', status)
-         WHERE id = ? AND seats_available < seats_total`,
-        [request.ride_id]
+      const { isMatchedRequester } = await syncPassengerRequestOnBookingCancelled(
+        conn,
+        Number(request.ride_id),
+        Number(request.passenger_id)
       );
+
+      if (isMatchedRequester && Number(ride.seats_total) <= 1) {
+        cancelledSingleSeatMatchedRide = true;
+        await conn.query(
+          `UPDATE rides
+           SET status = 'cancelled'
+           WHERE id = ?`,
+          [request.ride_id]
+        );
+        await conn.query(
+          "UPDATE ride_requests SET status = 'cancelled', updated_at = NOW() WHERE ride_id = ? AND status IN ('pending', 'accepted')",
+          [request.ride_id]
+        );
+      } else {
+        await conn.query(
+          `UPDATE rides
+           SET seats_available = LEAST(seats_total, seats_available + 1),
+               status = IF(status = 'full', 'open', status)
+           WHERE id = ? AND seats_available < seats_total`,
+          [request.ride_id]
+        );
+      }
     }
 
     await conn.commit();
@@ -647,7 +676,9 @@ export async function cancelRequest(req: AuthRequest, res: Response): Promise<vo
 
     res.status(200).json({
       success: true,
-      message: wasAccepted
+      message: cancelledSingleSeatMatchedRide
+        ? 'Matched ride booking cancelled. This single-seat matched ride has been closed.'
+        : wasAccepted
         ? 'Ride booking cancelled. Seat has been restored.'
         : 'Pending request cancelled.'
     });
@@ -658,6 +689,13 @@ export async function cancelRequest(req: AuthRequest, res: Response): Promise<vo
       } catch (rollbackErr) {
         console.error('cancelRequest rollback error:', rollbackErr);
       }
+    }
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({
+        success: false,
+        message: error.message || 'Database service is temporarily unavailable. Please try again shortly.'
+      });
+      return;
     }
     console.error('cancelRequest error:', error);
     res.status(500).json({ success: false, message: 'Failed to cancel request.' });

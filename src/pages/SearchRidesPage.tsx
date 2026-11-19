@@ -33,12 +33,14 @@ export const SearchRidesPage: React.FC = () => {
 
   const [rides, setRides] = useState<Ride[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [selectedRide, setSelectedRide] = useState<Ride | null>(null);
   const [viewMode, setViewMode] = useState<'split' | 'list' | 'map'>('split');
   const [tileError, setTileError] = useState(false);
   const fetchSeqRef = useRef(0);
+  const fetchAbortRef = useRef<AbortController | null>(null);
 
   // Leaflet map refs
   const mapContainerRef = useRef<HTMLDivElement>(null);
@@ -48,11 +50,18 @@ export const SearchRidesPage: React.FC = () => {
 
   const fetchRides = async (append = false) => {
     const seq = ++fetchSeqRef.current;
+    if (!append) {
+      fetchAbortRef.current?.abort();
+    }
+    const controller = new AbortController();
+    fetchAbortRef.current = controller;
+
     if (append) {
       setLoadingMore(true);
     } else {
       setLoading(true);
     }
+    setError(null);
     try {
       const params: any = {
         limit: 50,
@@ -75,7 +84,7 @@ export const SearchRidesPage: React.FC = () => {
       if (minSeats) params.min_seats = minSeats;
       if (vehicleType) params.vehicle_type = vehicleType;
 
-      const res = await api.get('/rides', { params });
+      const res = await api.get('/rides', { params, signal: controller.signal });
       if (seq !== fetchSeqRef.current) return;
       if (res.data?.success) {
         const incoming: Ride[] = res.data.rides || [];
@@ -89,9 +98,12 @@ export const SearchRidesPage: React.FC = () => {
         }
         setHasMore(Boolean(res.data.pagination?.has_more) && incoming.length > 0);
       }
-    } catch (err) {
+    } catch (err: any) {
+      if (err?.code === 'ERR_CANCELED' || err?.name === 'AbortError' || err?.name === 'CanceledError') {
+        return;
+      }
       if (seq === fetchSeqRef.current) {
-        console.warn('Search rides error:', err);
+        setError(err?.response?.data?.message || 'Unable to load campus rides. Please try again.');
       }
     } finally {
       if (seq === fetchSeqRef.current) {
@@ -103,6 +115,9 @@ export const SearchRidesPage: React.FC = () => {
 
   useEffect(() => {
     fetchRides(false);
+    return () => {
+      fetchAbortRef.current?.abort();
+    };
   }, [searchParams]);
 
   const handleFilterSubmit = (e: React.FormEvent) => {
@@ -519,9 +534,40 @@ export const SearchRidesPage: React.FC = () => {
         {/* Left Column: Ride Cards, Skeletons, or Empty State (4 cols in split mode) */}
         {viewMode !== 'map' && (
           <div className={`${viewMode === 'split' ? 'lg:col-span-4 max-h-[760px] overflow-y-auto pr-1' : 'lg:col-span-12'} space-y-4`}>
-            {loading ? (
+            {error && rides.length > 0 && (
+              <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-800 text-xs text-rose-700 dark:text-rose-300 flex items-center justify-between gap-3">
+                <span className="flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0" />
+                  {error}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => fetchRides(false)}
+                  className="px-3 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-bold inline-flex items-center gap-1 cursor-pointer shrink-0"
+                >
+                  <RotateCcw className="w-3 h-3" /> Retry
+                </button>
+              </div>
+            )}
+
+            {loading && rides.length === 0 ? (
               <div className="space-y-4">
                 <Skeleton type="card" count={3} />
+              </div>
+            ) : error && rides.length === 0 ? (
+              <div className="p-8 text-center bg-[#FFFFFF] dark:bg-[#1B2940] rounded-2xl border border-rose-200 dark:border-rose-800 space-y-3">
+                <AlertCircle className="w-8 h-8 text-rose-500 mx-auto" />
+                <div className="space-y-1">
+                  <h3 className="text-sm font-bold text-[#253149] dark:text-[#F1F5FC]">Could not load rides</h3>
+                  <p className="text-xs text-[#66738A] dark:text-[#B4C0D3]">{error}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => fetchRides(false)}
+                  className="px-5 py-2 bg-[#4F5FC9] hover:bg-[#404EB2] dark:bg-[#818CF8] dark:hover:bg-[#6B79F2] text-white dark:text-[#111827] text-xs font-bold rounded-xl shadow-sm transition-all cursor-pointer inline-flex items-center gap-1.5"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" /> Retry
+                </button>
               </div>
             ) : rides.length === 0 ? (
               <EmptyState

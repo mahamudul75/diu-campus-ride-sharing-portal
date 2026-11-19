@@ -15,7 +15,8 @@
     "test-db": "tsx server/src/utils/test-db.ts",
     "seed:admin": "tsx server/src/database/seedAdmin.ts",
     "migrate": "tsx server/src/database/runMigration002.ts",
-    "migrate:indexes": "tsx server/src/database/runMigration003.ts"
+    "migrate:indexes": "tsx server/src/database/runMigration003.ts",
+    "migrate:passenger-requests": "tsx server/src/database/runMigration004.ts"
   },
   "engines": {
     "node": ">=22.18.0"

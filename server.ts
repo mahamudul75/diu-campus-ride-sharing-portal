@@ -21,11 +21,19 @@ const isProduction = process.env.NODE_ENV === 'production';
 // Configure reverse proxy trust: trust 1st upstream reverse proxy
 app.set('trust proxy', 1);
 
+const isAiStudioPreview =
+  !isProduction &&
+  Boolean(
+    process.env.APP_URL &&
+      /^https:\/\/ais-(?:dev|pre)-[a-z0-9-]+\.[a-z0-9-]+\.run\.app$/i.test(process.env.APP_URL)
+  );
+
 // Security headers with Helmet
 app.use(
   helmet({
     contentSecurityPolicy: false,
     crossOriginEmbedderPolicy: false,
+    frameguard: isAiStudioPreview ? false : true,
     referrerPolicy: {
       policy: 'strict-origin-when-cross-origin'
     }
@@ -176,11 +184,12 @@ app.use('/api', apiRouter);
 async function setupFrontend() {
   if (!isProduction) {
     const { createServer } = await import('vite');
+    const isHmrDisabled = process.env.DISABLE_HMR === 'true' || isAiStudioPreview;
     const vite = await createServer({
       server: {
         middlewareMode: true,
-        hmr: process.env.DISABLE_HMR !== 'true',
-        watch: process.env.DISABLE_HMR === 'true' ? null : {}
+        hmr: !isHmrDisabled,
+        watch: isHmrDisabled ? null : {}
       },
       appType: 'spa'
     });

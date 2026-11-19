@@ -15,7 +15,8 @@ import {
   ChevronDown,
   Layers,
   MessageSquare,
-  ShieldCheck
+  ShieldCheck,
+  Navigation
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.tsx';
 import { useNotifications } from '../context/NotificationContext.tsx';
@@ -125,6 +126,18 @@ export const Navbar: React.FC = () => {
                 >
                   <Clock className="w-3.5 h-3.5" />
                   Bookings
+                </Link>
+
+                <Link
+                  to="/passenger-requests"
+                  className={`px-3 py-2 rounded-xl text-xs font-semibold transition-all flex items-center gap-1.5 whitespace-nowrap ${
+                    location.pathname.startsWith('/passenger-requests')
+                      ? 'bg-[#EEF0FA] dark:bg-[#818CF8]/15 text-[#4F5FC9] dark:text-[#818CF8] font-bold'
+                      : 'text-[#66738A] dark:text-[#B4C0D3] hover:text-[#253149] dark:hover:text-[#F1F5FC] hover:bg-[#EEF0FA] dark:hover:bg-[#1B2940]'
+                  }`}
+                >
+                  <Navigation className="w-3.5 h-3.5" />
+                  Ride Requests
                 </Link>
 
                 <Link
@@ -371,6 +384,15 @@ export const Navbar: React.FC = () => {
               >
                 <Clock className="w-4 h-4 text-[#66738A] dark:text-[#B4C0D3]" />
                 Bookings
+              </Link>
+
+              <Link
+                to="/passenger-requests"
+                onClick={closeMenus}
+                className="flex items-center gap-3 p-2.5 rounded-xl font-semibold text-[#253149] dark:text-[#F1F5FC] hover:bg-[#EEF0FA] dark:hover:bg-[#1B2940]"
+              >
+                <Navigation className="w-4 h-4 text-[#4F5FC9] dark:text-[#818CF8]" />
+                Ride Requests
               </Link>
 
               <Link

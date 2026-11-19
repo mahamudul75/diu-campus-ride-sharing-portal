@@ -4,9 +4,10 @@ import { RideStatus, RequestStatus, DriverStatus, ReportStatus } from '../types/
 interface StatusBadgeProps {
   status: RideStatus | RequestStatus | DriverStatus | ReportStatus | string;
   size?: 'sm' | 'md';
+  context?: 'ride' | 'passenger_request';
 }
 
-export const StatusBadge: React.FC<StatusBadgeProps> = ({ status, size = 'md' }) => {
+export const StatusBadge: React.FC<StatusBadgeProps> = ({ status, size = 'md', context = 'ride' }) => {
   const s = (status || '').toLowerCase();
 
   let colorClasses =
@@ -21,7 +22,7 @@ export const StatusBadge: React.FC<StatusBadgeProps> = ({ status, size = 'md' })
   } else if (s === 'open') {
     colorClasses =
       'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800/60';
-    label = 'Open Seats';
+    label = context === 'passenger_request' ? 'Open' : 'Open Seats';
   } else if (s === 'full') {
     colorClasses =
       'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800/60';
@@ -52,6 +53,18 @@ export const StatusBadge: React.FC<StatusBadgeProps> = ({ status, size = 'md' })
     colorClasses =
       'bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/40 dark:text-rose-300 dark:border-rose-800/60';
     label = 'Rejected';
+  } else if (s === 'matched') {
+    colorClasses =
+      'bg-indigo-50 text-[#515FC5] border-indigo-200 dark:bg-[#24334B] dark:text-[#818CF8] dark:border-[#34445E]';
+    label = 'Matched';
+  } else if (s === 'expired') {
+    colorClasses =
+      'bg-[#E1E6F0] text-[#626E86] border-[#D4DAE7] dark:bg-[#172235] dark:text-[#B0BCD0] dark:border-[#34445E]';
+    label = 'Expired';
+  } else if (s === 'withdrawn') {
+    colorClasses =
+      'bg-[#E1E6F0] text-[#626E86] border-[#D4DAE7] dark:bg-[#172235] dark:text-[#B0BCD0] dark:border-[#34445E]';
+    label = 'Withdrawn';
   }
   // Driver Statuses
   else if (s === 'approved') {

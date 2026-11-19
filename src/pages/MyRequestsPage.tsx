@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   Clock,
@@ -11,7 +11,9 @@ import {
   MessageSquare,
   Star,
   Flag,
-  BadgeCheck
+  BadgeCheck,
+  AlertCircle,
+  RotateCcw
 } from 'lucide-react';
 import api from '../services/api.ts';
 import { RideRequest } from '../types/index.ts';
@@ -34,7 +36,10 @@ export const MyRequestsPage: React.FC = () => {
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<BookingFilter>('all');
+  const fetchSeqRef = useRef(0);
+  const fetchAbortRef = useRef<AbortController | null>(null);
 
   // Modal confirmation state
   const [cancelModalOpen, setCancelModalOpen] = useState(false);
@@ -46,14 +51,26 @@ export const MyRequestsPage: React.FC = () => {
   const [reportTarget, setReportTarget] = useState<{ rideId: number; driverId: number; driverName: string } | null>(null);
 
   const fetchRequests = async (append = false, preserveCount?: number) => {
+    const seq = ++fetchSeqRef.current;
+    if (!append) {
+      fetchAbortRef.current?.abort();
+    }
+    const controller = new AbortController();
+    fetchAbortRef.current = controller;
+
     if (append) {
       setLoadingMore(true);
+    } else if (requests.length === 0) {
+      setLoading(true);
     }
+    setError(null);
     try {
       const limit = append ? 100 : Math.min(200, Math.max(100, preserveCount || 100));
       const res = await api.get('/requests/mine', {
-        params: { limit, offset: append ? requests.length : 0 }
+        params: { limit, offset: append ? requests.length : 0 },
+        signal: controller.signal
       });
+      if (seq !== fetchSeqRef.current) return;
       if (res.data?.success) {
         const incoming: RideRequest[] = res.data.requests || [];
         if (append) {
@@ -66,16 +83,26 @@ export const MyRequestsPage: React.FC = () => {
         }
         setHasMore(Boolean(res.data.pagination?.has_more) && incoming.length > 0);
       }
-    } catch (err) {
-      console.warn('Failed to fetch requests:', err);
+    } catch (err: any) {
+      if (err?.code === 'ERR_CANCELED' || err?.name === 'AbortError' || err?.name === 'CanceledError') {
+        return;
+      }
+      if (seq === fetchSeqRef.current) {
+        setError(err?.response?.data?.message || 'Unable to load your ride bookings. Please try again.');
+      }
     } finally {
-      setLoading(false);
-      setLoadingMore(false);
+      if (seq === fetchSeqRef.current) {
+        setLoading(false);
+        setLoadingMore(false);
+      }
     }
   };
 
   useEffect(() => {
     fetchRequests(false);
+    return () => {
+      fetchAbortRef.current?.abort();
+    };
   }, []);
 
   useEffect(() => {
@@ -173,9 +200,40 @@ export const MyRequestsPage: React.FC = () => {
           ))}
         </div>
 
-        {loading ? (
+        {error && requests.length > 0 && (
+          <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-800 text-xs text-rose-700 dark:text-rose-300 flex items-center justify-between gap-3">
+            <span className="flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 shrink-0" />
+              {error}
+            </span>
+            <button
+              type="button"
+              onClick={() => fetchRequests(false, requests.length)}
+              className="px-3 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-bold inline-flex items-center gap-1 cursor-pointer shrink-0"
+            >
+              <RotateCcw className="w-3 h-3" /> Retry
+            </button>
+          </div>
+        )}
+
+        {loading && requests.length === 0 ? (
           <div className="space-y-3">
             <Skeleton type="card" count={4} />
+          </div>
+        ) : error && requests.length === 0 ? (
+          <div className="p-8 text-center bg-[#F5F7FC] dark:bg-[#1C2A40] rounded-2xl border border-rose-200 dark:border-rose-800 space-y-3">
+            <AlertCircle className="w-8 h-8 text-rose-500 mx-auto" />
+            <div className="space-y-1">
+              <h3 className="text-sm font-bold text-[#222B42] dark:text-[#F1F4FC]">Could not load your bookings</h3>
+              <p className="text-xs text-[#626E86] dark:text-[#B0BCD0]">{error}</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => fetchRequests(false)}
+              className="px-4 py-2 bg-[#515FC5] hover:bg-[#434FA8] dark:bg-[#818CF8] dark:hover:bg-[#6366F1] text-white text-xs font-bold rounded-xl shadow-xs inline-flex items-center gap-1.5 cursor-pointer"
+            >
+              <RotateCcw className="w-3.5 h-3.5" /> Retry
+            </button>
           </div>
         ) : filteredRequests.length === 0 ? (
           <EmptyState

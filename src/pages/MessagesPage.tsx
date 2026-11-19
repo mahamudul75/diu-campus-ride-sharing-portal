@@ -6,7 +6,9 @@ import {
   BadgeCheck,
   Ban,
   Flag,
-  ArrowUpRight
+  ArrowUpRight,
+  AlertCircle,
+  RotateCcw
 } from 'lucide-react';
 import api from '../services/api.ts';
 import { Conversation, ChatMessage } from '../types/index.ts';
@@ -30,6 +32,7 @@ export const MessagesPage: React.FC = () => {
   const [convHasMore, setConvHasMore] = useState(false);
   const [loadingMoreConvs, setLoadingMoreConvs] = useState(false);
   const [loadingList, setLoadingList] = useState(true);
+  const [listError, setListError] = useState<string | null>(null);
 
   const selectedIdParam = Number(searchParams.get('conversation') || 0);
   const [selectedConvId, setSelectedConvId] = useState<number | null>(
@@ -38,6 +41,7 @@ export const MessagesPage: React.FC = () => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [messagesHasMore, setMessagesHasMore] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(false);
+  const [messagesError, setMessagesError] = useState<string | null>(null);
   const [loadingOlderMessages, setLoadingOlderMessages] = useState(false);
   const [isBlockedPair, setIsBlockedPair] = useState(false);
 
@@ -46,15 +50,31 @@ export const MessagesPage: React.FC = () => {
   const [showReportModal, setShowReportModal] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const skipNextAutoScrollRef = useRef(false);
+  const convSeqRef = useRef(0);
+  const convAbortRef = useRef<AbortController | null>(null);
+  const msgSeqRef = useRef(0);
+  const msgAbortRef = useRef<AbortController | null>(null);
 
   const fetchConversations = async (append = false) => {
+    const seq = ++convSeqRef.current;
+    if (!append) {
+      convAbortRef.current?.abort();
+    }
+    const controller = new AbortController();
+    convAbortRef.current = controller;
+
     if (append) {
       setLoadingMoreConvs(true);
+    } else if (conversations.length === 0) {
+      setLoadingList(true);
     }
+    setListError(null);
     try {
       const res = await api.get('/chat/conversations', {
-        params: { limit: 50, offset: append ? conversations.length : 0 }
+        params: { limit: 50, offset: append ? conversations.length : 0 },
+        signal: controller.signal
       });
+      if (seq !== convSeqRef.current) return;
       if (res.data?.success) {
         const list: Conversation[] = res.data.conversations || [];
         if (append) {
@@ -70,16 +90,27 @@ export const MessagesPage: React.FC = () => {
         }
         setConvHasMore(Boolean(res.data.pagination?.has_more) && list.length > 0);
       }
-    } catch (err) {
-      console.warn('Failed to fetch conversations:', err);
+    } catch (err: any) {
+      if (err?.code === 'ERR_CANCELED' || err?.name === 'AbortError' || err?.name === 'CanceledError') {
+        return;
+      }
+      if (seq === convSeqRef.current) {
+        setListError(err?.response?.data?.message || 'Unable to load conversations. Please try again.');
+      }
     } finally {
-      setLoadingList(false);
-      setLoadingMoreConvs(false);
+      if (seq === convSeqRef.current) {
+        setLoadingList(false);
+        setLoadingMoreConvs(false);
+      }
     }
   };
 
   useEffect(() => {
     fetchConversations();
+    return () => {
+      convAbortRef.current?.abort();
+      msgAbortRef.current?.abort();
+    };
   }, []);
 
   useEffect(() => {
@@ -89,12 +120,20 @@ export const MessagesPage: React.FC = () => {
   }, [selectedIdParam]);
 
   const fetchMessages = async (convId: number) => {
+    const seq = ++msgSeqRef.current;
+    msgAbortRef.current?.abort();
+    const controller = new AbortController();
+    msgAbortRef.current = controller;
+
     setLoadingMessages(true);
+    setMessagesError(null);
     setMessagesHasMore(false);
     try {
       const res = await api.get(`/chat/conversations/${convId}/messages`, {
-        params: { limit: 100 }
+        params: { limit: 100 },
+        signal: controller.signal
       });
+      if (seq !== msgSeqRef.current) return;
       if (res.data?.success) {
         setMessages(res.data.messages || []);
         setMessagesHasMore(Boolean(res.data.pagination?.has_more));
@@ -105,9 +144,18 @@ export const MessagesPage: React.FC = () => {
         refreshUnreadChatCount();
       }
     } catch (err: any) {
-      showToast(err.response?.data?.message || 'Failed to load messages.', 'error');
+      if (err?.code === 'ERR_CANCELED' || err?.name === 'AbortError' || err?.name === 'CanceledError') {
+        return;
+      }
+      if (seq === msgSeqRef.current) {
+        const msg = err.response?.data?.message || 'Failed to load messages.';
+        setMessagesError(msg);
+        showToast(msg, 'error');
+      }
     } finally {
-      setLoadingMessages(false);
+      if (seq === msgSeqRef.current) {
+        setLoadingMessages(false);
+      }
     }
   };
 
@@ -245,9 +293,24 @@ export const MessagesPage: React.FC = () => {
       title="Ride Messages"
       subtitle="Coordinate pickup points and timing directly with your driver or passengers."
     >
-      {loadingList ? (
+      {loadingList && conversations.length === 0 ? (
         <div className="py-20 flex justify-center">
           <Spinner size="lg" />
+        </div>
+      ) : listError && conversations.length === 0 ? (
+        <div className="p-8 text-center bg-[#F5F7FC] dark:bg-[#1C2A40] rounded-2xl border border-rose-200 dark:border-rose-800 space-y-3">
+          <AlertCircle className="w-8 h-8 text-rose-500 mx-auto" />
+          <div className="space-y-1">
+            <h3 className="text-sm font-bold text-[#222B42] dark:text-[#F1F4FC]">Could not load conversations</h3>
+            <p className="text-xs text-[#626E86] dark:text-[#B0BCD0]">{listError}</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => fetchConversations(false)}
+            className="px-4 py-2 bg-[#515FC5] hover:bg-[#434FA8] dark:bg-[#818CF8] dark:hover:bg-[#6366F1] text-white text-xs font-bold rounded-xl shadow-xs inline-flex items-center gap-1.5 cursor-pointer"
+          >
+            <RotateCcw className="w-3.5 h-3.5" /> Retry
+          </button>
         </div>
       ) : conversations.length === 0 ? (
         <EmptyState
@@ -267,6 +330,18 @@ export const MessagesPage: React.FC = () => {
         <div className="bg-[#F5F7FC] dark:bg-[#1C2A40] rounded-2xl border border-[#D4DAE7] dark:border-[#34445E] shadow-xs overflow-hidden grid grid-cols-1 lg:grid-cols-12 min-h-[540px]">
           {/* Left Pane: Conversation List */}
           <div className="lg:col-span-4 border-b lg:border-b-0 lg:border-r border-[#D4DAE7] dark:border-[#34445E] divide-y divide-[#D4DAE7]/50 dark:divide-[#34445E] max-h-[300px] lg:max-h-[620px] overflow-y-auto">
+            {listError && (
+              <div className="p-3 bg-rose-50 dark:bg-rose-950/30 text-[11px] text-rose-700 dark:text-rose-300 flex items-center justify-between gap-2">
+                <span className="truncate">{listError}</span>
+                <button
+                  type="button"
+                  onClick={() => fetchConversations(false)}
+                  className="px-2 py-1 rounded bg-rose-600 text-white font-bold shrink-0 cursor-pointer"
+                >
+                  Retry
+                </button>
+              </div>
+            )}
             {conversations.map((conv) => {
               const isSelected = conv.id === selectedConvId;
               return (
@@ -361,6 +436,18 @@ export const MessagesPage: React.FC = () => {
                   {loadingMessages ? (
                     <div className="py-12 flex justify-center">
                       <Spinner size="md" />
+                    </div>
+                  ) : messagesError && messages.length === 0 ? (
+                    <div className="py-16 text-center space-y-3">
+                      <AlertCircle className="w-7 h-7 text-rose-500 mx-auto" />
+                      <p className="text-xs text-[#626E86] dark:text-[#B0BCD0]">{messagesError}</p>
+                      <button
+                        type="button"
+                        onClick={() => fetchMessages(activeConversation.id)}
+                        className="px-3.5 py-1.5 bg-[#515FC5] hover:bg-[#434FA8] dark:bg-[#818CF8] dark:hover:bg-[#6366F1] text-white text-xs font-bold rounded-xl inline-flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <RotateCcw className="w-3 h-3" /> Retry
+                      </button>
                     </div>
                   ) : messages.length === 0 ? (
                     <div className="py-16 text-center text-xs text-[#626E86] dark:text-[#B0BCD0]">

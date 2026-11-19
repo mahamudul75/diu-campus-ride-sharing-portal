@@ -197,6 +197,41 @@ interface UserBlockRecord {
   created_at: string;
 }
 
+interface PassengerRequestRecord {
+  id: number;
+  passenger_id: number;
+  pickup_name: string;
+  pickup_lat: number;
+  pickup_lng: number;
+  dest_name: string;
+  dest_lat: number;
+  dest_lng: number;
+  departure_time: string;
+  seats_needed: number;
+  max_fare: number | null;
+  vehicle_type: 'any' | 'bike' | 'car';
+  note: string | null;
+  status: 'open' | 'matched' | 'cancelled' | 'expired';
+  accepted_offer_id: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+interface DriverOfferRecord {
+  id: number;
+  request_id: number;
+  driver_id: number;
+  fare: number;
+  seats_offered: number;
+  vehicle_type: 'bike' | 'car';
+  pickup_time: string;
+  message: string | null;
+  status: 'pending' | 'accepted' | 'rejected' | 'withdrawn' | 'expired';
+  confirmed_ride_id: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
 const memoryStore = {
   users: [] as UserRecord[],
   rides: [] as RideRecord[],
@@ -210,6 +245,8 @@ const memoryStore = {
   emergencyContacts: [] as EmergencyContactRecord[],
   userReports: [] as UserReportRecord[],
   userBlocks: [] as UserBlockRecord[],
+  passengerRequests: [] as PassengerRequestRecord[],
+  driverOffers: [] as DriverOfferRecord[],
   nextUserId: 6,
   nextRideId: 7,
   nextRequestId: 6,
@@ -222,6 +259,8 @@ const memoryStore = {
   nextEmergencyContactId: 1,
   nextReportId: 1,
   nextBlockId: 1,
+  nextPassengerRequestId: 1,
+  nextDriverOfferId: 1,
   initialized: false
 };
 
@@ -547,6 +586,8 @@ export async function initMemoryStore() {
   memoryStore.emergencyContacts = [];
   memoryStore.userReports = [];
   memoryStore.userBlocks = [];
+  memoryStore.passengerRequests = [];
+  memoryStore.driverOffers = [];
 
   memoryStore.initialized = true;
 }
@@ -570,6 +611,30 @@ function applyLimitOffset<T>(rows: T[], lower: string, params: any[]): T[] {
     }
   }
   return rows;
+}
+
+function extractInsertColumnMap(cleanSql: string, params: any[]): Record<string, any> {
+  const match = cleanSql.match(/\(([^)]+)\)\s*values\s*\(([^)]+)\)/i);
+  if (!match) return {};
+  const cols = match[1].split(',').map((c) => c.trim().replace(/`/g, '').toLowerCase());
+  const vals = match[2].split(',').map((v) => v.trim());
+  const mapped: Record<string, any> = {};
+  let paramIdx = 0;
+  for (let i = 0; i < cols.length; i++) {
+    const rawVal = vals[i] ?? '?';
+    if (rawVal === '?') {
+      mapped[cols[i]] = params[paramIdx++];
+    } else if (/^null$/i.test(rawVal)) {
+      mapped[cols[i]] = null;
+    } else if (/^'(.*)'$/.test(rawVal)) {
+      mapped[cols[i]] = rawVal.slice(1, -1);
+    } else if (/^-?\d+(\.\d+)?$/.test(rawVal)) {
+      mapped[cols[i]] = Number(rawVal);
+    } else {
+      mapped[cols[i]] = rawVal;
+    }
+  }
+  return mapped;
 }
 
 async function executeMemoryQuery(sql: string, params: any[] = []): Promise<[any, any]> {
@@ -903,6 +968,216 @@ async function executeMemoryQuery(sql: string, params: any[] = []): Promise<[any
       return [applyLimitOffset(rows, lower, params), []];
     }
 
+    // driver_offers (BEFORE passenger_requests & users because queries JOIN both!)
+    if (/\bfrom\s+driver_offers\b/.test(lower)) {
+      if (lower.includes('group by request_id') && lower.includes('request_id in (')) {
+        const reqIdSet = new Set(params.map(Number));
+        const grouped = new Map<number, { pending: number; total: number }>();
+        for (const o of memoryStore.driverOffers) {
+          if (!reqIdSet.has(o.request_id)) continue;
+          const entry = grouped.get(o.request_id) || { pending: 0, total: 0 };
+          entry.total += 1;
+          if (o.status === 'pending') entry.pending += 1;
+          grouped.set(o.request_id, entry);
+        }
+        return [
+          Array.from(grouped.entries()).map(([request_id, c]) => ({
+            request_id,
+            pending_offers_count: c.pending,
+            total_offers_count: c.total
+          })),
+          []
+        ];
+      }
+
+      let rows = memoryStore.driverOffers.map((o) => {
+        const driver = memoryStore.users.find((u) => u.id === o.driver_id);
+        const req = memoryStore.passengerRequests.find((pr) => pr.id === o.request_id);
+        const passenger = req ? memoryStore.users.find((u) => u.id === req.passenger_id) : null;
+        const confirmedRide = o.confirmed_ride_id
+          ? memoryStore.rides.find((r) => r.id === o.confirmed_ride_id)
+          : null;
+        return {
+          ...o,
+          confirmed_ride_status: confirmedRide?.status ?? null,
+          driver_name: driver?.name || 'DIU Driver',
+          driver_email: driver?.email || '',
+          driver_phone: driver?.phone || '',
+          driver_student_id: driver?.student_id || '',
+          driver_status: driver?.driver_status || 'approved',
+          driver_vehicle_model: driver?.vehicle_model || '',
+          driver_vehicle_plate: driver?.vehicle_plate || '',
+          driver_is_blocked: Number(driver?.is_blocked || 0),
+          passenger_id: req?.passenger_id ?? null,
+          passenger_name: passenger?.name || 'DIU Student',
+          passenger_email: passenger?.email || '',
+          passenger_phone: passenger?.phone || '',
+          passenger_student_id: passenger?.student_id || '',
+          passenger_is_blocked: Number(passenger?.is_blocked || 0),
+          pickup_name: req?.pickup_name || '',
+          pickup_lat: req?.pickup_lat ?? 0,
+          pickup_lng: req?.pickup_lng ?? 0,
+          dest_name: req?.dest_name || '',
+          dest_lat: req?.dest_lat ?? 0,
+          dest_lng: req?.dest_lng ?? 0,
+          departure_time: req?.departure_time || '',
+          max_fare: req?.max_fare ?? null,
+          request_vehicle_type: req?.vehicle_type || 'any',
+          request_status: req?.status || 'open'
+        };
+      });
+
+      let pIdx = 0;
+      if (/\bwhere\s+(?:o\.)?id\s*=\s*\?\s+and\s+(?:o\.)?request_id\s*=\s*\?/.test(lower)) {
+        const offerId = Number(params[pIdx++]);
+        const reqId = Number(params[pIdx++]);
+        rows = rows.filter((o) => o.id === offerId && o.request_id === reqId);
+      } else if (/\bwhere\s+(?:o\.)?id\s*=\s*\?/.test(lower)) {
+        const offerId = Number(params[pIdx++]);
+        rows = rows.filter((o) => o.id === offerId);
+      } else if (/\bwhere\s+(?:o\.)?id\s+in\s*\(/.test(lower)) {
+        const idSet = new Set(params.map(Number));
+        rows = rows.filter((o) => idSet.has(o.id));
+      } else if (lower.includes('driver_id = ?') && lower.includes('request_id in (')) {
+        const driverId = Number(params[pIdx++]);
+        const reqIdSet = new Set(params.slice(pIdx).map(Number));
+        rows = rows.filter((o) => o.driver_id === driverId && reqIdSet.has(o.request_id));
+      } else if (lower.includes('request_id = ? and driver_id = ?')) {
+        const reqId = Number(params[pIdx++]);
+        const driverId = Number(params[pIdx++]);
+        rows = rows.filter((o) => o.request_id === reqId && o.driver_id === driverId);
+      } else {
+        if (lower.includes('confirmed_ride_id = ?')) {
+          const cRideId = Number(params[pIdx++]);
+          rows = rows.filter((o) => o.confirmed_ride_id === cRideId);
+        }
+        if (lower.includes('request_id = ?')) {
+          const reqId = Number(params[pIdx++]);
+          rows = rows.filter((o) => o.request_id === reqId);
+        }
+        if (lower.includes('id != ?')) {
+          const exclId = Number(params[pIdx++]);
+          rows = rows.filter((o) => o.id !== exclId);
+        }
+        if (lower.includes('driver_id = ?')) {
+          const driverId = Number(params[pIdx++]);
+          rows = rows.filter((o) => o.driver_id === driverId);
+        }
+        if (lower.includes("status = 'pending'")) {
+          rows = rows.filter((o) => o.status === 'pending');
+        } else if (lower.includes("status = 'accepted'")) {
+          rows = rows.filter((o) => o.status === 'accepted');
+        } else if (lower.includes('status = ?')) {
+          const st = String(params[pIdx++]);
+          rows = rows.filter((o) => o.status === st);
+        }
+      }
+
+      if (lower.includes('order by o.fare asc') || lower.includes('order by fare asc')) {
+        rows.sort((a, b) => a.fare - b.fare || new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+      } else if (lower.includes('order by o.created_at asc') || lower.includes('order by created_at asc')) {
+        rows.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+      } else {
+        rows.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+      }
+      return [applyLimitOffset(rows, lower, params), []];
+    }
+
+    // passenger_requests (BEFORE users because queries JOIN users!)
+    if (/\bfrom\s+passenger_requests\b/.test(lower)) {
+      let rows = memoryStore.passengerRequests.map((pr) => {
+        const passenger = memoryStore.users.find((u) => u.id === pr.passenger_id);
+        const pending_offers_count = memoryStore.driverOffers.filter(
+          (o) => o.request_id === pr.id && o.status === 'pending'
+        ).length;
+        return {
+          ...pr,
+          passenger_name: passenger?.name || 'DIU Student',
+          passenger_email: passenger?.email || '',
+          passenger_phone: passenger?.phone || '',
+          passenger_student_id: passenger?.student_id || '',
+          passenger_is_blocked: Number(passenger?.is_blocked || 0),
+          pending_offers_count
+        };
+      });
+
+      if (lower.includes("pr.status = 'open'") || lower.includes("status = 'open'")) {
+        rows = rows.filter((pr) => pr.status === 'open');
+      }
+
+      if (lower.includes('u.is_blocked = 0')) {
+        rows = rows.filter((pr) => !pr.passenger_is_blocked);
+      }
+
+      if (lower.includes('departure_time <= utc_timestamp()')) {
+        const nowMs = Date.now();
+        rows = rows.filter((pr) => toEpochMs(pr.departure_time) <= nowMs);
+      } else if (lower.includes('utc_timestamp()')) {
+        const nowMs = Date.now();
+        rows = rows.filter((pr) => toEpochMs(pr.departure_time) > nowMs);
+      }
+
+      if (/\bwhere\s+(?:pr\.)?id\s*=\s*\?/.test(lower)) {
+        rows = rows.filter((pr) => pr.id === Number(params[0]));
+        return [rows, []];
+      }
+
+      let pIdx = 0;
+      if (lower.includes('pr.passenger_id != ?') || lower.includes('passenger_id != ?')) {
+        const exclPId = Number(params[pIdx++]);
+        rows = rows.filter((pr) => pr.passenger_id !== exclPId);
+      }
+      const blockedPrMatch = lower.match(/pr\.passenger_id not in \(([^)]+)\)/);
+      if (blockedPrMatch) {
+        const qCount = (blockedPrMatch[1].match(/\?/g) || []).length;
+        const blockedIds = new Set(params.slice(pIdx, pIdx + qCount).map(Number));
+        pIdx += qCount;
+        rows = rows.filter((pr) => !blockedIds.has(pr.passenger_id));
+      }
+      if (lower.includes('pr.passenger_id = ?') || /\bpassenger_id\s*=\s*\?/.test(lower)) {
+        const pId = Number(params[pIdx++]);
+        rows = rows.filter((pr) => pr.passenger_id === pId);
+      }
+      if (lower.includes('pr.status = ?') || (/\bstatus\s*=\s*\?/.test(lower) && !lower.includes("status = 'open'"))) {
+        const st = String(params[pIdx++]);
+        rows = rows.filter((pr) => pr.status === st);
+      }
+      if (lower.includes('pr.pickup_name like ?') || lower.includes('pickup_name like ?')) {
+        const term = String(params[pIdx++] || '').replace(/%/g, '').toLowerCase();
+        rows = rows.filter((pr) => pr.pickup_name.toLowerCase().includes(term));
+      }
+      if (lower.includes('pr.dest_name like ?') || lower.includes('dest_name like ?')) {
+        const term = String(params[pIdx++] || '').replace(/%/g, '').toLowerCase();
+        rows = rows.filter((pr) => pr.dest_name.toLowerCase().includes(term));
+      }
+      if (lower.includes('pr.departure_time >= ? and pr.departure_time < ?')) {
+        const startMs = toEpochMs(params[pIdx++]);
+        const endMs = toEpochMs(params[pIdx++]);
+        rows = rows.filter((pr) => {
+          const depMs = toEpochMs(pr.departure_time);
+          return depMs >= startMs && depMs < endMs;
+        });
+      }
+      if (lower.includes("(pr.vehicle_type = 'any' or pr.vehicle_type = ?)")) {
+        const vType = String(params[pIdx++]);
+        rows = rows.filter((pr) => pr.vehicle_type === 'any' || pr.vehicle_type === vType);
+      } else if (lower.includes('pr.vehicle_type = ?') || lower.includes('vehicle_type = ?')) {
+        const vType = String(params[pIdx++]);
+        rows = rows.filter((pr) => pr.vehicle_type === vType);
+      }
+      if (lower.includes('pr.max_fare >= ?')) {
+        const minBudget = Number(params[pIdx++]);
+        rows = rows.filter((pr) => pr.max_fare === null || pr.max_fare >= minBudget);
+      }
+
+      if (lower.includes('order by pr.departure_time asc') || lower.includes('order by departure_time asc')) {
+        rows.sort((a, b) => toEpochMs(a.departure_time) - toEpochMs(b.departure_time));
+      } else {
+        rows.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+      }
+      return [applyLimitOffset(rows, lower, params), []];
+    }
+
     // Aggregates on users / rides / ride_requests
     if (lower.includes('count(*) as count from users')) {
       let filtered = [...memoryStore.users];
@@ -1087,6 +1362,20 @@ async function executeMemoryQuery(sql: string, params: any[] = []): Promise<[any
           filtered = filtered.filter((u) => idSet.has(u.id));
         } else if (lower.includes("role = 'admin' and is_blocked = 0")) {
           filtered = filtered.filter((u) => u.role === 'admin' && !u.is_blocked);
+        } else if (lower.includes("driver_status = 'approved'")) {
+          let uIdx = 0;
+          filtered = filtered.filter((u) => u.driver_status === 'approved');
+          if (lower.includes('is_blocked = 0')) {
+            filtered = filtered.filter((u) => !u.is_blocked);
+          }
+          if (lower.includes('id != ?')) {
+            const exclId = Number(params[uIdx++]);
+            filtered = filtered.filter((u) => u.id !== exclId);
+          }
+          if (lower.includes('vehicle_type = ?')) {
+            const vType = String(params[uIdx++]);
+            filtered = filtered.filter((u) => u.vehicle_type === vType);
+          }
         } else if (lower.includes('student_verified = 1')) {
           filtered = filtered.filter((u) => u.student_verified === 1);
         } else if (lower.includes("driver_status = 'pending'")) {
@@ -1277,27 +1566,42 @@ async function executeMemoryQuery(sql: string, params: any[] = []): Promise<[any
   }
 
   if (lower.startsWith('insert into rides')) {
+    const cols = extractInsertColumnMap(cleanSql, params);
     const fallbackVehicle = lower.includes("'car'") ? 'car' : 'bike';
-    const rawVehicle = params[11];
+    const rawVehicle = cols.vehicle_type ?? params[11];
     const vehicleType: 'bike' | 'car' =
       rawVehicle === 'car' || rawVehicle === 'bike' ? rawVehicle : fallbackVehicle;
-    const rawStatus = params[13];
-    const rideStatus: RideRecord['status'] = rawStatus === 'scheduled' ? 'scheduled' : 'open';
+    const validRideStatuses: RideRecord['status'][] = [
+      'scheduled',
+      'open',
+      'full',
+      'in_progress',
+      'completed',
+      'cancelled'
+    ];
+    const rawStatus = cols.status ?? params[13];
+    const rideStatus: RideRecord['status'] = validRideStatuses.includes(rawStatus as RideRecord['status'])
+      ? (rawStatus as RideRecord['status'])
+      : 'open';
+    const seatsTotal = Number(cols.seats_total ?? params[9]);
+    const rawSeatsAvailable = cols.seats_available ?? params[10];
+    const seatsAvailable =
+      rawSeatsAvailable !== undefined && rawSeatsAvailable !== null ? Number(rawSeatsAvailable) : seatsTotal;
     const newRide: RideRecord = {
       id: memoryStore.nextRideId++,
-      driver_id: Number(params[0]),
-      pickup_name: params[1],
-      pickup_lat: Number(params[2]),
-      pickup_lng: Number(params[3]),
-      dest_name: params[4],
-      dest_lat: Number(params[5]),
-      dest_lng: Number(params[6]),
-      departure_time: params[7],
-      fare: Number(params[8]),
-      seats_total: Number(params[9]),
-      seats_available: Number(params[10] ?? params[9]),
+      driver_id: Number(cols.driver_id ?? params[0]),
+      pickup_name: cols.pickup_name ?? params[1],
+      pickup_lat: Number(cols.pickup_lat ?? params[2]),
+      pickup_lng: Number(cols.pickup_lng ?? params[3]),
+      dest_name: cols.dest_name ?? params[4],
+      dest_lat: Number(cols.dest_lat ?? params[5]),
+      dest_lng: Number(cols.dest_lng ?? params[6]),
+      departure_time: cols.departure_time ?? params[7],
+      fare: Number(cols.fare ?? params[8]),
+      seats_total: seatsTotal,
+      seats_available: seatsAvailable,
       vehicle_type: vehicleType,
-      note: params[12] ?? null,
+      note: cols.note ?? params[12] ?? null,
       status: rideStatus,
       created_at: new Date().toISOString()
     };
@@ -1306,18 +1610,26 @@ async function executeMemoryQuery(sql: string, params: any[] = []): Promise<[any
   }
 
   if (lower.startsWith('insert into ride_requests')) {
-    const rId = Number(params[0]);
-    const pId = Number(params[1]);
+    const cols = extractInsertColumnMap(cleanSql, params);
+    const rId = Number(cols.ride_id ?? params[0]);
+    const pId = Number(cols.passenger_id ?? params[1]);
     if (memoryStore.requests.some((req) => req.ride_id === rId && req.passenger_id === pId)) {
       const dupErr: any = new Error('Duplicate entry');
       dupErr.code = 'ER_DUP_ENTRY';
       throw dupErr;
     }
+    const validRequestStatuses: RideRequestRecord['status'][] = ['pending', 'accepted', 'rejected', 'cancelled'];
+    const rawStatus = cols.status ?? params[2];
+    const requestStatus: RideRequestRecord['status'] = validRequestStatuses.includes(
+      rawStatus as RideRequestRecord['status']
+    )
+      ? (rawStatus as RideRequestRecord['status'])
+      : 'pending';
     const newReq: RideRequestRecord = {
       id: memoryStore.nextRequestId++,
       ride_id: rId,
       passenger_id: pId,
-      status: 'pending',
+      status: requestStatus,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString()
     };
@@ -1478,6 +1790,77 @@ async function executeMemoryQuery(sql: string, params: any[] = []): Promise<[any
     };
     memoryStore.userBlocks.push(blk);
     return [{ insertId: blk.id, affectedRows: 1 }, []];
+  }
+
+  if (lower.startsWith('insert into passenger_requests')) {
+    const cols = extractInsertColumnMap(cleanSql, params);
+    const seatsNeeded = cols.seats_needed !== undefined ? Number(cols.seats_needed) : 1;
+    if (seatsNeeded !== 1) {
+      throw new Error('Check constraint chk_pass_req_seats violated: seats_needed must equal 1.');
+    }
+    const maxFare = cols.max_fare !== undefined && cols.max_fare !== null ? Number(cols.max_fare) : null;
+    if (maxFare !== null && maxFare < 0) {
+      throw new Error('Check constraint chk_pass_req_max_fare violated: max_fare must be >= 0.');
+    }
+    const vType = cols.vehicle_type === 'bike' || cols.vehicle_type === 'car' ? cols.vehicle_type : 'any';
+    const nowIso = new Date().toISOString();
+    const pr: PassengerRequestRecord = {
+      id: memoryStore.nextPassengerRequestId++,
+      passenger_id: Number(cols.passenger_id),
+      pickup_name: String(cols.pickup_name),
+      pickup_lat: Number(cols.pickup_lat),
+      pickup_lng: Number(cols.pickup_lng),
+      dest_name: String(cols.dest_name),
+      dest_lat: Number(cols.dest_lat),
+      dest_lng: Number(cols.dest_lng),
+      departure_time: String(cols.departure_time),
+      seats_needed: 1,
+      max_fare: maxFare,
+      vehicle_type: vType,
+      note: cols.note ?? null,
+      status: 'open',
+      accepted_offer_id: null,
+      created_at: nowIso,
+      updated_at: nowIso
+    };
+    memoryStore.passengerRequests.push(pr);
+    return [{ insertId: pr.id, affectedRows: 1 }, []];
+  }
+
+  if (lower.startsWith('insert into driver_offers')) {
+    const cols = extractInsertColumnMap(cleanSql, params);
+    const reqId = Number(cols.request_id);
+    const driverId = Number(cols.driver_id);
+    if (memoryStore.driverOffers.some((o) => o.request_id === reqId && o.driver_id === driverId)) {
+      const dupErr: any = new Error('Duplicate entry');
+      dupErr.code = 'ER_DUP_ENTRY';
+      throw dupErr;
+    }
+    const fare = Number(cols.fare);
+    const seatsOffered = cols.seats_offered !== undefined ? Number(cols.seats_offered) : 1;
+    if (fare < 0) {
+      throw new Error('Check constraint chk_offers_fare violated: fare must be >= 0.');
+    }
+    if (!Number.isInteger(seatsOffered) || seatsOffered < 1 || seatsOffered > 4) {
+      throw new Error('Check constraint chk_offers_seats violated: seats_offered must be between 1 and 4.');
+    }
+    const nowIso = new Date().toISOString();
+    const offer: DriverOfferRecord = {
+      id: memoryStore.nextDriverOfferId++,
+      request_id: reqId,
+      driver_id: driverId,
+      fare,
+      seats_offered: seatsOffered,
+      vehicle_type: cols.vehicle_type === 'car' ? 'car' : 'bike',
+      pickup_time: String(cols.pickup_time),
+      message: cols.message ?? null,
+      status: 'pending',
+      confirmed_ride_id: null,
+      created_at: nowIso,
+      updated_at: nowIso
+    };
+    memoryStore.driverOffers.push(offer);
+    return [{ insertId: offer.id, affectedRows: 1 }, []];
   }
 
   // =========================================================================
@@ -1703,6 +2086,129 @@ async function executeMemoryQuery(sql: string, params: any[] = []): Promise<[any
     return [{ insertId: 0, affectedRows: 1 }, []];
   }
 
+  if (lower.startsWith('update passenger_requests')) {
+    const whereIdx = lower.indexOf(' where ');
+    const setClause = whereIdx !== -1 ? lower.slice(0, whereIdx) : lower;
+    const whereClause = whereIdx !== -1 ? lower.slice(whereIdx) : '';
+    const setPlaceholders = (setClause.match(/\?/g) || []).length;
+    const setParams = params.slice(0, setPlaceholders);
+    const whereParams = params.slice(setPlaceholders);
+
+    const inMatch = whereClause.match(/id in \(([^)]+)\)/);
+    let wIdx = 0;
+    let targetIdSet: Set<number> | null = null;
+    let targetId: number | null = null;
+    if (inMatch) {
+      const inCount = (inMatch[1].match(/\?/g) || []).length;
+      targetIdSet = new Set(whereParams.slice(wIdx, wIdx + inCount).map(Number));
+      wIdx += inCount;
+    } else if (/\bid\s*=\s*\?/.test(whereClause)) {
+      targetId = Number(whereParams[wIdx++]);
+    }
+    const targetPassengerId = /\bpassenger_id\s*=\s*\?/.test(whereClause)
+      ? Number(whereParams[wIdx++])
+      : null;
+    const targetAcceptedOfferId = /\baccepted_offer_id\s*=\s*\?/.test(whereClause)
+      ? Number(whereParams[wIdx++])
+      : null;
+
+    const nowMs = Date.now();
+    let affected = 0;
+
+    for (const pr of memoryStore.passengerRequests) {
+      if (targetId !== null && pr.id !== targetId) continue;
+      if (targetIdSet !== null && !targetIdSet.has(pr.id)) continue;
+      if (targetPassengerId !== null && pr.passenger_id !== targetPassengerId) continue;
+      if (targetAcceptedOfferId !== null && pr.accepted_offer_id !== targetAcceptedOfferId) continue;
+      if (whereClause.includes("status = 'open'") && pr.status !== 'open') continue;
+      if (whereClause.includes("status = 'matched'") && pr.status !== 'matched') continue;
+      if (whereClause.includes('accepted_offer_id is null') && pr.accepted_offer_id !== null) continue;
+      if (whereClause.includes('departure_time <= utc_timestamp()') && toEpochMs(pr.departure_time) > nowMs) continue;
+
+      if (setClause.includes("status = 'matched'")) {
+        pr.status = 'matched';
+        if (setClause.includes('accepted_offer_id = ?') && setParams.length > 0) {
+          pr.accepted_offer_id = Number(setParams[0]);
+        }
+      } else if (setClause.includes("status = 'cancelled'")) {
+        pr.status = 'cancelled';
+      } else if (setClause.includes("status = 'expired'")) {
+        pr.status = 'expired';
+      } else if (setClause.includes('status = ?') && setParams.length > 0) {
+        pr.status = setParams[0];
+      }
+      pr.updated_at = new Date().toISOString();
+      affected++;
+    }
+    return [{ insertId: 0, affectedRows: affected }, []];
+  }
+
+  if (lower.startsWith('update driver_offers')) {
+    const whereIdx = lower.indexOf(' where ');
+    const setClause = whereIdx !== -1 ? lower.slice(0, whereIdx) : lower;
+    const whereClause = whereIdx !== -1 ? lower.slice(whereIdx) : '';
+    const setPlaceholders = (setClause.match(/\?/g) || []).length;
+    const setParams = params.slice(0, setPlaceholders);
+    const whereParams = params.slice(setPlaceholders);
+
+    const reqInMatch = whereClause.match(/request_id in \(([^)]+)\)/);
+    const reqInCount = reqInMatch ? (reqInMatch[1].match(/\?/g) || []).length : 0;
+    const reqInSet = reqInMatch ? new Set(whereParams.slice(0, reqInCount).map(Number)) : null;
+
+    let affected = 0;
+    const matchesWhere = (o: DriverOfferRecord): boolean => {
+      let wIdx = 0;
+      if (reqInSet) {
+        if (!reqInSet.has(o.request_id)) return false;
+        wIdx += reqInCount;
+      } else if (whereClause.includes('request_id = ? and id != ?')) {
+        const rId = Number(whereParams[wIdx++]);
+        const exclId = Number(whereParams[wIdx++]);
+        if (o.request_id !== rId || o.id === exclId) return false;
+      } else if (whereClause.includes('request_id = ?')) {
+        const rId = Number(whereParams[wIdx++]);
+        if (o.request_id !== rId) return false;
+      } else if (whereClause.includes('id = ?')) {
+        const oId = Number(whereParams[wIdx++]);
+        if (o.id !== oId) return false;
+      }
+      if (whereClause.includes('driver_id = ?')) {
+        const dId = Number(whereParams[wIdx++]);
+        if (o.driver_id !== dId) return false;
+      }
+      if (whereClause.includes("status = 'pending'") && o.status !== 'pending') {
+        return false;
+      }
+      return true;
+    };
+
+    for (const o of memoryStore.driverOffers) {
+      if (!matchesWhere(o)) continue;
+
+      if (setClause.includes("status = 'accepted'")) {
+        o.status = 'accepted';
+        if (setClause.includes('confirmed_ride_id = ?') && setParams.length > 0) {
+          o.confirmed_ride_id = Number(setParams[0]);
+        }
+      } else if (setClause.includes("status = 'rejected'")) {
+        o.status = 'rejected';
+      } else if (setClause.includes("status = 'withdrawn'")) {
+        o.status = 'withdrawn';
+      } else if (setClause.includes("status = 'expired'")) {
+        o.status = 'expired';
+      } else if (setClause.includes('fare = ?')) {
+        let sIdx = 0;
+        o.fare = Number(setParams[sIdx++]);
+        if (setClause.includes('seats_offered = ?')) o.seats_offered = Number(setParams[sIdx++]);
+        if (setClause.includes('pickup_time = ?')) o.pickup_time = String(setParams[sIdx++]);
+        if (setClause.includes('message = ?')) o.message = setParams[sIdx++] ?? null;
+      }
+      o.updated_at = new Date().toISOString();
+      affected++;
+    }
+    return [{ insertId: 0, affectedRows: affected }, []];
+  }
+
   // =========================================================================
   // 4. DELETE QUERIES
   // =========================================================================
@@ -1750,6 +2256,15 @@ async function executeMemoryQuery(sql: string, params: any[] = []): Promise<[any
       memoryStore.emergencyContacts = memoryStore.emergencyContacts.filter((c) => c.user_id !== targetId);
       memoryStore.userBlocks = memoryStore.userBlocks.filter(
         (b) => b.blocker_id !== targetId && b.blocked_id !== targetId
+      );
+      const deletedReqIds = new Set(
+        memoryStore.passengerRequests.filter((pr) => pr.passenger_id === targetId).map((pr) => pr.id)
+      );
+      memoryStore.passengerRequests = memoryStore.passengerRequests.filter(
+        (pr) => pr.passenger_id !== targetId
+      );
+      memoryStore.driverOffers = memoryStore.driverOffers.filter(
+        (o) => o.driver_id !== targetId && !deletedReqIds.has(o.request_id)
       );
       return [{ insertId: 0, affectedRows: 1 }, []];
     }
@@ -1810,10 +2325,17 @@ class TransactionConnection implements IDatabaseConnection {
   }
 
   release(): void {
-    if (this.inTransaction && this.releaseLock) {
-      this.releaseLock();
-      this.releaseLock = null;
+    if (this.inTransaction) {
+      if (memorySnapshot) {
+        const restored = JSON.parse(memorySnapshot);
+        Object.assign(memoryStore, restored);
+        memorySnapshot = null;
+      }
       this.inTransaction = false;
+      if (this.releaseLock) {
+        this.releaseLock();
+        this.releaseLock = null;
+      }
     }
   }
 }
@@ -2056,6 +2578,20 @@ export async function getDbPool() {
         'TiDB Connection Error: Your DB_USER is missing the required cluster-ID prefix (e.g., should be "prefix.root" instead of just "root"). Check your TiDB Cloud console for the full username.';
     }
 
+    if (!isProduction && isDevFallbackExplicitlyAllowed) {
+      console.warn(`! TiDB connection unavailable in dev (${errorMessage}).`);
+      console.warn('⚠️ WARNING [DEV ONLY]: Explicit in-memory fallback enabled (ALLOW_IN_MEMORY_DB=true).');
+      console.warn('⚠️ User accounts, rides, and requests will NOT be persisted to TiDB Cloud!');
+      useFallback = true;
+      await initMemoryStore();
+      return {
+        isFallback: true,
+        query: executeMemoryQuery,
+        execute: executeMemoryQuery,
+        getConnection: async () => new TransactionConnection()
+      };
+    }
+
     console.error(`! TiDB connection failed (${errorMessage}).`);
 
     if (isNonTransientDbConfigError(lastError)) {
@@ -2079,19 +2615,6 @@ export async function getDbPool() {
     if (isProduction) {
       console.error('FATAL: TiDB Cloud connection failed in production. Refusing in-memory fallback. Operations will fail safely with HTTP 503.');
       throw new DatabaseUnavailableError('Database service is temporarily unavailable. Please try again shortly.');
-    }
-
-    if (isDevFallbackExplicitlyAllowed) {
-      console.warn('⚠️ WARNING [DEV ONLY]: Explicit in-memory fallback enabled (ALLOW_IN_MEMORY_DB=true).');
-      console.warn('⚠️ User accounts, rides, and requests will NOT be persisted to TiDB Cloud!');
-      useFallback = true;
-      await initMemoryStore();
-      return {
-        isFallback: true,
-        query: executeMemoryQuery,
-        execute: executeMemoryQuery,
-        getConnection: async () => new TransactionConnection()
-      };
     }
 
     console.error('! Database connection unavailable. Set ALLOW_IN_MEMORY_DB=true in development to allow ephemeral in-memory storage. Failing safely.');

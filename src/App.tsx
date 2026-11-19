@@ -22,6 +22,9 @@ const RideDetailsPage = lazy(() => import('./pages/RideDetailsPage.tsx'));
 const PostRidePage = lazy(() => import('./pages/PostRidePage.tsx'));
 const MyRidesPage = lazy(() => import('./pages/MyRidesPage.tsx'));
 const MyRequestsPage = lazy(() => import('./pages/MyRequestsPage.tsx'));
+const PassengerRequestsListPage = lazy(() => import('./pages/PassengerRequestsListPage.tsx'));
+const PostPassengerRequestPage = lazy(() => import('./pages/PostPassengerRequestPage.tsx'));
+const PassengerRequestDetailsPage = lazy(() => import('./pages/PassengerRequestDetailsPage.tsx'));
 const BecomeDriverPage = lazy(() => import('./pages/BecomeDriverPage.tsx'));
 const ProfilePage = lazy(() => import('./pages/ProfilePage.tsx'));
 const NotificationsPage = lazy(() => import('./pages/NotificationsPage.tsx'));
@@ -39,6 +42,7 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const isDashboardRoute =
     location.pathname.startsWith('/dashboard') ||
     location.pathname.startsWith('/requests') ||
+    location.pathname.startsWith('/passenger-requests') ||
     location.pathname.startsWith('/become-driver') ||
     location.pathname.startsWith('/profile') ||
     location.pathname.startsWith('/rides/create') ||
@@ -105,6 +109,30 @@ export default function App() {
                       element={
                         <ProtectedRoute>
                           <MyRequestsPage />
+                        </ProtectedRoute>
+                      }
+                    />
+                    <Route
+                      path="/passenger-requests"
+                      element={
+                        <ProtectedRoute>
+                          <PassengerRequestsListPage />
+                        </ProtectedRoute>
+                      }
+                    />
+                    <Route
+                      path="/passenger-requests/create"
+                      element={
+                        <ProtectedRoute>
+                          <PostPassengerRequestPage />
+                        </ProtectedRoute>
+                      }
+                    />
+                    <Route
+                      path="/passenger-requests/:id"
+                      element={
+                        <ProtectedRoute>
+                          <PassengerRequestDetailsPage />
                         </ProtectedRoute>
                       }
                     />

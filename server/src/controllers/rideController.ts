@@ -18,6 +18,7 @@ import {
   getUserRatingSummaries
 } from '../utils/dbHelpers.ts';
 import { createNotification, invalidateReminderCacheForUser } from '../services/notificationService.ts';
+import { syncPassengerRequestOnRideCancelled } from './passengerRequestController.ts';
 
 async function notifyRidePassengers(
   rideId: number,
@@ -813,6 +814,7 @@ export async function updateRideStatus(req: AuthRequest, res: Response): Promise
         "UPDATE ride_requests SET status = 'cancelled', updated_at = NOW() WHERE ride_id = ? AND status IN ('pending', 'accepted')",
         [rideId]
       );
+      await syncPassengerRequestOnRideCancelled(conn, rideId);
     }
 
     await conn.commit();
@@ -959,6 +961,7 @@ export async function cancelRide(req: AuthRequest, res: Response): Promise<void>
       "UPDATE ride_requests SET status = 'cancelled', updated_at = NOW() WHERE ride_id = ? AND status IN ('pending', 'accepted')",
       [rideId]
     );
+    await syncPassengerRequestOnRideCancelled(conn, rideId);
 
     await conn.commit();
     txActive = false;

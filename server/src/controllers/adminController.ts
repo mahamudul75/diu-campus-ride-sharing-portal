@@ -5,6 +5,7 @@ import { isPositiveIntId, isTruthyDbFlag, parsePaginationParams } from '../utils
 import { toUtcIsoString } from '../utils/dateTime.ts';
 import { getRideRequestCountsBatch } from '../utils/dbHelpers.ts';
 import { createNotification, invalidateReminderCacheForUser } from '../services/notificationService.ts';
+import { syncPassengerRequestOnRideCancelled } from './passengerRequestController.ts';
 
 export async function getAdminStats(_req: AuthRequest, res: Response): Promise<void> {
   try {
@@ -692,6 +693,7 @@ export async function moderateRideAdmin(req: AuthRequest, res: Response): Promis
       "UPDATE ride_requests SET status = 'cancelled', updated_at = NOW() WHERE ride_id = ? AND status IN ('pending', 'accepted')",
       [rideId]
     );
+    await syncPassengerRequestOnRideCancelled(conn, rideId);
 
     await conn.commit();
     txActive = false;

@@ -18,7 +18,8 @@ import {
   MessageSquare,
   Bell,
   Shield,
-  Flag
+  Flag,
+  Navigation
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.tsx';
 import { useNotifications } from '../context/NotificationContext.tsx';
@@ -72,6 +73,7 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({
       ? [{ label: 'Post a Ride', path: '/rides/create', icon: PlusCircle, badge: 0 }]
       : []),
     { label: 'My Bookings', path: '/requests', icon: Clock, badge: 0 },
+    { label: 'Ride Requests', path: '/passenger-requests', icon: Navigation, badge: 0 },
     ...(isApprovedDriver
       ? [{ label: 'My Rides', path: '/my-rides', icon: Compass, badge: 0 }]
       : []),
@@ -260,6 +262,12 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({
           </div>
 
           <div className="flex items-center gap-2">
+            <Link
+              to="/passenger-requests/create"
+              className="hidden lg:inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#FFFFFF] dark:bg-[#1B2940] border border-[#DCE2EC] dark:border-[#34445D] text-[#253149] dark:text-[#F1F5FC] rounded-xl text-xs font-semibold hover:bg-[#EEF0FA] dark:hover:bg-[#243750] transition-colors whitespace-nowrap"
+            >
+              <Navigation className="w-3.5 h-3.5 text-[#4F5FC9] dark:text-[#818CF8]" /> Request Ride
+            </Link>
             {isApprovedDriver ? (
               <Link
                 to="/rides/create"

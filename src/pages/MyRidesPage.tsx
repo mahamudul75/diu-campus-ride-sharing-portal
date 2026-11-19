@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   Compass,
@@ -14,7 +14,9 @@ import {
   BadgeCheck,
   Star,
   Flag,
-  Ban
+  Ban,
+  AlertCircle,
+  RotateCcw
 } from 'lucide-react';
 import api from '../services/api.ts';
 import { Ride, RideRequest } from '../types/index.ts';
@@ -42,6 +44,9 @@ export const MyRidesPage: React.FC = () => {
   const [ridesHasMore, setRidesHasMore] = useState(false);
   const [loadingMoreRides, setLoadingMoreRides] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const fetchSeqRef = useRef(0);
+  const fetchAbortRef = useRef<AbortController | null>(null);
 
   // Requests Modal State
   const [activeRideForRequests, setActiveRideForRequests] = useState<Ride | null>(null);
@@ -71,14 +76,26 @@ export const MyRidesPage: React.FC = () => {
   const [reportTarget, setReportTarget] = useState<{ rideId: number; userId: number; userName: string } | null>(null);
 
   const fetchMyRides = async (append = false, preserveCount?: number): Promise<Ride[]> => {
+    const seq = ++fetchSeqRef.current;
+    if (!append) {
+      fetchAbortRef.current?.abort();
+    }
+    const controller = new AbortController();
+    fetchAbortRef.current = controller;
+
     if (append) {
       setLoadingMoreRides(true);
+    } else if (rides.length === 0) {
+      setLoading(true);
     }
+    setError(null);
     try {
       const limit = append ? 50 : Math.min(100, Math.max(50, preserveCount || 50));
       const res = await api.get('/rides/mine', {
-        params: { limit, offset: append ? rides.length : 0 }
+        params: { limit, offset: append ? rides.length : 0 },
+        signal: controller.signal
       });
+      if (seq !== fetchSeqRef.current) return [];
       if (res.data?.success) {
         const incoming: Ride[] = res.data.rides || [];
         let nextRides = incoming;
@@ -97,17 +114,27 @@ export const MyRidesPage: React.FC = () => {
         );
         return nextRides;
       }
-    } catch (err) {
-      console.warn('Failed to fetch my rides:', err);
+    } catch (err: any) {
+      if (err?.code === 'ERR_CANCELED' || err?.name === 'AbortError' || err?.name === 'CanceledError') {
+        return [];
+      }
+      if (seq === fetchSeqRef.current) {
+        setError(err?.response?.data?.message || 'Unable to load your posted rides. Please try again.');
+      }
     } finally {
-      setLoading(false);
-      setLoadingMoreRides(false);
+      if (seq === fetchSeqRef.current) {
+        setLoading(false);
+        setLoadingMoreRides(false);
+      }
     }
     return [];
   };
 
   useEffect(() => {
     fetchMyRides(false);
+    return () => {
+      fetchAbortRef.current?.abort();
+    };
   }, []);
 
   const openRequestsModal = async (ride: Ride, append = false) => {
@@ -297,9 +324,40 @@ export const MyRidesPage: React.FC = () => {
       }
     >
       <div className="space-y-4">
-        {loading ? (
+        {error && rides.length > 0 && (
+          <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-800 text-xs text-rose-700 dark:text-rose-300 flex items-center justify-between gap-3">
+            <span className="flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 shrink-0" />
+              {error}
+            </span>
+            <button
+              type="button"
+              onClick={() => fetchMyRides(false, rides.length)}
+              className="px-3 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-bold inline-flex items-center gap-1 cursor-pointer shrink-0"
+            >
+              <RotateCcw className="w-3 h-3" /> Retry
+            </button>
+          </div>
+        )}
+
+        {loading && rides.length === 0 ? (
           <div className="space-y-3">
             <Skeleton type="card" count={3} />
+          </div>
+        ) : error && rides.length === 0 ? (
+          <div className="p-8 text-center bg-[#F5F7FC] dark:bg-[#1C2A40] rounded-2xl border border-rose-200 dark:border-rose-800 space-y-3">
+            <AlertCircle className="w-8 h-8 text-rose-500 mx-auto" />
+            <div className="space-y-1">
+              <h3 className="text-sm font-bold text-[#222B42] dark:text-[#F1F4FC]">Could not load your rides</h3>
+              <p className="text-xs text-[#626E86] dark:text-[#B0BCD0]">{error}</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => fetchMyRides(false)}
+              className="px-4 py-2 bg-[#515FC5] hover:bg-[#434FA8] dark:bg-[#818CF8] dark:hover:bg-[#6366F1] text-white text-xs font-bold rounded-xl shadow-xs inline-flex items-center gap-1.5 cursor-pointer"
+            >
+              <RotateCcw className="w-3.5 h-3.5" /> Retry
+            </button>
           </div>
         ) : rides.length === 0 ? (
           <EmptyState

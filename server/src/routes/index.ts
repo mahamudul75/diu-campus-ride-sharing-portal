@@ -9,6 +9,7 @@ import reviewRoutes from './reviewRoutes.ts';
 import notificationRoutes from './notificationRoutes.ts';
 import chatRoutes from './chatRoutes.ts';
 import safetyRoutes from './safetyRoutes.ts';
+import passengerRequestRoutes from './passengerRequestRoutes.ts';
 import { db, getDbPool } from '../config/db.ts';
 import { apiGeneralLimiter } from '../middleware/rateLimiter.ts';
 
@@ -93,6 +94,7 @@ apiRouter.use('/users', userRoutes);
 apiRouter.use('/drivers', driverRoutes);
 apiRouter.use('/rides', rideRoutes);
 apiRouter.use('/requests', requestRoutes);
+apiRouter.use('/passenger-requests', passengerRequestRoutes);
 apiRouter.use('/admin', adminRoutes);
 apiRouter.use('/reviews', reviewRoutes);
 apiRouter.use('/notifications', notificationRoutes);

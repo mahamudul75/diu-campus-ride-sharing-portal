@@ -23,6 +23,10 @@ import {
 } from '../server/src/config/db.ts';
 import apiRouter from '../server/src/routes/index.ts';
 import { getConversations } from '../server/src/controllers/chatController.ts';
+import {
+  createPassengerRequest,
+  handlePassengerRequestError
+} from '../server/src/controllers/passengerRequestController.ts';
 import { generateToken } from '../server/src/utils/jwt.ts';
 import { isValidStudentId, isValidDiuEmail, isTruthyDbFlag } from '../server/src/utils/validators.ts';
 import {
@@ -2023,6 +2027,1367 @@ async function runTests() {
         adminRideSearchJson.success === true &&
         Array.isArray(adminRideSearchJson.rides),
       'Admin rides search query parameter filters rides with status successfully'
+    );
+
+    // -----------------------------------------------------------------------
+    // PHASE 21: In-Memory Booking Compatibility for Passenger Ride Matching
+    // -----------------------------------------------------------------------
+    console.log('\n[Phase 21] In-Memory Booking Compatibility Regression Tests');
+
+    const futureDepSql = formatDateToMySqlUtc(new Date(Date.now() + 6 * 3600000));
+    const conn = await db.getConnection();
+    let fullRideId = 0;
+    let acceptedReqId = 0;
+    try {
+      await conn.beginTransaction();
+      const [fullRideRes] = await conn.query(
+        `INSERT INTO rides
+          (driver_id, pickup_name, pickup_lat, pickup_lng, dest_name, dest_lat, dest_lng, departure_time, fare, seats_total, seats_available, vehicle_type, note, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [2, 'DIU Gate', 23.8768, 90.3202, 'Mirpur 10', 23.8069, 90.3687, futureDepSql, 150, 1, 0, 'bike', 'Matched bike ride', 'full']
+      );
+      fullRideId = Number((fullRideRes as any).insertId);
+
+      const [acceptedReqRes] = await conn.query(
+        `INSERT INTO ride_requests (ride_id, passenger_id, status) VALUES (?, ?, 'accepted')`,
+        [fullRideId, 5]
+      );
+      acceptedReqId = Number((acceptedReqRes as any).insertId);
+
+      const [lockedRideRows] = await conn.query('SELECT * FROM rides WHERE id = ? FOR UPDATE', [fullRideId]);
+      const lockedRide = Array.isArray(lockedRideRows) ? (lockedRideRows[0] as any) : null;
+      assert(
+        Boolean(lockedRide) &&
+          lockedRide.status === 'full' &&
+          Number(lockedRide.seats_total) === 1 &&
+          Number(lockedRide.seats_available) === 0,
+        'INSERT INTO rides respects status="full" with seats_available=0 inside transaction'
+      );
+
+      const [lockedReqRows] = await conn.query('SELECT * FROM ride_requests WHERE id = ? FOR UPDATE', [acceptedReqId]);
+      const lockedReq = Array.isArray(lockedReqRows) ? (lockedReqRows[0] as any) : null;
+      assert(
+        Boolean(lockedReq) &&
+          Number(lockedReq.ride_id) === fullRideId &&
+          Number(lockedReq.passenger_id) === 5 &&
+          lockedReq.status === 'accepted',
+        'INSERT INTO ride_requests respects status="accepted" directly inside transaction'
+      );
+
+      await conn.commit();
+    } finally {
+      conn.release();
+    }
+
+    // Verify rollback isolation on a failed transaction
+    const rollbackConn = await db.getConnection();
+    let rolledBackRideId = 0;
+    try {
+      await rollbackConn.beginTransaction();
+      const [rbRes] = await rollbackConn.query(
+        `INSERT INTO rides
+          (driver_id, pickup_name, pickup_lat, pickup_lng, dest_name, dest_lat, dest_lng, departure_time, fare, seats_total, seats_available, vehicle_type, note, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [2, 'Temp Pickup', 23.8768, 90.3202, 'Temp Dest', 23.7538, 90.377, futureDepSql, 100, 1, 0, 'bike', null, 'full']
+      );
+      rolledBackRideId = Number((rbRes as any).insertId);
+      await rollbackConn.rollback();
+    } finally {
+      rollbackConn.release();
+    }
+    const [afterRollbackRows] = await db.query('SELECT * FROM rides WHERE id = ?', [rolledBackRideId]);
+    assert(
+      Array.isArray(afterRollbackRows) && afterRollbackRows.length === 0,
+      'Transaction rollback cleanly reverts inserted full ride in memory store'
+    );
+
+    // Verify existing normal ride creation and pending booking defaults remain unchanged
+    const [normalRideRes] = await db.query(
+      `INSERT INTO rides
+        (driver_id, pickup_name, pickup_lat, pickup_lng, dest_name, dest_lat, dest_lng, departure_time, fare, seats_total, seats_available, vehicle_type, note, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [3, 'Uttara', 23.8742, 90.398, 'DIU Campus', 23.8768, 90.3202, futureDepSql, 140, 3, 3, 'car', 'Normal car ride', 'open']
+    );
+    const normalRideId = Number((normalRideRes as any).insertId);
+    const [normalReqRes] = await db.query(
+      `INSERT INTO ride_requests (ride_id, passenger_id) VALUES (?, ?)`,
+      [normalRideId, 4]
+    );
+    const [normalReqRows] = await db.query('SELECT * FROM ride_requests WHERE id = ?', [
+      Number((normalReqRes as any).insertId)
+    ]);
+    const normalReq = Array.isArray(normalReqRows) ? (normalReqRows[0] as any) : null;
+    assert(
+      Boolean(normalReq) && normalReq.status === 'pending',
+      'Normal ride_requests insert without status preserves default status="pending"'
+    );
+
+    // -----------------------------------------------------------------------
+    // PHASE 22: Passenger-Initiated Ride Matching End-to-End Tests
+    // -----------------------------------------------------------------------
+    console.log('\n[Phase 22] Passenger-Initiated Ride Matching End-to-End Tests');
+
+    const nusratLogin = await loginUser('nusrat.swe@diu.edu.bd', 'Password123!');
+    const nusratId = Number(nusratLogin.data?.user?.id || 3);
+    const rahatId = Number(rahatLogin.data?.user?.id || 4);
+    assert(nusratLogin.res.status === 200, 'Approved car driver Nusrat logs in for Phase 22');
+
+    // Create a clean unblocked student for unrelated-student 403 checks
+    const observerStudentRes = await fetch(`${baseUrl}/auth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin },
+      body: JSON.stringify({
+        name: 'Observer Student',
+        student_id: '241-15-901',
+        email: 'observer.p22@diu.edu.bd',
+        phone: '01711223344',
+        password: 'Password123!',
+        confirm_password: 'Password123!'
+      })
+    });
+    const observerCookie = extractAuthCookie(observerStudentRes);
+    assert(observerStudentRes.status === 201 && Boolean(observerCookie), 'Registers clean student account for Phase 22');
+
+    const futureIso6h = new Date(Date.now() + 6 * 3600000).toISOString();
+    const futureIso8h = new Date(Date.now() + 8 * 3600000).toISOString();
+    const futureIso10h = new Date(Date.now() + 10 * 3600000).toISOString();
+    const pastIso2h = new Date(Date.now() - 2 * 3600000).toISOString();
+
+    // 1. Auth & RBAC enforcement
+    const unauthCreatePr = await fetch(`${baseUrl}/passenger-requests`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin },
+      body: JSON.stringify({
+        pickup_name: 'DIU Main Gate',
+        dest_name: 'Mirpur 10',
+        departure_time: futureIso6h
+      })
+    });
+    const unauthBrowsePr = await fetch(`${baseUrl}/passenger-requests`);
+    const nonDriverBrowsePr = await fetch(`${baseUrl}/passenger-requests`, {
+      headers: { Cookie: observerCookie }
+    });
+    assert(
+      unauthCreatePr.status === 401 && unauthBrowsePr.status === 401 && nonDriverBrowsePr.status === 403,
+      'Enforces auth (401) and approved-driver RBAC (403) on passenger request endpoints'
+    );
+
+    // 2. Request creation validation
+    const pastDepPr = await fetch(`${baseUrl}/passenger-requests`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie },
+      body: JSON.stringify({
+        pickup_name: 'DIU Smart City',
+        dest_name: 'Dhanmondi 27',
+        departure_time: pastIso2h
+      })
+    });
+    const multiSeatPr = await fetch(`${baseUrl}/passenger-requests`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie },
+      body: JSON.stringify({
+        pickup_name: 'DIU Smart City',
+        dest_name: 'Dhanmondi 27',
+        departure_time: futureIso6h,
+        seats_needed: 2
+      })
+    });
+    const negFarePr = await fetch(`${baseUrl}/passenger-requests`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie },
+      body: JSON.stringify({
+        pickup_name: 'DIU Smart City',
+        dest_name: 'Dhanmondi 27',
+        departure_time: futureIso6h,
+        max_fare: -50
+      })
+    });
+    assert(
+      pastDepPr.status === 400 && multiSeatPr.status === 400 && negFarePr.status === 400,
+      'Validates future departure_time, fixed 1-seat limit, and non-negative max_fare (400)'
+    );
+
+    // Create 2 valid passenger requests (one 'any', one 'car' preferred)
+    const createAnyPrRes = await fetch(`${baseUrl}/passenger-requests`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie },
+      body: JSON.stringify({
+        pickup_name: 'DIU Smart City Main Gate',
+        pickup_lat: 23.8768,
+        pickup_lng: 90.3202,
+        dest_name: 'Mirpur 10 Circle',
+        dest_lat: 23.8069,
+        dest_lng: 90.3687,
+        departure_time: futureIso6h,
+        seats_needed: 1,
+        max_fare: 200,
+        vehicle_type: 'any',
+        note: 'Need punctual pickup near Gate 1'
+      })
+    });
+    const createAnyPrJson: any = await createAnyPrRes.json();
+    const anyReqId = Number(createAnyPrJson.requestId);
+
+    const createCarPrRes = await fetch(`${baseUrl}/passenger-requests`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: observerCookie },
+      body: JSON.stringify({
+        pickup_name: 'Uttara Sector 11',
+        pickup_lat: 23.8742,
+        pickup_lng: 90.398,
+        dest_name: 'DIU Campus',
+        dest_lat: 23.8768,
+        dest_lng: 90.3202,
+        departure_time: futureIso8h,
+        seats_needed: 1,
+        max_fare: 300,
+        vehicle_type: 'car',
+        note: 'Car preferred due to luggage'
+      })
+    });
+    const createCarPrJson: any = await createCarPrRes.json();
+    const carOnlyReqId = Number(createCarPrJson.requestId);
+    assert(
+      createAnyPrRes.status === 201 && anyReqId > 0 && createCarPrRes.status === 201 && carOnlyReqId > 0,
+      'Creates open passenger ride requests cleanly (201)'
+    );
+
+    // 3. Driver browsing & filtering + unrelated student isolation
+    const unrelatedViewPr = await fetch(`${baseUrl}/passenger-requests/${anyReqId}`, {
+      headers: { Cookie: observerCookie }
+    });
+    assert(
+      unrelatedViewPr.status === 403,
+      'Unrelated non-driver student cannot inspect private passenger request details (403)'
+    );
+
+    const driverBrowseRes = await fetch(
+      `${baseUrl}/passenger-requests?pickup=Mirpur&vehicle_type=bike&min_budget=150`.replace('Mirpur', 'Smart'),
+      { headers: { Cookie: driverLogin.cookie } }
+    );
+    const driverBrowseJson: any = await driverBrowseRes.json();
+    const browsedAny = driverBrowseJson.requests?.find((r: any) => Number(r.id) === anyReqId);
+    assert(
+      driverBrowseRes.status === 200 &&
+        Boolean(browsedAny) &&
+        browsedAny.passenger_phone === null &&
+        !driverBrowseJson.requests?.some((r: any) => Number(r.id) === carOnlyReqId),
+      'GET /api/passenger-requests filters by pickup/vehicle/budget, excludes incompatible car-only, and masks phone'
+    );
+
+    // 4. Offer creation rules (bike seats, vehicle mismatch, self-offer, window, duplicate)
+    const bikeTwoSeatsRes = await fetch(`${baseUrl}/passenger-requests/${anyReqId}/offers`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: driverLogin.cookie },
+      body: JSON.stringify({ fare: 150, seats_offered: 2, pickup_time: futureIso6h })
+    });
+    const bikeOnCarReqRes = await fetch(`${baseUrl}/passenger-requests/${carOnlyReqId}/offers`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: driverLogin.cookie },
+      body: JSON.stringify({ fare: 180, seats_offered: 1, pickup_time: futureIso8h })
+    });
+    const outOfWindowOfferRes = await fetch(`${baseUrl}/passenger-requests/${anyReqId}/offers`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: driverLogin.cookie },
+      body: JSON.stringify({
+        fare: 150,
+        seats_offered: 1,
+        pickup_time: new Date(Date.now() + 20 * 3600000).toISOString()
+      })
+    });
+    // Self-offer: make sadia's request vs approved driver Rahat creating own request & offering on it
+    const rahatOwnReqRes = await fetch(`${baseUrl}/passenger-requests`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: rahatLogin.cookie },
+      body: JSON.stringify({
+        pickup_name: 'Savar Bus Stand',
+        dest_name: 'DIU Campus',
+        departure_time: futureIso10h
+      })
+    });
+    const rahatOwnReqId = Number(((await rahatOwnReqRes.json()) as any).requestId);
+    const selfOfferRes = await fetch(`${baseUrl}/passenger-requests/${rahatOwnReqId}/offers`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: rahatLogin.cookie },
+      body: JSON.stringify({ fare: 100, seats_offered: 1, pickup_time: futureIso10h })
+    });
+    assert(
+      bikeTwoSeatsRes.status === 400 &&
+        bikeOnCarReqRes.status === 400 &&
+        outOfWindowOfferRes.status === 400 &&
+        selfOfferRes.status === 400,
+      'Rejects bike >1 seat, bike on car-only request, >4h pickup window, and self-offer (400)'
+    );
+
+    // Valid offers from Tanvir (bike, 1 seat, ৳160), Nusrat (car, 3 seats, ৳190), Rahat (bike, 1 seat, ৳175)
+    const tanvirOfferRes = await fetch(`${baseUrl}/passenger-requests/${anyReqId}/offers`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: driverLogin.cookie },
+      body: JSON.stringify({ fare: 160, seats_offered: 1, pickup_time: futureIso6h, message: 'Extra helmet ready' })
+    });
+    const tanvirOfferId = Number(((await tanvirOfferRes.json()) as any).offerId);
+
+    const dupTanvirOfferRes = await fetch(`${baseUrl}/passenger-requests/${anyReqId}/offers`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: driverLogin.cookie },
+      body: JSON.stringify({ fare: 140, seats_offered: 1, pickup_time: futureIso6h })
+    });
+
+    const nusratOfferRes = await fetch(`${baseUrl}/passenger-requests/${anyReqId}/offers`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: nusratLogin.cookie },
+      body: JSON.stringify({ fare: 190, seats_offered: 3, pickup_time: futureIso6h, message: 'AC car, 3 seats free' })
+    });
+    const nusratOfferId = Number(((await nusratOfferRes.json()) as any).offerId);
+
+    const rahatOfferRes = await fetch(`${baseUrl}/passenger-requests/${anyReqId}/offers`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: rahatLogin.cookie },
+      body: JSON.stringify({ fare: 175, seats_offered: 1, pickup_time: futureIso6h, message: 'Can pick up fast' })
+    });
+    const rahatOfferId = Number(((await rahatOfferRes.json()) as any).offerId);
+
+    assert(
+      tanvirOfferRes.status === 201 &&
+        dupTanvirOfferRes.status === 409 &&
+        nusratOfferRes.status === 201 &&
+        rahatOfferRes.status === 201,
+      'Creates multiple valid driver offers (201) and prevents duplicate offer by same driver (409)'
+    );
+
+    // 5. Offer privacy on GET /passenger-requests/:id
+    const ownerDetailJson: any = await (
+      await fetch(`${baseUrl}/passenger-requests/${anyReqId}`, { headers: { Cookie: sadiaNewLogin.cookie } })
+    ).json();
+    const tanvirDetailJson: any = await (
+      await fetch(`${baseUrl}/passenger-requests/${anyReqId}`, { headers: { Cookie: driverLogin.cookie } })
+    ).json();
+    assert(
+      ownerDetailJson.isOwner === true &&
+        ownerDetailJson.offers?.length === 3 &&
+        ownerDetailJson.offers.every((o: any) => o.driver_phone === null) &&
+        tanvirDetailJson.isOwner === false &&
+        tanvirDetailJson.offers?.length === 1 &&
+        Number(tanvirDetailJson.offers[0].id) === tanvirOfferId,
+      'Owner sees all offers with masked phones while pending; competing drivers see only their own offer'
+    );
+
+    // 6. Edit, authorization check, withdraw, and non-pending guard
+    const wrongDriverEditRes = await fetch(`${baseUrl}/passenger-requests/offers/${rahatOfferId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: driverLogin.cookie },
+      body: JSON.stringify({ fare: 120 })
+    });
+    const rahatEditRes = await fetch(`${baseUrl}/passenger-requests/offers/${rahatOfferId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: rahatLogin.cookie },
+      body: JSON.stringify({ fare: 165, message: 'Updated fare 165' })
+    });
+    const rahatWithdrawRes = await fetch(`${baseUrl}/passenger-requests/offers/${rahatOfferId}/withdraw`, {
+      method: 'PATCH',
+      headers: { Origin: trustedOrigin, Cookie: rahatLogin.cookie }
+    });
+    const editWithdrawnRes = await fetch(`${baseUrl}/passenger-requests/offers/${rahatOfferId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: rahatLogin.cookie },
+      body: JSON.stringify({ fare: 155 })
+    });
+    assert(
+      wrongDriverEditRes.status === 403 &&
+        rahatEditRes.status === 200 &&
+        rahatWithdrawRes.status === 200 &&
+        editWithdrawnRes.status === 409,
+      'Enforces driver offer ownership on edit (403), updates & withdraws pending offers, and blocks editing withdrawn offer (409)'
+    );
+
+    // 7. Owner rejects Tanvir's offer -> marks rejected
+    const rejectTanvirRes = await fetch(`${baseUrl}/passenger-requests/${anyReqId}/offers/${tanvirOfferId}/reject`, {
+      method: 'PATCH',
+      headers: { Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie }
+    });
+    assert(rejectTanvirRes.status === 200, 'Passenger declines individual driver offer cleanly (200)');
+
+    // 8. Atomic offer acceptance creates ride, booking, chat conversation & rejects competing pending offers
+    // Add one fresh pending offer from Nusrat on carOnlyReqId to test both multi-seat ('open') and concurrent race + 1-seat bike ('full')
+    const tanvirResubmitCheck = await fetch(`${baseUrl}/passenger-requests/${anyReqId}/offers/${nusratOfferId}/accept`, {
+      method: 'PATCH',
+      headers: { Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie }
+    });
+    const acceptNusratJson: any = await tanvirResubmitCheck.json();
+    const matchedCarRideId = Number(acceptNusratJson.rideId);
+    const matchedConvId = Number(acceptNusratJson.conversationId);
+    assert(
+      tanvirResubmitCheck.status === 200 && matchedCarRideId > 0 && matchedConvId > 0,
+      'Accepting car offer (3 seats) atomically creates confirmed ride and chat conversation'
+    );
+
+    // Verify ride, accepted ride_request booking, matched status, and phone/plate reveal
+    const [matchedRideRows] = await db.query('SELECT * FROM rides WHERE id = ?', [matchedCarRideId]);
+    const matchedRide = (matchedRideRows as any[])[0];
+    const [matchedBookingRows] = await db.query(
+      'SELECT * FROM ride_requests WHERE ride_id = ? AND passenger_id = ?',
+      [matchedCarRideId, sadiaId]
+    );
+    const matchedBooking = (matchedBookingRows as any[])[0];
+    const afterMatchOwnerDetail: any = await (
+      await fetch(`${baseUrl}/passenger-requests/${anyReqId}`, { headers: { Cookie: sadiaNewLogin.cookie } })
+    ).json();
+    const matchedOfferView = afterMatchOwnerDetail.offers?.find((o: any) => Number(o.id) === nusratOfferId);
+
+    const sadiaConvsRes = await fetch(`${baseUrl}/chat/conversations`, { headers: { Cookie: sadiaNewLogin.cookie } });
+    const sadiaConvsJson: any = await sadiaConvsRes.json();
+
+    assert(
+      matchedRide?.status === 'open' &&
+        Number(matchedRide?.seats_total) === 3 &&
+        Number(matchedRide?.seats_available) === 2 &&
+        matchedBooking?.status === 'accepted' &&
+        afterMatchOwnerDetail.request?.status === 'matched' &&
+        Number(afterMatchOwnerDetail.request?.accepted_offer_id) === nusratOfferId &&
+        matchedOfferView?.driver_phone !== null &&
+        matchedOfferView?.driver_vehicle_plate !== null &&
+        sadiaConvsJson.conversations?.some((c: any) => Number(c.id) === matchedConvId),
+      'Matched car ride has seats_available=2/3 status="open", accepted booking, unlocked chat, and revealed contact details'
+    );
+
+    // Double-accept on matched request fails cleanly (409)
+    const doubleAcceptRes = await fetch(`${baseUrl}/passenger-requests/${anyReqId}/offers/${nusratOfferId}/accept`, {
+      method: 'PATCH',
+      headers: { Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie }
+    });
+    assert(doubleAcceptRes.status === 409, 'Double-accept on already matched request returns 409 with no duplicate ride');
+
+    // Concurrent race acceptance + 1-seat bike 'full' ride check
+    const racePrRes = await fetch(`${baseUrl}/passenger-requests`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: observerCookie },
+      body: JSON.stringify({
+        pickup_name: 'DIU Gate Race',
+        dest_name: 'Savar Bazar',
+        departure_time: futureIso10h,
+        vehicle_type: 'bike'
+      })
+    });
+    const racePrId = Number(((await racePrRes.json()) as any).requestId);
+    const raceOffer1Res = await fetch(`${baseUrl}/passenger-requests/${racePrId}/offers`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: driverLogin.cookie },
+      body: JSON.stringify({ fare: 110, seats_offered: 1, pickup_time: futureIso10h })
+    });
+    const raceOffer2Res = await fetch(`${baseUrl}/passenger-requests/${racePrId}/offers`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: rahatLogin.cookie },
+      body: JSON.stringify({ fare: 120, seats_offered: 1, pickup_time: futureIso10h })
+    });
+    const raceOffer1Id = Number(((await raceOffer1Res.json()) as any).offerId);
+    const raceOffer2Id = Number(((await raceOffer2Res.json()) as any).offerId);
+
+    const [raceAcceptA, raceAcceptB] = await Promise.all([
+      fetch(`${baseUrl}/passenger-requests/${racePrId}/offers/${raceOffer1Id}/accept`, {
+        method: 'PATCH',
+        headers: { Origin: trustedOrigin, Cookie: observerCookie }
+      }),
+      fetch(`${baseUrl}/passenger-requests/${racePrId}/offers/${raceOffer2Id}/accept`, {
+        method: 'PATCH',
+        headers: { Origin: trustedOrigin, Cookie: observerCookie }
+      })
+    ]);
+    const raceAcceptStatuses = [raceAcceptA.status, raceAcceptB.status].sort();
+    const winnerBody: any =
+      raceAcceptA.status === 200 ? await raceAcceptA.json() : await raceAcceptB.json();
+    const winnerRideId = Number(winnerBody.rideId);
+    const [winnerRideRows] = await db.query('SELECT * FROM rides WHERE id = ?', [winnerRideId]);
+    const winnerRide = (winnerRideRows as any[])[0];
+    const [raceOffersAfter] = await db.query('SELECT * FROM driver_offers WHERE request_id = ?', [racePrId]);
+    const rejectedCompeting = (raceOffersAfter as any[]).filter((o) => o.status === 'rejected');
+
+    assert(
+      raceAcceptStatuses[0] === 200 &&
+        raceAcceptStatuses[1] === 409 &&
+        winnerRide?.status === 'full' &&
+        Number(winnerRide?.seats_available) === 0 &&
+        rejectedCompeting.length === 1,
+      'Parallel accept creates exactly one full 1-seat bike ride (200 + 409) and rejects competing pending offer'
+    );
+
+    // 9. Cancel request closes pending offers & lazy expiration transitions elapsed requests
+    const cancelTestPrRes = await fetch(`${baseUrl}/passenger-requests`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: observerCookie },
+      body: JSON.stringify({
+        pickup_name: 'Cancel Pickup',
+        dest_name: 'Cancel Dest',
+        departure_time: futureIso10h
+      })
+    });
+    const cancelTestPrId = Number(((await cancelTestPrRes.json()) as any).requestId);
+    const cancelTestOfferRes = await fetch(`${baseUrl}/passenger-requests/${cancelTestPrId}/offers`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: driverLogin.cookie },
+      body: JSON.stringify({ fare: 130, seats_offered: 1, pickup_time: futureIso10h })
+    });
+    const cancelPrExecRes = await fetch(`${baseUrl}/passenger-requests/${cancelTestPrId}/cancel`, {
+      method: 'PATCH',
+      headers: { Origin: trustedOrigin, Cookie: observerCookie }
+    });
+    const [cancelledPrOffers] = await db.query('SELECT status FROM driver_offers WHERE request_id = ?', [cancelTestPrId]);
+    assert(
+      cancelTestPrRes.status === 201 &&
+        cancelTestOfferRes.status === 201 &&
+        cancelPrExecRes.status === 200 &&
+        Array.isArray(cancelledPrOffers) &&
+        (cancelledPrOffers as any[])[0]?.status === 'rejected',
+      'Cancelling open passenger request transitions pending offers to rejected'
+    );
+
+    // Blocked pair check on passenger request offer
+    await db.query('INSERT INTO user_blocks (blocker_id, blocked_id) VALUES (?, ?)', [rahatId, sadiaId]);
+    const blockTestPrRes = await fetch(`${baseUrl}/passenger-requests`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie },
+      body: JSON.stringify({
+        pickup_name: 'Block Check Gate',
+        dest_name: 'DIU',
+        departure_time: futureIso10h
+      })
+    });
+    const blockTestPrId = Number(((await blockTestPrRes.json()) as any).requestId);
+    const blockedDriverOfferRes = await fetch(`${baseUrl}/passenger-requests/${blockTestPrId}/offers`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: rahatLogin.cookie },
+      body: JSON.stringify({ fare: 100, seats_offered: 1, pickup_time: futureIso10h })
+    });
+    assert(blockedDriverOfferRes.status === 403, 'Blocked user pair cannot submit offer on passenger request (403)');
+    await db.query('DELETE FROM user_blocks WHERE blocker_id = ? AND blocked_id = ?', [rahatId, sadiaId]);
+
+    // Lazy expiration check for past departure_time
+    const pastDepSql = formatDateToMySqlUtc(new Date(Date.now() - 60000));
+    const [expiredPrInsert] = await db.query(
+      `INSERT INTO passenger_requests
+        (passenger_id, pickup_name, pickup_lat, pickup_lng, dest_name, dest_lat, dest_lng, departure_time, seats_needed, max_fare, vehicle_type, note, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 150, 'any', NULL, 'open')`,
+      [sadiaId, 'Expired Origin', 23.8768, 90.3202, 'Expired Dest', 23.7538, 90.377, pastDepSql]
+    );
+    const expiredPrId = Number((expiredPrInsert as any).insertId);
+    const [expiredOfferInsert] = await db.query(
+      `INSERT INTO driver_offers (request_id, driver_id, fare, seats_offered, vehicle_type, pickup_time, status)
+       VALUES (?, ?, 140, 1, 'bike', ?, 'pending')`,
+      [expiredPrId, driverId, pastDepSql]
+    );
+    const expiredOfferId = Number((expiredOfferInsert as any).insertId);
+
+    const expiredFetchJson: any = await (
+      await fetch(`${baseUrl}/passenger-requests/${expiredPrId}`, { headers: { Cookie: sadiaNewLogin.cookie } })
+    ).json();
+    const expiredAcceptRes = await fetch(`${baseUrl}/passenger-requests/${expiredPrId}/offers/${expiredOfferId}/accept`, {
+      method: 'PATCH',
+      headers: { Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie }
+    });
+    assert(
+      expiredFetchJson.request?.status === 'expired' &&
+        expiredFetchJson.offers?.[0]?.status === 'expired' &&
+        expiredAcceptRes.status === 409,
+      'Lazy expiration marks elapsed passenger_requests and pending driver_offers expired and blocks acceptance (409)'
+    );
+
+    // -----------------------------------------------------------------------
+    // PHASE 23: Final Audit Corrections Regression Tests
+    // -----------------------------------------------------------------------
+    console.log('\n[Phase 23] Final Audit Corrections Regression Tests');
+
+    // 1. Email privacy: browse feed hides passenger_email; detail view hides unaccepted driver_email
+    const privDep10hSql = formatDateToMySqlUtc(new Date(Date.now() + 10 * 3600000));
+    const [privPrInsert] = await db.query(
+      `INSERT INTO passenger_requests
+        (passenger_id, pickup_name, pickup_lat, pickup_lng, dest_name, dest_lat, dest_lng, departure_time, seats_needed, max_fare, vehicle_type, note, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 220, 'any', NULL, 'open')`,
+      [sadiaId, 'Privacy Check Gate', 23.8768, 90.3202, 'Mirpur 12', 23.8164, 90.3667, privDep10hSql]
+    );
+    const privPrId = Number((privPrInsert as any).insertId);
+    const [privOfferInsert] = await db.query(
+      `INSERT INTO driver_offers (request_id, driver_id, fare, seats_offered, vehicle_type, pickup_time, status)
+       VALUES (?, ?, 180, 1, 'bike', ?, 'pending')`,
+      [privPrId, driverId, privDep10hSql]
+    );
+    const privOfferId = Number((privOfferInsert as any).insertId);
+    assert(privPrId > 0 && privOfferId > 0, 'Creates open request and pending offer for email privacy verification');
+
+    const browsePrivacyJson: any = await (
+      await fetch(`${baseUrl}/passenger-requests`, { headers: { Cookie: rahatLogin.cookie } })
+    ).json();
+    const browseItems: any[] = browsePrivacyJson.requests || [];
+    assert(
+      browseItems.length > 0 && browseItems.every((r) => r.passenger_email === null && r.passenger_phone === null),
+      'Browse passenger-requests feed never exposes passenger_email or passenger_phone to drivers'
+    );
+
+    const ownerWithPendingJson: any = await (
+      await fetch(`${baseUrl}/passenger-requests/${privPrId}`, { headers: { Cookie: sadiaNewLogin.cookie } })
+    ).json();
+    const ownerAfterMatchJson: any = await (
+      await fetch(`${baseUrl}/passenger-requests/${anyReqId}`, { headers: { Cookie: sadiaNewLogin.cookie } })
+    ).json();
+    const adminDetailJson: any = await (
+      await fetch(`${baseUrl}/passenger-requests/${anyReqId}`, { headers: { Cookie: adminLogin.cookie } })
+    ).json();
+    const ownerPendingOffer = (ownerWithPendingJson.offers || [])[0];
+    const ownerAcceptedOffer = (ownerAfterMatchJson.offers || []).find((o: any) => o.status === 'accepted');
+    const ownerUnacceptedOffers = (ownerAfterMatchJson.offers || []).filter((o: any) => o.status !== 'accepted');
+    assert(
+      ownerPendingOffer?.driver_email === null &&
+        ownerUnacceptedOffers.length >= 2 &&
+        ownerUnacceptedOffers.every((o: any) => o.driver_email === null) &&
+        typeof ownerAcceptedOffer?.driver_email === 'string' &&
+        ownerAcceptedOffer.driver_email.includes('@') &&
+        (adminDetailJson.offers || []).every((o: any) => typeof o.driver_email === 'string' && o.driver_email.includes('@')),
+      'Detail view hides driver_email on pending/rejected/withdrawn offers for owner while revealing to accepted owner and admins'
+    );
+
+    // 2A. Unrelated co-passenger spare-seat booking & cancellation on matched multi-seat ride must NOT cancel matched request
+    const coPassBookRes = await fetch(`${baseUrl}/rides/${matchedCarRideId}/requests`, {
+      method: 'POST',
+      headers: { Origin: trustedOrigin, Cookie: observerCookie }
+    });
+    const coPassBookJson: any = await coPassBookRes.json();
+    const coPassBookingId = Number(coPassBookJson.requestId);
+    const acceptCoPassRes = await fetch(`${baseUrl}/requests/${coPassBookingId}/accept`, {
+      method: 'PATCH',
+      headers: { Origin: trustedOrigin, Cookie: nusratLogin.cookie }
+    });
+    const cancelCoPassRes = await fetch(`${baseUrl}/requests/${coPassBookingId}/cancel`, {
+      method: 'PATCH',
+      headers: { Origin: trustedOrigin, Cookie: observerCookie }
+    });
+    const [prAfterCoPassCancelRows] = await db.query('SELECT status FROM passenger_requests WHERE id = ?', [anyReqId]);
+    const [rideAfterCoPassCancelRows] = await db.query('SELECT seats_available, status FROM rides WHERE id = ?', [
+      matchedCarRideId
+    ]);
+    assert(
+      coPassBookRes.status === 201 &&
+        acceptCoPassRes.status === 200 &&
+        cancelCoPassRes.status === 200 &&
+        (prAfterCoPassCancelRows as any[])[0]?.status === 'matched' &&
+        Number((rideAfterCoPassCancelRows as any[])[0]?.seats_available) === 2,
+      'Unrelated co-passenger spare-seat booking cancellation restores seat without cancelling matched passenger_request'
+    );
+
+    // 2B. Matched passenger cancelling own booking syncs linked passenger_request -> cancelled & prevents double seat restore
+    const matchedBookingId = Number(matchedBooking.id);
+    const matchedPassengerCancelRes = await fetch(`${baseUrl}/requests/${matchedBookingId}/cancel`, {
+      method: 'PATCH',
+      headers: { Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie }
+    });
+    const matchedPassengerDoubleCancelRes = await fetch(`${baseUrl}/requests/${matchedBookingId}/cancel`, {
+      method: 'PATCH',
+      headers: { Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie }
+    });
+    const [prAfterSelfCancelRows] = await db.query('SELECT status FROM passenger_requests WHERE id = ?', [anyReqId]);
+    const [rideAfterSelfCancelRows] = await db.query('SELECT seats_available FROM rides WHERE id = ?', [matchedCarRideId]);
+    assert(
+      matchedPassengerCancelRes.status === 200 &&
+        matchedPassengerDoubleCancelRes.status === 409 &&
+        (prAfterSelfCancelRows as any[])[0]?.status === 'cancelled' &&
+        Number((rideAfterSelfCancelRows as any[])[0]?.seats_available) === 3,
+      'Matched requester cancelling accepted booking restores seat once (409 on repeat) and syncs passenger_request to cancelled'
+    );
+
+    // 2C. Driver cancelRide on matched 1-seat ride (winnerRideId) syncs linked passenger_request (racePrId) & API exposes confirmed_ride_status
+    const winnerDriverCookie =
+      Number(winnerRide.driver_id) === driverId ? driverLogin.cookie : rahatLogin.cookie;
+    const cancelMatchedRideRes = await fetch(`${baseUrl}/rides/${winnerRideId}/cancel`, {
+      method: 'PATCH',
+      headers: { Origin: trustedOrigin, Cookie: winnerDriverCookie }
+    });
+    const [racePrAfterRideCancelRows] = await db.query('SELECT status FROM passenger_requests WHERE id = ?', [racePrId]);
+    const raceDetailAfterCancelJson: any = await (
+      await fetch(`${baseUrl}/passenger-requests/${racePrId}`, { headers: { Cookie: observerCookie } })
+    ).json();
+    const winnerOffersMineJson: any = await (
+      await fetch(`${baseUrl}/passenger-requests/offers/mine`, { headers: { Cookie: winnerDriverCookie } })
+    ).json();
+    const winnerOfferSummary = (winnerOffersMineJson.offers || []).find(
+      (o: any) => Number(o.confirmed_ride_id) === winnerRideId
+    );
+    assert(
+      cancelMatchedRideRes.status === 200 &&
+        (racePrAfterRideCancelRows as any[])[0]?.status === 'cancelled' &&
+        raceDetailAfterCancelJson.request?.status === 'cancelled' &&
+        raceDetailAfterCancelJson.request?.confirmed_ride_status === 'cancelled' &&
+        winnerOfferSummary?.confirmed_ride_status === 'cancelled' &&
+        winnerOfferSummary?.request_status === 'cancelled',
+      'rideController.cancelRide syncs matched passenger_request to cancelled and exposes confirmed_ride_status across endpoints'
+    );
+
+    // 2D. rideController.updateRideStatus('cancelled') + adminController.moderateRideAdmin + unrelated isolation
+    // Seed a request & pending offer cleanly, then exercise real HTTP accept + updateRideStatus('cancelled')
+    const futureDep10hSql = formatDateToMySqlUtc(new Date(Date.now() + 10 * 3600000));
+    const [statusSyncPrInsert] = await db.query(
+      `INSERT INTO passenger_requests
+        (passenger_id, pickup_name, pickup_lat, pickup_lng, dest_name, dest_lat, dest_lng, departure_time, seats_needed, max_fare, vehicle_type, note, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 200, 'any', NULL, 'open')`,
+      [sadiaId, 'Status Sync Gate', 23.8768, 90.3202, 'Uttara', 23.8742, 90.398, futureDep10hSql]
+    );
+    const statusSyncPrId = Number((statusSyncPrInsert as any).insertId);
+    const [statusSyncOfferInsert] = await db.query(
+      `INSERT INTO driver_offers (request_id, driver_id, fare, seats_offered, vehicle_type, pickup_time, status)
+       VALUES (?, ?, 150, 1, 'bike', ?, 'pending')`,
+      [statusSyncPrId, driverId, futureDep10hSql]
+    );
+    const statusSyncOfferId = Number((statusSyncOfferInsert as any).insertId);
+    const statusSyncAcceptRes = await fetch(
+      `${baseUrl}/passenger-requests/${statusSyncPrId}/offers/${statusSyncOfferId}/accept`,
+      { method: 'PATCH', headers: { Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie } }
+    );
+    const statusSyncRideId = Number(((await statusSyncAcceptRes.json()) as any).rideId);
+    const updateStatusCancelRes = await fetch(`${baseUrl}/rides/${statusSyncRideId}/status`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: driverLogin.cookie },
+      body: JSON.stringify({ status: 'cancelled' })
+    });
+    const [prAfterStatusCancelRows] = await db.query('SELECT status FROM passenger_requests WHERE id = ?', [
+      statusSyncPrId
+    ]);
+    assert(
+      statusSyncAcceptRes.status === 200 &&
+        updateStatusCancelRes.status === 200 &&
+        (prAfterStatusCancelRows as any[])[0]?.status === 'cancelled',
+      'rideController.updateRideStatus("cancelled") synchronizes matched passenger_request to cancelled'
+    );
+
+    // Next exercise real HTTP accept + adminController.moderateRideAdmin, keeping privPrId untouched
+    const [adminSyncPrInsert] = await db.query(
+      `INSERT INTO passenger_requests
+        (passenger_id, pickup_name, pickup_lat, pickup_lng, dest_name, dest_lat, dest_lng, departure_time, seats_needed, max_fare, vehicle_type, note, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 220, 'any', NULL, 'open')`,
+      [sadiaId, 'Admin Sync Gate', 23.8768, 90.3202, 'Farmgate', 23.7561, 90.3872, futureDep10hSql]
+    );
+    const adminSyncPrId = Number((adminSyncPrInsert as any).insertId);
+    const [adminSyncOfferInsert] = await db.query(
+      `INSERT INTO driver_offers (request_id, driver_id, fare, seats_offered, vehicle_type, pickup_time, status)
+       VALUES (?, ?, 170, 1, 'bike', ?, 'pending')`,
+      [adminSyncPrId, driverId, futureDep10hSql]
+    );
+    const adminSyncOfferId = Number((adminSyncOfferInsert as any).insertId);
+    const adminSyncAcceptRes = await fetch(
+      `${baseUrl}/passenger-requests/${adminSyncPrId}/offers/${adminSyncOfferId}/accept`,
+      { method: 'PATCH', headers: { Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie } }
+    );
+    const adminSyncRideId = Number(((await adminSyncAcceptRes.json()) as any).rideId);
+    const adminModCancelRes = await fetch(`${baseUrl}/admin/rides/${adminSyncRideId}/moderate`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: adminLogin.cookie },
+      body: JSON.stringify({ reason: 'Audit moderation test' })
+    });
+    const [prAfterAdminCancelRows] = await db.query('SELECT status FROM passenger_requests WHERE id = ?', [
+      adminSyncPrId
+    ]);
+    const [unrelatedPrRows] = await db.query('SELECT status FROM passenger_requests WHERE id = ?', [privPrId]);
+    const [unrelatedOfferRows] = await db.query('SELECT status FROM driver_offers WHERE request_id = ?', [privPrId]);
+    const sadiaConvsAfterCancelJson: any = await (
+      await fetch(`${baseUrl}/chat/conversations`, { headers: { Cookie: sadiaNewLogin.cookie } })
+    ).json();
+    assert(
+      adminModCancelRes.status === 200 &&
+        (prAfterAdminCancelRows as any[])[0]?.status === 'cancelled' &&
+        (unrelatedPrRows as any[])[0]?.status === 'open' &&
+        (unrelatedOfferRows as any[])[0]?.status === 'pending' &&
+        sadiaConvsAfterCancelJson.conversations?.some((c: any) => Number(c.id) === matchedConvId),
+      'adminController.moderateRideAdmin syncs matched request without modifying unrelated open requests/offers or chat history'
+    );
+
+    // 3. Expiration guards on withdrawDriverOffer & rejectDriverOffer
+    const [expWithdrawPrInsert] = await db.query(
+      `INSERT INTO passenger_requests
+        (passenger_id, pickup_name, pickup_lat, pickup_lng, dest_name, dest_lat, dest_lng, departure_time, seats_needed, max_fare, vehicle_type, note, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 160, 'any', NULL, 'open')`,
+      [sadiaId, 'Elapsed Withdraw', 23.8768, 90.3202, 'DIU', 23.7538, 90.377, pastDepSql]
+    );
+    const expWithdrawPrId = Number((expWithdrawPrInsert as any).insertId);
+    const [expWithdrawOfferInsert] = await db.query(
+      `INSERT INTO driver_offers (request_id, driver_id, fare, seats_offered, vehicle_type, pickup_time, status)
+       VALUES (?, ?, 130, 1, 'bike', ?, 'pending')`,
+      [expWithdrawPrId, driverId, pastDepSql]
+    );
+    const expWithdrawOfferId = Number((expWithdrawOfferInsert as any).insertId);
+
+    const withdrawExpiredRes = await fetch(
+      `${baseUrl}/passenger-requests/offers/${expWithdrawOfferId}/withdraw`,
+      { method: 'PATCH', headers: { Origin: trustedOrigin, Cookie: driverLogin.cookie } }
+    );
+    const [expWPrAfter] = await db.query('SELECT status FROM passenger_requests WHERE id = ?', [expWithdrawPrId]);
+    const [expWOfferAfter] = await db.query('SELECT status FROM driver_offers WHERE id = ?', [expWithdrawOfferId]);
+
+    const [expRejectPrInsert] = await db.query(
+      `INSERT INTO passenger_requests
+        (passenger_id, pickup_name, pickup_lat, pickup_lng, dest_name, dest_lat, dest_lng, departure_time, seats_needed, max_fare, vehicle_type, note, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 160, 'any', NULL, 'open')`,
+      [sadiaId, 'Elapsed Reject', 23.8768, 90.3202, 'DIU', 23.7538, 90.377, pastDepSql]
+    );
+    const expRejectPrId = Number((expRejectPrInsert as any).insertId);
+    const [expRejectOfferInsert] = await db.query(
+      `INSERT INTO driver_offers (request_id, driver_id, fare, seats_offered, vehicle_type, pickup_time, status)
+       VALUES (?, ?, 145, 1, 'bike', ?, 'pending')`,
+      [expRejectPrId, rahatId, pastDepSql]
+    );
+    const expRejectOfferId = Number((expRejectOfferInsert as any).insertId);
+
+    const rejectExpiredRes = await fetch(
+      `${baseUrl}/passenger-requests/${expRejectPrId}/offers/${expRejectOfferId}/reject`,
+      { method: 'PATCH', headers: { Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie } }
+    );
+    const [expRPrAfter] = await db.query('SELECT status FROM passenger_requests WHERE id = ?', [expRejectPrId]);
+    const [expROfferAfter] = await db.query('SELECT status FROM driver_offers WHERE id = ?', [expRejectOfferId]);
+
+    assert(
+      withdrawExpiredRes.status === 409 &&
+        (expWPrAfter as any[])[0]?.status === 'expired' &&
+        (expWOfferAfter as any[])[0]?.status === 'expired' &&
+        rejectExpiredRes.status === 409 &&
+        (expRPrAfter as any[])[0]?.status === 'expired' &&
+        (expROfferAfter as any[])[0]?.status === 'expired',
+      'withdrawDriverOffer and rejectDriverOffer return 409 and expire elapsed requests and pending offers atomically'
+    );
+
+    // -----------------------------------------------------------------------
+    // PHASE 24: Final Production Readiness Audit Regression Tests
+    // -----------------------------------------------------------------------
+    console.log('\n[Phase 24] Final Production Readiness Audit Regression Tests');
+
+    // 1. Verify standardized row-lock order (passenger_requests FOR UPDATE before driver_offers FOR UPDATE)
+    // Note: Static source verification + concurrency/mock tests; in-memory SQL cannot prove real InnoDB deadlocks.
+    const prCtrlSource = fs.readFileSync(
+      path.resolve(process.cwd(), 'server/src/controllers/passengerRequestController.ts'),
+      'utf8'
+    );
+    const lockOrderFns = [
+      'syncPassengerRequestOnRideCancelled',
+      'syncPassengerRequestOnBookingCancelled',
+      'updateDriverOffer',
+      'withdrawDriverOffer',
+      'acceptDriverOffer',
+      'rejectDriverOffer'
+    ];
+    let allLockOrdersValid = true;
+    for (const fnName of lockOrderFns) {
+      const fnStart = prCtrlSource.indexOf(`function ${fnName}`);
+      assert(fnStart !== -1, `Located ${fnName} in passengerRequestController.ts`);
+      const nextFnIdx = prCtrlSource.indexOf('\nexport async function ', fnStart + 20);
+      const fnSlice = nextFnIdx === -1 ? prCtrlSource.slice(fnStart) : prCtrlSource.slice(fnStart, nextFnIdx);
+      const prMatch = /FROM\s+passenger_requests\s+WHERE\s+id\s*=\s*\?\s+FOR\s+UPDATE/i.exec(fnSlice);
+      const offerMatch = /FROM\s+driver_offers\s+WHERE\s+id\s*=\s*\?[^;]*?FOR\s+UPDATE/i.exec(fnSlice);
+      if (!prMatch || !offerMatch || prMatch.index > offerMatch.index) {
+        allLockOrdersValid = false;
+      }
+    }
+    assert(
+      allLockOrdersValid,
+      'All double-row lock transactions lock passenger_requests FOR UPDATE before driver_offers FOR UPDATE'
+    );
+
+    // Concurrent updateDriverOffer / withdrawDriverOffer vs acceptDriverOffer / rejectDriverOffer
+    const concDepIso = new Date(Date.now() + 12 * 3600000).toISOString();
+    const concDepSql = formatDateToMySqlUtc(new Date(Date.now() + 12 * 3600000));
+    const [concPrInsert] = await db.query(
+      `INSERT INTO passenger_requests
+        (passenger_id, pickup_name, pickup_lat, pickup_lng, dest_name, dest_lat, dest_lng, departure_time, seats_needed, max_fare, vehicle_type, note, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 200, 'bike', NULL, 'open')`,
+      [sadiaId, 'Lock Race Gate', 23.8768, 90.3202, 'Mirpur 10', 23.8069, 90.3687, concDepSql]
+    );
+    const concPrId = Number((concPrInsert as any).insertId);
+    const [concOfferInsert] = await db.query(
+      `INSERT INTO driver_offers (request_id, driver_id, fare, seats_offered, vehicle_type, pickup_time, status)
+       VALUES (?, ?, 140, 1, 'bike', ?, 'pending')`,
+      [concPrId, driverId, concDepSql]
+    );
+    const concOfferId = Number((concOfferInsert as any).insertId);
+    assert(concOfferId > 0 && concPrId > 0, 'Created valid fixtures for concurrency test');
+
+    const [concWithdrawRes, concAcceptRes] = await Promise.all([
+      fetch(`${baseUrl}/passenger-requests/offers/${concOfferId}/withdraw`, {
+        method: 'PATCH',
+        headers: { Origin: trustedOrigin, Cookie: driverLogin.cookie }
+      }),
+      fetch(`${baseUrl}/passenger-requests/${concPrId}/offers/${concOfferId}/accept`, {
+        method: 'PATCH',
+        headers: { Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie }
+      })
+    ]);
+    const [concOfferAfterRows] = await db.query('SELECT status, confirmed_ride_id FROM driver_offers WHERE id = ?', [
+      concOfferId
+    ]);
+    const [concPrAfterRows] = await db.query('SELECT status, accepted_offer_id FROM passenger_requests WHERE id = ?', [
+      concPrId
+    ]);
+    const concOfferAfter = (concOfferAfterRows as any[])[0];
+    const concPrAfter = (concPrAfterRows as any[])[0];
+    const concConsistent =
+      (concWithdrawRes.status === 200 &&
+        concAcceptRes.status === 409 &&
+        concOfferAfter?.status === 'withdrawn' &&
+        concPrAfter?.status === 'open') ||
+      (concAcceptRes.status === 200 &&
+        concWithdrawRes.status === 409 &&
+        concOfferAfter?.status === 'accepted' &&
+        Number(concOfferAfter?.confirmed_ride_id) > 0 &&
+        concPrAfter?.status === 'matched');
+    assert(
+      concConsistent,
+      `Concurrent withdrawDriverOffer vs acceptDriverOffer settles into a single consistent terminal state (pr=${concPrId}, offer=${concOfferId}, withdraw=${concWithdrawRes.status}, accept=${concAcceptRes.status}, offerStatus=${concOfferAfter?.status}, prStatus=${concPrAfter?.status})`
+    );
+
+    // Concurrent updateDriverOffer vs rejectDriverOffer
+    const [conc2PrInsert] = await db.query(
+      `INSERT INTO passenger_requests
+        (passenger_id, pickup_name, pickup_lat, pickup_lng, dest_name, dest_lat, dest_lng, departure_time, seats_needed, max_fare, vehicle_type, note, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 200, 'bike', NULL, 'open')`,
+      [sadiaId, 'Lock Race Update', 23.8768, 90.3202, 'Uttara', 23.8742, 90.398, concDepSql]
+    );
+    const conc2PrId = Number((conc2PrInsert as any).insertId);
+    const [conc2OfferInsert] = await db.query(
+      `INSERT INTO driver_offers (request_id, driver_id, fare, seats_offered, vehicle_type, pickup_time, status)
+       VALUES (?, ?, 150, 1, 'bike', ?, 'pending')`,
+      [conc2PrId, driverId, concDepSql]
+    );
+    const conc2OfferId = Number((conc2OfferInsert as any).insertId);
+
+    const [conc2UpdateRes, conc2RejectRes] = await Promise.all([
+      fetch(`${baseUrl}/passenger-requests/offers/${conc2OfferId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: driverLogin.cookie },
+        body: JSON.stringify({ fare: 135 })
+      }),
+      fetch(`${baseUrl}/passenger-requests/${conc2PrId}/offers/${conc2OfferId}/reject`, {
+        method: 'PATCH',
+        headers: { Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie }
+      })
+    ]);
+    assert(
+      conc2RejectRes.status === 200 && (conc2UpdateRes.status === 200 || conc2UpdateRes.status === 409),
+      'Concurrent updateDriverOffer vs rejectDriverOffer completes without invalid state'
+    );
+
+    // Mock ER_LOCK_DEADLOCK (1213) and ER_LOCK_WAIT_TIMEOUT (1205) handling
+    const origGetConnForLock = db.getConnection;
+    try {
+      let deadlockRolledBack = false;
+      let deadlockReleased = false;
+      db.getConnection = async () => ({
+        beginTransaction: async () => {},
+        query: async (sql: string) => {
+          if (sql.includes('FOR UPDATE')) {
+            throw Object.assign(new Error('Deadlock found when trying to get lock'), {
+              code: 'ER_LOCK_DEADLOCK',
+              errno: 1213
+            });
+          }
+          return [[{ id: conc2OfferId, request_id: conc2PrId }], []];
+        },
+        execute: async () => [[], []],
+        commit: async () => {
+          throw new Error('commit should not run on deadlock');
+        },
+        rollback: async () => {
+          deadlockRolledBack = true;
+        },
+        release: () => {
+          deadlockReleased = true;
+        }
+      });
+
+      const deadlockHttpRes = await fetch(`${baseUrl}/passenger-requests/offers/${conc2OfferId}/withdraw`, {
+        method: 'PATCH',
+        headers: { Origin: trustedOrigin, Cookie: driverLogin.cookie }
+      });
+      assert(
+        deadlockHttpRes.status === 409 && deadlockRolledBack && deadlockReleased,
+        'ER_LOCK_DEADLOCK (1213) rolls back, releases connection, and returns HTTP 409 cleanly'
+      );
+
+      let timeoutRolledBack = false;
+      let timeoutReleased = false;
+      db.getConnection = async () => ({
+        beginTransaction: async () => {},
+        query: async (sql: string) => {
+          if (sql.includes('FOR UPDATE')) {
+            throw Object.assign(new Error('Lock wait timeout exceeded'), {
+              code: 'ER_LOCK_WAIT_TIMEOUT',
+              errno: 1205
+            });
+          }
+          return [[{ id: conc2OfferId, request_id: conc2PrId }], []];
+        },
+        execute: async () => [[], []],
+        commit: async () => {
+          throw new Error('commit should not run on lock wait timeout');
+        },
+        rollback: async () => {
+          timeoutRolledBack = true;
+        },
+        release: () => {
+          timeoutReleased = true;
+        }
+      });
+
+      const timeoutHttpRes = await fetch(`${baseUrl}/passenger-requests/${conc2PrId}/offers/${conc2OfferId}/accept`, {
+        method: 'PATCH',
+        headers: { Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie }
+      });
+      assert(
+        timeoutHttpRes.status === 503 && timeoutRolledBack && timeoutReleased,
+        'ER_LOCK_WAIT_TIMEOUT (1205) rolls back, releases connection, and returns HTTP 503 cleanly'
+      );
+    } finally {
+      db.getConnection = origGetConnForLock;
+    }
+
+    // 2. Cancelled 1-seat matched ride must NOT become public; ordinary 1-seat ride restores normally
+    const [soloPrInsert] = await db.query(
+      `INSERT INTO passenger_requests
+        (passenger_id, pickup_name, pickup_lat, pickup_lng, dest_name, dest_lat, dest_lng, departure_time, seats_needed, max_fare, vehicle_type, note, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 200, 'bike', NULL, 'open')`,
+      [sadiaId, 'Bespoke Bike Gate', 23.8768, 90.3202, 'Dhanmondi 32', 23.7509, 90.3776, concDepSql]
+    );
+    const soloPrId = Number((soloPrInsert as any).insertId);
+    const [soloOfferInsert] = await db.query(
+      `INSERT INTO driver_offers (request_id, driver_id, fare, seats_offered, vehicle_type, pickup_time, status)
+       VALUES (?, ?, 160, 1, 'bike', ?, 'pending')`,
+      [soloPrId, driverId, concDepSql]
+    );
+    const soloOfferId = Number((soloOfferInsert as any).insertId);
+    const soloAcceptRes = await fetch(`${baseUrl}/passenger-requests/${soloPrId}/offers/${soloOfferId}/accept`, {
+      method: 'PATCH',
+      headers: { Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie }
+    });
+    const soloRideId = Number(((await soloAcceptRes.json()) as any).rideId);
+    const [soloBookingRows] = await db.query(
+      'SELECT id FROM ride_requests WHERE ride_id = ? AND passenger_id = ?',
+      [soloRideId, sadiaId]
+    );
+    const soloBookingId = Number((soloBookingRows as any[])[0]?.id);
+    const soloCancelRes = await fetch(`${baseUrl}/requests/${soloBookingId}/cancel`, {
+      method: 'PATCH',
+      headers: { Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie }
+    });
+    const soloDoubleCancelRes = await fetch(`${baseUrl}/requests/${soloBookingId}/cancel`, {
+      method: 'PATCH',
+      headers: { Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie }
+    });
+    const [soloRideAfterRows] = await db.query('SELECT status, seats_available FROM rides WHERE id = ?', [soloRideId]);
+    const [soloPrAfterRows] = await db.query('SELECT status FROM passenger_requests WHERE id = ?', [soloPrId]);
+    const publicRidesSearchJson: any = await (await fetch(`${baseUrl}/rides?pickup=Bespoke`)).json();
+    assert(
+      soloAcceptRes.status === 200 &&
+        soloCancelRes.status === 200 &&
+        soloDoubleCancelRes.status === 409 &&
+        (soloRideAfterRows as any[])[0]?.status === 'cancelled' &&
+        Number((soloRideAfterRows as any[])[0]?.seats_available) === 0 &&
+        (soloPrAfterRows as any[])[0]?.status === 'cancelled' &&
+        !(publicRidesSearchJson.rides || []).some((r: any) => Number(r.id) === soloRideId),
+      'Cancelling sole booking on matched 1-seat ride cancels ride, hides from public search, and rejects repeat cancel (409)'
+    );
+
+    // Ordinary 1-seat driver-created ride still restores seats_available=1 and status='open' on passenger cancel
+    const [ordRideInsert] = await db.query(
+      `INSERT INTO rides
+        (driver_id, pickup_name, pickup_lat, pickup_lng, dest_name, dest_lat, dest_lng, departure_time, fare, seats_total, seats_available, vehicle_type, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 110, 1, 1, 'bike', 'open')`,
+      [driverId, 'Ordinary Bike Gate', 23.8768, 90.3202, 'Mirpur 10', 23.8069, 90.3687, concDepSql]
+    );
+    const ordRideId = Number((ordRideInsert as any).insertId);
+    const [ordReqInsert] = await db.query(
+      `INSERT INTO ride_requests (ride_id, passenger_id, seats_requested, status)
+       VALUES (?, ?, 1, 'accepted')`,
+      [ordRideId, sadiaId]
+    );
+    const ordReqId = Number((ordReqInsert as any).insertId);
+    await db.query('UPDATE rides SET seats_available = 0, status = "full" WHERE id = ?', [ordRideId]);
+
+    const ordCancelRes = await fetch(`${baseUrl}/requests/${ordReqId}/cancel`, {
+      method: 'PATCH',
+      headers: { Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie }
+    });
+    const [ordRideAfterRows] = await db.query('SELECT status, seats_available FROM rides WHERE id = ?', [ordRideId]);
+    assert(
+      ordCancelRes.status === 200 &&
+        (ordRideAfterRows as any[])[0]?.status === 'open' &&
+        Number((ordRideAfterRows as any[])[0]?.seats_available) === 1,
+      'Ordinary 1-seat driver ride still restores seats_available=1 and status="open" when passenger cancels'
+    );
+
+    // 3. Post-block privacy & suspended-account enforcement
+    const [blockMatchPrInsert] = await db.query(
+      `INSERT INTO passenger_requests
+        (passenger_id, pickup_name, pickup_lat, pickup_lng, dest_name, dest_lat, dest_lng, departure_time, seats_needed, max_fare, vehicle_type, note, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 200, 'bike', NULL, 'open')`,
+      [sadiaId, 'PostBlock Gate', 23.8768, 90.3202, 'Farmgate', 23.7561, 90.3872, concDepSql]
+    );
+    const blockMatchPrId = Number((blockMatchPrInsert as any).insertId);
+    const [blockMatchOfferInsert] = await db.query(
+      `INSERT INTO driver_offers (request_id, driver_id, fare, seats_offered, vehicle_type, pickup_time, status)
+       VALUES (?, ?, 155, 1, 'bike', ?, 'pending')`,
+      [blockMatchPrId, driverId, concDepSql]
+    );
+    const blockMatchOfferId = Number((blockMatchOfferInsert as any).insertId);
+    const blockMatchAcceptRes = await fetch(
+      `${baseUrl}/passenger-requests/${blockMatchPrId}/offers/${blockMatchOfferId}/accept`,
+      { method: 'PATCH', headers: { Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie } }
+    );
+    assert(blockMatchAcceptRes.status === 200, 'Creates accepted match for post-block privacy verification');
+
+    // Second open request with pending offer from same driver + another driver
+    const [blockPendPrInsert] = await db.query(
+      `INSERT INTO passenger_requests
+        (passenger_id, pickup_name, pickup_lat, pickup_lng, dest_name, dest_lat, dest_lng, departure_time, seats_needed, max_fare, vehicle_type, note, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 200, 'any', NULL, 'open')`,
+      [sadiaId, 'PostBlock Pending Gate', 23.8768, 90.3202, 'Motijheel', 23.733, 90.4172, concDepSql]
+    );
+    const blockPendPrId = Number((blockPendPrInsert as any).insertId);
+    await db.query(
+      `INSERT INTO driver_offers (request_id, driver_id, fare, seats_offered, vehicle_type, pickup_time, status)
+       VALUES (?, ?, 180, 1, 'bike', ?, 'pending')`,
+      [blockPendPrId, driverId, concDepSql]
+    );
+    await db.query(
+      `INSERT INTO driver_offers (request_id, driver_id, fare, seats_offered, vehicle_type, pickup_time, status)
+       VALUES (?, ?, 190, 1, 'bike', ?, 'pending')`,
+      [blockPendPrId, rahatId, concDepSql]
+    );
+
+    // Test both block directions: passenger blocks driver, then driver blocks passenger
+    for (const [blocker, blocked, label] of [
+      [sadiaId, driverId, 'passenger->driver'],
+      [driverId, sadiaId, 'driver->passenger']
+    ] as [number, number, string][]) {
+      await db.query('INSERT INTO user_blocks (blocker_id, blocked_id) VALUES (?, ?)', [blocker, blocked]);
+      try {
+        const ownerAcceptedDetail: any = await (
+          await fetch(`${baseUrl}/passenger-requests/${blockMatchPrId}`, {
+            headers: { Cookie: sadiaNewLogin.cookie }
+          })
+        ).json();
+        const acceptedOfferView = (ownerAcceptedDetail.offers || []).find(
+          (o: any) => Number(o.id) === blockMatchOfferId
+        );
+
+        const ownerPendingDetail: any = await (
+          await fetch(`${baseUrl}/passenger-requests/${blockPendPrId}`, {
+            headers: { Cookie: sadiaNewLogin.cookie }
+          })
+        ).json();
+
+        const blockedDriverDetailRes = await fetch(`${baseUrl}/passenger-requests/${blockMatchPrId}`, {
+          headers: { Cookie: driverLogin.cookie }
+        });
+
+        const driverOffersMineJson: any = await (
+          await fetch(`${baseUrl}/passenger-requests/offers/mine`, {
+            headers: { Cookie: driverLogin.cookie }
+          })
+        ).json();
+        const driverAcceptedMatchView = (driverOffersMineJson.offers || []).find(
+          (o: any) => Number(o.id) === blockMatchOfferId
+        );
+        const driverHasBlockedPendingOffer = (driverOffersMineJson.offers || []).some(
+          (o: any) => Number(o.request_id) === blockPendPrId
+        );
+
+        const adminAcceptedDetail: any = await (
+          await fetch(`${baseUrl}/passenger-requests/${blockMatchPrId}`, {
+            headers: { Cookie: adminLogin.cookie }
+          })
+        ).json();
+        const adminOfferView = (adminAcceptedDetail.offers || []).find(
+          (o: any) => Number(o.id) === blockMatchOfferId
+        );
+
+        assert(
+          acceptedOfferView?.driver_email === null &&
+            acceptedOfferView?.driver_phone === null &&
+            acceptedOfferView?.driver_vehicle_plate === null &&
+            !(ownerPendingDetail.offers || []).some((o: any) => Number(o.driver_id) === driverId) &&
+            (ownerPendingDetail.offers || []).some((o: any) => Number(o.driver_id) === rahatId) &&
+            blockedDriverDetailRes.status === 403 &&
+            driverAcceptedMatchView?.passenger_email === null &&
+            driverAcceptedMatchView?.passenger_phone === null &&
+            !driverHasBlockedPendingOffer &&
+            typeof adminOfferView?.driver_email === 'string',
+          `Post-block (${label}) hides pending offers, masks PII on accepted match both ways, and preserves admin access`
+        );
+      } finally {
+        await db.query('DELETE FROM user_blocks WHERE blocker_id = ? AND blocked_id = ?', [blocker, blocked]);
+      }
+    }
+
+    // Suspended passenger (is_blocked = 1) excluded from browse, detail view, offer create, and offer update
+    await db.query('UPDATE users SET is_blocked = 1 WHERE id = ?', [sadiaId]);
+    try {
+      const suspBrowseJson: any = await (
+        await fetch(`${baseUrl}/passenger-requests`, { headers: { Cookie: rahatLogin.cookie } })
+      ).json();
+      const suspDetailRes = await fetch(`${baseUrl}/passenger-requests/${blockPendPrId}`, {
+        headers: { Cookie: rahatLogin.cookie }
+      });
+      const suspCreateOfferRes = await fetch(`${baseUrl}/passenger-requests/${blockPendPrId}/offers`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: nusratLogin.cookie },
+        body: JSON.stringify({ fare: 200, seats_offered: 2, pickup_time: concDepIso })
+      });
+      const [rahatPendOfferRows] = await db.query(
+        'SELECT id FROM driver_offers WHERE request_id = ? AND driver_id = ?',
+        [blockPendPrId, rahatId]
+      );
+      const rahatPendOfferId = Number((rahatPendOfferRows as any[])[0]?.id);
+      const suspUpdateOfferRes = await fetch(`${baseUrl}/passenger-requests/offers/${rahatPendOfferId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: rahatLogin.cookie },
+        body: JSON.stringify({ fare: 175 })
+      });
+      assert(
+        !(suspBrowseJson.requests || []).some((r: any) => Number(r.passenger_id) === sadiaId) &&
+          suspDetailRes.status === 403 &&
+          suspCreateOfferRes.status === 403 &&
+          suspUpdateOfferRes.status === 403,
+        'Suspended passenger is excluded from driver browse, detail view, offer create, and offer update (403)'
+      );
+    } finally {
+      await db.query('UPDATE users SET is_blocked = 0 WHERE id = ?', [sadiaId]);
+    }
+
+    // Controller defense-in-depth rejects req.user with is_blocked = 1 directly
+    let suspDirectStatus = 0;
+    await createPassengerRequest(
+      {
+        user: {
+          id: sadiaId,
+          student_id: '221-15-999',
+          name: 'Suspended Direct',
+          email: 'susp@diu.edu.bd',
+          phone: '01700000000',
+          role: 'student',
+          driver_status: 'none',
+          vehicle_type: null,
+          vehicle_model: null,
+          vehicle_plate: null,
+          is_blocked: 1
+        },
+        body: { pickup_name: 'A', dest_name: 'B', departure_time: concDepIso }
+      } as any,
+      {
+        status: (code: number) => {
+          suspDirectStatus = code;
+          return { json: () => {} };
+        }
+      } as any
+    );
+    assert(suspDirectStatus === 403, 'Controller defense-in-depth blocks suspended req.user with 403');
+
+    // 4. Consistent HTTP 503 on DatabaseUnavailableError across passengerRequestController & cancelRequest
+    const origQuery503 = db.query;
+    const origGetConn503 = db.getConnection;
+    const dbDownErr = Object.assign(new Error('Database service is temporarily unavailable. Please try again shortly.'), {
+      isDatabaseUnavailable: true,
+      status: 503
+    });
+    try {
+      db.query = async (sql: string, params?: any[]) => {
+        if (sql.includes('FROM users WHERE id = ?')) {
+          return await origQuery503(sql, params);
+        }
+        throw dbDownErr;
+      };
+      db.getConnection = async () => {
+        throw dbDownErr;
+      };
+
+      const endpoints503 = await Promise.all([
+        fetch(`${baseUrl}/passenger-requests`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie },
+          body: JSON.stringify({ pickup_name: 'Pickup Point', dest_name: 'Drop Point', departure_time: concDepIso })
+        }),
+        fetch(`${baseUrl}/passenger-requests`, { headers: { Cookie: driverLogin.cookie } }),
+        fetch(`${baseUrl}/passenger-requests/mine`, { headers: { Cookie: sadiaNewLogin.cookie } }),
+        fetch(`${baseUrl}/passenger-requests/offers/mine`, { headers: { Cookie: driverLogin.cookie } }),
+        fetch(`${baseUrl}/passenger-requests/${blockPendPrId}`, { headers: { Cookie: sadiaNewLogin.cookie } }),
+        fetch(`${baseUrl}/passenger-requests/${blockPendPrId}/cancel`, {
+          method: 'PATCH',
+          headers: { Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie }
+        }),
+        fetch(`${baseUrl}/passenger-requests/${blockPendPrId}/offers`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: driverLogin.cookie },
+          body: JSON.stringify({ fare: 150, seats_offered: 1, pickup_time: concDepIso })
+        }),
+        fetch(`${baseUrl}/passenger-requests/offers/${blockMatchOfferId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: driverLogin.cookie },
+          body: JSON.stringify({ fare: 150 })
+        }),
+        fetch(`${baseUrl}/passenger-requests/offers/${blockMatchOfferId}/withdraw`, {
+          method: 'PATCH',
+          headers: { Origin: trustedOrigin, Cookie: driverLogin.cookie }
+        }),
+        fetch(`${baseUrl}/passenger-requests/${blockMatchPrId}/offers/${blockMatchOfferId}/accept`, {
+          method: 'PATCH',
+          headers: { Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie }
+        }),
+        fetch(`${baseUrl}/passenger-requests/${blockMatchPrId}/offers/${blockMatchOfferId}/reject`, {
+          method: 'PATCH',
+          headers: { Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie }
+        }),
+        fetch(`${baseUrl}/requests/${ordReqId}/cancel`, {
+          method: 'PATCH',
+          headers: { Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie }
+        })
+      ]);
+
+      assert(
+        endpoints503.every((r) => r.status === 503),
+        `All 11 passengerRequestController handlers and requestController.cancelRequest return HTTP 503 on DatabaseUnavailableError: statuses=${endpoints503.map((r) => r.status).join(',')}`
+      );
+    } finally {
+      db.query = origQuery503;
+      db.getConnection = origGetConn503;
+    }
+
+    // Unexpected internal errors stay HTTP 500 via handlePassengerRequestError
+    let errHelperStatus = 0;
+    const origConsoleErr = console.error;
+    console.error = () => {};
+    try {
+      handlePassengerRequestError(
+        {
+          status: (code: number) => {
+            errHelperStatus = code;
+            return { json: () => {} };
+          }
+        } as any,
+        new Error('Unexpected non-DB error'),
+        'unitTest',
+        'Fallback'
+      );
+    } finally {
+      console.error = origConsoleErr;
+    }
+    assert(errHelperStatus === 500, 'handlePassengerRequestError preserves HTTP 500 for unexpected non-DB errors');
+
+    // 5. Client-side Cancelled Match Filter Accuracy (no DB ENUM changes)
+    const sampleOffers = [
+      { id: 1, status: 'accepted', confirmed_ride_status: 'open', request_status: 'matched' },
+      { id: 2, status: 'accepted', confirmed_ride_status: 'cancelled', request_status: 'cancelled' },
+      { id: 3, status: 'accepted', confirmed_ride_status: null, request_status: 'cancelled' },
+      { id: 4, status: 'pending', confirmed_ride_status: null, request_status: 'open' }
+    ];
+    const isCancelledMatch = (o: any) =>
+      o.confirmed_ride_status === 'cancelled' || o.request_status === 'cancelled';
+    const acceptedTabItems = sampleOffers.filter((o) => o.status === 'accepted' && !isCancelledMatch(o));
+    const cancelledTabItems = sampleOffers.filter((o) => o.status === 'accepted' && isCancelledMatch(o));
+    assert(
+      acceptedTabItems.length === 1 &&
+        acceptedTabItems[0].id === 1 &&
+        cancelledTabItems.length === 2 &&
+        cancelledTabItems.map((o) => o.id).join(',') === '2,3',
+      'My Offers client filter separates active accepted matches from cancelled matches cleanly'
     );
 
     // Production guard

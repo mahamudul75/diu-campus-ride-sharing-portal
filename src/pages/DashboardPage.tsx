@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Car,
@@ -7,7 +7,10 @@ import {
   Clock,
   ArrowRight,
   Sparkles,
-  MapPin
+  MapPin,
+  Navigation,
+  AlertCircle,
+  RotateCcw
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.tsx';
 import api from '../services/api.ts';
@@ -30,38 +33,68 @@ export const DashboardPage: React.FC = () => {
     posted_rides: number;
   } | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const fetchSeqRef = useRef(0);
 
-  useEffect(() => {
-    async function loadDashboardData() {
-      try {
-        const [statsRes, reqRes, ridesRes, openRidesRes] = await Promise.allSettled([
-          api.get('/users/dashboard-stats'),
-          api.get('/requests/mine', { params: { limit: 10 } }),
-          isApprovedDriver ? api.get('/rides/mine', { params: { limit: 10 } }) : Promise.resolve({ data: { rides: [] } }),
-          api.get('/rides', { params: { limit: 3 } })
-        ]);
+  const loadDashboardData = useCallback(async () => {
+    const seq = ++fetchSeqRef.current;
+    setLoading(true);
+    setError(null);
+    try {
+      const [statsRes, reqRes, ridesRes, openRidesRes] = await Promise.allSettled([
+        api.get('/users/dashboard-stats'),
+        api.get('/requests/mine', { params: { limit: 10 } }),
+        isApprovedDriver ? api.get('/rides/mine', { params: { limit: 10 } }) : Promise.resolve({ data: { rides: [] } }),
+        api.get('/rides', { params: { limit: 3 } })
+      ]);
 
-        if (statsRes.status === 'fulfilled' && statsRes.value.data?.success && statsRes.value.data.stats) {
-          setStats(statsRes.value.data.stats);
-        }
-        if (reqRes.status === 'fulfilled' && reqRes.value.data?.success) {
-          setMyRequests(reqRes.value.data.requests || []);
-        }
-        if (ridesRes.status === 'fulfilled' && (ridesRes.value as any).data?.success) {
-          setMyRides((ridesRes.value as any).data.rides || []);
-        }
-        if (openRidesRes.status === 'fulfilled' && openRidesRes.value.data?.success) {
-          setUpcomingRides((openRidesRes.value.data.rides || []).slice(0, 3));
-        }
-      } catch (err) {
-        console.warn('Dashboard fetch error:', err);
-      } finally {
+      if (seq !== fetchSeqRef.current) return;
+
+      const failures: any[] = [];
+      if (statsRes.status === 'fulfilled' && statsRes.value.data?.success && statsRes.value.data.stats) {
+        setStats(statsRes.value.data.stats);
+      } else if (statsRes.status === 'rejected') {
+        failures.push(statsRes.reason);
+      }
+
+      if (reqRes.status === 'fulfilled' && reqRes.value.data?.success) {
+        setMyRequests(reqRes.value.data.requests || []);
+      } else if (reqRes.status === 'rejected') {
+        failures.push(reqRes.reason);
+      }
+
+      if (ridesRes.status === 'fulfilled' && (ridesRes.value as any).data?.success) {
+        setMyRides((ridesRes.value as any).data.rides || []);
+      } else if (isApprovedDriver && ridesRes.status === 'rejected') {
+        failures.push(ridesRes.reason);
+      }
+
+      if (openRidesRes.status === 'fulfilled' && openRidesRes.value.data?.success) {
+        setUpcomingRides((openRidesRes.value.data.rides || []).slice(0, 3));
+      } else if (openRidesRes.status === 'rejected') {
+        failures.push(openRidesRes.reason);
+      }
+
+      if (failures.length > 0) {
+        const firstErr = failures[0];
+        setError(
+          firstErr?.response?.data?.message || 'Some dashboard data could not be loaded. Please try again.'
+        );
+      }
+    } catch (err: any) {
+      if (seq === fetchSeqRef.current) {
+        setError(err?.response?.data?.message || 'Unable to load dashboard data. Please try again.');
+      }
+    } finally {
+      if (seq === fetchSeqRef.current) {
         setLoading(false);
       }
     }
-
-    loadDashboardData();
   }, [isApprovedDriver]);
+
+  useEffect(() => {
+    loadDashboardData();
+  }, [loadDashboardData]);
 
   if (!user) return null;
 
@@ -89,13 +122,20 @@ export const DashboardPage: React.FC = () => {
         isApprovedDriver ? 'Approved Driver' : isPendingDriver ? 'Driver Pending' : 'Student Passenger'
       }`}
       actions={
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Link
             to="/search"
-            className="px-3.5 py-1.5 bg-[#515FC5] hover:bg-[#434FA8] dark:bg-[#818CF8] dark:hover:bg-[#6366F1] text-white dark:text-[#111827] rounded-xl text-xs font-bold shadow-xs transition-all flex items-center gap-1.5"
+            className="px-3.5 py-1.5 bg-[#515FC5] hover:bg-[#434FA8] dark:bg-[#818CF8] dark:hover:bg-[#6366F1] text-white dark:text-[#111827] rounded-xl text-xs font-bold shadow-xs transition-all flex items-center gap-1.5 whitespace-nowrap"
           >
             <Search className="w-3.5 h-3.5" />
             Find Ride
+          </Link>
+          <Link
+            to="/passenger-requests/create"
+            className="px-3.5 py-1.5 bg-[#FFFFFF] dark:bg-[#24334B] hover:bg-[#F5F7FC] dark:hover:bg-[#1C2A40] text-[#222B42] dark:text-[#F1F4FC] border border-[#D4DAE7] dark:border-[#34445E] rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap"
+          >
+            <Navigation className="w-3.5 h-3.5 text-[#515FC5] dark:text-[#818CF8]" />
+            Request Ride
           </Link>
           {isApprovedDriver ? (
             <Link
@@ -118,6 +158,23 @@ export const DashboardPage: React.FC = () => {
       }
     >
       <div className="space-y-6">
+        {error && (
+          <div className="p-3.5 rounded-2xl bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-800 text-xs text-rose-700 dark:text-rose-300 flex items-center justify-between gap-3">
+            <span className="flex items-center gap-2 font-medium">
+              <AlertCircle className="w-4 h-4 shrink-0" />
+              {error}
+            </span>
+            <button
+              type="button"
+              onClick={loadDashboardData}
+              disabled={loading}
+              className="px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold inline-flex items-center gap-1 cursor-pointer disabled:opacity-50 shrink-0"
+            >
+              <RotateCcw className="w-3 h-3" /> Retry
+            </button>
+          </div>
+        )}
+
         {/* Stat Cards Grid */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           <div className="p-5 bg-[#F5F7FC] dark:bg-[#1C2A40] rounded-2xl border border-[#D4DAE7] dark:border-[#34445E] shadow-xs space-y-1">
@@ -206,7 +263,7 @@ export const DashboardPage: React.FC = () => {
               </Link>
             </div>
 
-            {loading ? (
+            {loading && myRequests.length === 0 ? (
               <div className="space-y-3">
                 <Skeleton type="card" count={3} />
               </div>
@@ -249,6 +306,17 @@ export const DashboardPage: React.FC = () => {
                     </Link>
                   </div>
                 ))}
+              </div>
+            ) : error ? (
+              <div className="p-8 text-center bg-[#F5F7FC] dark:bg-[#1C2A40] rounded-2xl border border-rose-200 dark:border-rose-800 space-y-3">
+                <p className="text-xs text-[#626E86] dark:text-[#B0BCD0]">Recent requests could not be loaded.</p>
+                <button
+                  type="button"
+                  onClick={loadDashboardData}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-[#515FC5] dark:bg-[#818CF8] text-white dark:text-[#111827] rounded-xl text-xs font-bold hover:bg-[#434FA8] shadow-xs cursor-pointer"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" /> Retry
+                </button>
               </div>
             ) : (
               <div className="p-8 text-center bg-[#F5F7FC] dark:bg-[#1C2A40] rounded-2xl border border-[#D4DAE7] dark:border-[#34445E]">

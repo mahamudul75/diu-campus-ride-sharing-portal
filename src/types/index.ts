@@ -9,6 +9,9 @@ export type RideStatus =
   | 'completed'
   | 'cancelled';
 export type RequestStatus = 'pending' | 'accepted' | 'rejected' | 'cancelled';
+export type PassengerVehiclePref = 'any' | 'bike' | 'car';
+export type PassengerRequestStatus = 'open' | 'matched' | 'cancelled' | 'expired';
+export type DriverOfferStatus = 'pending' | 'accepted' | 'rejected' | 'withdrawn' | 'expired';
 export type ReportStatus =
   | 'pending'
   | 'under_review'
@@ -246,3 +249,86 @@ export interface AdminStats {
   total_reviews?: number;
   ride_completion_rate?: number;
 }
+
+export interface DriverOffer {
+  id: number;
+  request_id: number;
+  driver_id: number;
+  fare: number;
+  seats_offered: number;
+  vehicle_type: VehicleType;
+  pickup_time: string;
+  message: string | null;
+  status: DriverOfferStatus;
+  confirmed_ride_id: number | null;
+  confirmed_ride_status?: RideStatus | null;
+  created_at: string;
+  updated_at?: string;
+  driver_name?: string;
+  driver_email?: string | null;
+  driver_phone?: string | null;
+  driver_student_id?: string;
+  driver_status?: DriverStatus;
+  driver_vehicle_model?: string | null;
+  driver_vehicle_plate?: string | null;
+  driver_avg_rating?: number | null;
+  driver_review_count?: number;
+  driver_student_verified?: number;
+  driver_avatar_url?: string | null;
+  passenger_id?: number;
+  pickup_name?: string;
+  pickup_lat?: number;
+  pickup_lng?: number;
+  dest_name?: string;
+  dest_lat?: number;
+  dest_lng?: number;
+  departure_time?: string;
+  max_fare?: number | null;
+  request_vehicle_type?: PassengerVehiclePref;
+  request_status?: PassengerRequestStatus;
+  passenger_name?: string;
+  passenger_email?: string | null;
+  passenger_phone?: string | null;
+  passenger_student_id?: string;
+  passenger_avg_rating?: number | null;
+  passenger_review_count?: number;
+  passenger_student_verified?: number;
+  passenger_avatar_url?: string | null;
+}
+
+export interface PassengerRequest {
+  id: number;
+  passenger_id: number;
+  pickup_name: string;
+  pickup_lat: number;
+  pickup_lng: number;
+  dest_name: string;
+  dest_lat: number;
+  dest_lng: number;
+  departure_time: string;
+  seats_needed: number;
+  max_fare: number | null;
+  vehicle_type: PassengerVehiclePref;
+  note: string | null;
+  status: PassengerRequestStatus;
+  accepted_offer_id: number | null;
+  created_at: string;
+  updated_at: string;
+  passenger_name?: string;
+  passenger_email?: string | null;
+  passenger_phone?: string | null;
+  passenger_student_id?: string;
+  passenger_avg_rating?: number | null;
+  passenger_review_count?: number;
+  passenger_student_verified?: number;
+  passenger_avatar_url?: string | null;
+  distance_km?: number;
+  estimated_minutes?: number;
+  pending_offers_count?: number;
+  total_offers_count?: number;
+  confirmed_ride_id?: number | null;
+  confirmed_ride_status?: RideStatus | null;
+  my_offer?: DriverOffer | null;
+  accepted_offer?: DriverOffer | null;
+}
+
