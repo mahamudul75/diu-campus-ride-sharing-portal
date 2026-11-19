@@ -25,6 +25,136 @@ import { createNotification, invalidateReminderCacheForUser } from '../services/
 import { pushToUser } from '../realtime/wsServer.ts';
 
 const OFFER_PICKUP_WINDOW_MS = 4 * 60 * 60 * 1000;
+const COMPATIBLE_RIDE_DEPARTURE_WINDOW_MS = 2 * 60 * 60 * 1000;
+const MAX_COMPATIBLE_LOCATION_DISTANCE_KM = 1.0;
+const DEFAULT_FALLBACK_PICKUP = { lat: 23.8768, lng: 90.3202 };
+const DEFAULT_FALLBACK_DEST = { lat: 23.7538, lng: 90.377 };
+
+function normalizeLocationLabel(value: unknown): string {
+  return String(value || '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
+}
+
+function isNearCoordinate(lat: number, lng: number, refLat: number, refLng: number): boolean {
+  return Math.abs(lat - refLat) < 0.0005 && Math.abs(lng - refLng) < 0.0005;
+}
+
+function doLocationsMatch(
+  nameA: unknown,
+  latA: unknown,
+  lngA: unknown,
+  nameB: unknown,
+  latB: unknown,
+  lngB: unknown
+): boolean {
+  const normA = normalizeLocationLabel(nameA);
+  const normB = normalizeLocationLabel(nameB);
+  if (!normA || !normB) return false;
+
+  const numLatA = Number(latA);
+  const numLngA = Number(lngA);
+  const numLatB = Number(latB);
+  const numLngB = Number(lngB);
+  const bothHaveValidCoords =
+    isValidCoordinate(numLatA, numLngA) !== null && isValidCoordinate(numLatB, numLngB) !== null;
+
+  if (normA === normB) {
+    if (!bothHaveValidCoords) return true;
+    const aIsDefault =
+      isNearCoordinate(numLatA, numLngA, DEFAULT_FALLBACK_PICKUP.lat, DEFAULT_FALLBACK_PICKUP.lng) ||
+      isNearCoordinate(numLatA, numLngA, DEFAULT_FALLBACK_DEST.lat, DEFAULT_FALLBACK_DEST.lng);
+    const bIsDefault =
+      isNearCoordinate(numLatB, numLngB, DEFAULT_FALLBACK_PICKUP.lat, DEFAULT_FALLBACK_PICKUP.lng) ||
+      isNearCoordinate(numLatB, numLngB, DEFAULT_FALLBACK_DEST.lat, DEFAULT_FALLBACK_DEST.lng);
+    if (aIsDefault || bIsDefault) return true;
+    return calculateHaversineDistanceKm(numLatA, numLngA, numLatB, numLngB) <= 5.0;
+  }
+
+  if (!bothHaveValidCoords) return false;
+  const distKm = calculateHaversineDistanceKm(numLatA, numLngA, numLatB, numLngB);
+  if (distKm > MAX_COMPATIBLE_LOCATION_DISTANCE_KM) return false;
+  return normA.includes(normB) || normB.includes(normA);
+}
+
+function isRideCompatibleForOffer(params: {
+  ride: any;
+  pr: any;
+  offer: any;
+  driverVehicle: 'bike' | 'car';
+  prDepDate: Date;
+  offerPickupDate: Date;
+  nowMs: number;
+}): { compatible: boolean; timeScoreMs: number } {
+  const { ride, pr, offer, driverVehicle, prDepDate, offerPickupDate, nowMs } = params;
+
+  if (Number(ride.driver_id) !== Number(offer.driver_id)) {
+    return { compatible: false, timeScoreMs: Infinity };
+  }
+
+  if (ride.status !== 'open' && ride.status !== 'scheduled') {
+    return { compatible: false, timeScoreMs: Infinity };
+  }
+
+  const seatsNeeded = Number(pr.seats_needed ?? 1);
+  const seatsAvailable = Number(ride.seats_available);
+  const seatsTotal = Number(ride.seats_total);
+  if (
+    !Number.isInteger(seatsNeeded) ||
+    seatsNeeded !== 1 ||
+    !Number.isFinite(seatsAvailable) ||
+    !Number.isFinite(seatsTotal) ||
+    seatsAvailable < seatsNeeded ||
+    seatsTotal < 1 ||
+    seatsAvailable > seatsTotal
+  ) {
+    return { compatible: false, timeScoreMs: Infinity };
+  }
+
+  if (ride.vehicle_type !== driverVehicle) {
+    return { compatible: false, timeScoreMs: Infinity };
+  }
+  if (pr.vehicle_type !== 'any' && ride.vehicle_type !== pr.vehicle_type) {
+    return { compatible: false, timeScoreMs: Infinity };
+  }
+
+  const pickupMatches = doLocationsMatch(
+    ride.pickup_name,
+    ride.pickup_lat,
+    ride.pickup_lng,
+    pr.pickup_name,
+    pr.pickup_lat,
+    pr.pickup_lng
+  );
+  const destMatches = doLocationsMatch(
+    ride.dest_name,
+    ride.dest_lat,
+    ride.dest_lng,
+    pr.dest_name,
+    pr.dest_lat,
+    pr.dest_lng
+  );
+  if (!pickupMatches || !destMatches) {
+    return { compatible: false, timeScoreMs: Infinity };
+  }
+
+  const rideDepDate = parseRideDateTime(ride.departure_time);
+  if (!rideDepDate || rideDepDate.getTime() <= nowMs) {
+    return { compatible: false, timeScoreMs: Infinity };
+  }
+
+  const diffFromPrMs = Math.abs(rideDepDate.getTime() - prDepDate.getTime());
+  const diffFromOfferMs = Math.abs(rideDepDate.getTime() - offerPickupDate.getTime());
+  if (
+    diffFromPrMs > COMPATIBLE_RIDE_DEPARTURE_WINDOW_MS ||
+    diffFromOfferMs > COMPATIBLE_RIDE_DEPARTURE_WINDOW_MS
+  ) {
+    return { compatible: false, timeScoreMs: Infinity };
+  }
+
+  return { compatible: true, timeScoreMs: diffFromOfferMs + diffFromPrMs };
+}
 
 export function handlePassengerRequestError(
   res: Response,
@@ -2050,49 +2180,164 @@ export async function acceptDriverOffer(req: AuthRequest, res: Response): Promis
       ? (competingRows as any[]).map((r) => Number(r.driver_id))
       : [];
 
-    // 11. Create confirmed ride
-    const [rideInsertRes] = await conn.query(
-      `INSERT INTO rides
-        (driver_id, pickup_name, pickup_lat, pickup_lng, dest_name, dest_lat, dest_lng, departure_time, fare, seats_total, seats_available, vehicle_type, note, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        Number(offer.driver_id),
-        pr.pickup_name,
-        Number(pr.pickup_lat),
-        Number(pr.pickup_lng),
-        pr.dest_name,
-        Number(pr.dest_lat),
-        Number(pr.dest_lng),
-        formattedPickupTime,
-        Number(offer.fare),
-        seatsTotal,
-        seatsAvailable,
+    // 11. Prefer reusing a verified compatible existing posted ride from this driver;
+    //     otherwise fall back to creating a new confirmed ride.
+    let targetRideId = 0;
+    let reusedExistingRide = false;
+
+    const [candidateRideRows] = await conn.query(
+      `SELECT r.*
+       FROM rides r
+       WHERE r.driver_id = ?
+         AND r.status IN ('open', 'scheduled')
+         AND r.seats_available > 0
+         AND r.departure_time > UTC_TIMESTAMP()
+       ORDER BY r.departure_time ASC`,
+      [Number(offer.driver_id)]
+    );
+
+    const nowMs = Date.now();
+    const compatibleCandidates = depDate
+      ? (Array.isArray(candidateRideRows) ? (candidateRideRows as any[]) : [])
+          .map((cand) => ({
+            cand,
+            ...isRideCompatibleForOffer({
+              ride: cand,
+              pr,
+              offer,
+              driverVehicle,
+              prDepDate: depDate,
+              offerPickupDate: pickupDate,
+              nowMs
+            })
+          }))
+          .filter((item) => item.compatible)
+          .sort((a, b) => a.timeScoreMs - b.timeScoreMs || Number(a.cand.id) - Number(b.cand.id))
+      : [];
+
+    for (const candidate of compatibleCandidates) {
+      if (!depDate) break;
+      const candidateRideId = Number(candidate.cand.id);
+      const [lockedRideRows] = await conn.query('SELECT * FROM rides WHERE id = ? FOR UPDATE', [candidateRideId]);
+      const lockedRide =
+        Array.isArray(lockedRideRows) && lockedRideRows.length > 0 ? (lockedRideRows[0] as any) : null;
+      if (!lockedRide) continue;
+
+      const recheck = isRideCompatibleForOffer({
+        ride: lockedRide,
+        pr,
+        offer,
         driverVehicle,
-        rideNote,
-        rideStatus
-      ]
-    );
-    const newRideId = Number((rideInsertRes as any).insertId);
+        prDepDate: depDate,
+        offerPickupDate: pickupDate,
+        nowMs: Date.now()
+      });
+      if (!recheck.compatible) continue;
 
-    // 12. Create accepted ride_request booking for the passenger
-    await conn.query(
-      `INSERT INTO ride_requests (ride_id, passenger_id, status) VALUES (?, ?, 'accepted')`,
-      [newRideId, Number(pr.passenger_id)]
-    );
+      const [existingBookingRows] = await conn.query(
+        'SELECT id, status FROM ride_requests WHERE ride_id = ? AND passenger_id = ? FOR UPDATE',
+        [candidateRideId, Number(pr.passenger_id)]
+      );
+      const existingBooking =
+        Array.isArray(existingBookingRows) && existingBookingRows.length > 0
+          ? (existingBookingRows[0] as any)
+          : null;
 
-    // 13. Create conversation for driver & passenger on this confirmed ride
-    const [convInsertRes] = await conn.query(
-      `INSERT INTO conversations (ride_id, driver_id, passenger_id) VALUES (?, ?, ?)`,
-      [newRideId, Number(offer.driver_id), Number(pr.passenger_id)]
+      // Never create duplicate accepted bookings or resurrect rejected/cancelled bookings on an existing ride.
+      if (existingBooking && existingBooking.status !== 'pending') {
+        continue;
+      }
+
+      const [rideUpdateRes] = await conn.query(
+        `UPDATE rides
+         SET seats_available = seats_available - 1,
+             status = IF(seats_available - 1 = 0, 'full', status)
+         WHERE id = ? AND seats_available > 0`,
+        [candidateRideId]
+      );
+      if ((rideUpdateRes as any)?.affectedRows !== 1) {
+        continue;
+      }
+
+      if (existingBooking) {
+        const [reuseReqUpdateRes] = await conn.query(
+          "UPDATE ride_requests SET status = 'accepted', updated_at = NOW() WHERE id = ? AND status = 'pending'",
+          [Number(existingBooking.id)]
+        );
+        if ((reuseReqUpdateRes as any)?.affectedRows !== 1) {
+          await conn.rollback();
+          txActive = false;
+          res.status(409).json({
+            success: false,
+            message: 'Passenger booking state changed concurrently. Please try again.'
+          });
+          return;
+        }
+      } else {
+        await conn.query(
+          `INSERT INTO ride_requests (ride_id, passenger_id, status) VALUES (?, ?, 'accepted')`,
+          [candidateRideId, Number(pr.passenger_id)]
+        );
+      }
+
+      targetRideId = candidateRideId;
+      reusedExistingRide = true;
+      break;
+    }
+
+    if (!targetRideId) {
+      const [rideInsertRes] = await conn.query(
+        `INSERT INTO rides
+          (driver_id, pickup_name, pickup_lat, pickup_lng, dest_name, dest_lat, dest_lng, departure_time, fare, seats_total, seats_available, vehicle_type, note, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          Number(offer.driver_id),
+          pr.pickup_name,
+          Number(pr.pickup_lat),
+          Number(pr.pickup_lng),
+          pr.dest_name,
+          Number(pr.dest_lat),
+          Number(pr.dest_lng),
+          formattedPickupTime,
+          Number(offer.fare),
+          seatsTotal,
+          seatsAvailable,
+          driverVehicle,
+          rideNote,
+          rideStatus
+        ]
+      );
+      targetRideId = Number((rideInsertRes as any).insertId);
+
+      // 12. Create accepted ride_request booking for the passenger on the new ride
+      await conn.query(
+        `INSERT INTO ride_requests (ride_id, passenger_id, status) VALUES (?, ?, 'accepted')`,
+        [targetRideId, Number(pr.passenger_id)]
+      );
+    }
+
+    // 13. Reuse or create conversation for driver & passenger on this confirmed ride
+    const [existingConvRows] = await conn.query(
+      'SELECT id FROM conversations WHERE ride_id = ? AND passenger_id = ? LIMIT 1',
+      [targetRideId, Number(pr.passenger_id)]
     );
-    const conversationId = Number((convInsertRes as any).insertId);
+    let conversationId: number;
+    if (Array.isArray(existingConvRows) && existingConvRows.length > 0) {
+      conversationId = Number((existingConvRows[0] as any).id);
+    } else {
+      const [convInsertRes] = await conn.query(
+        `INSERT INTO conversations (ride_id, driver_id, passenger_id) VALUES (?, ?, ?)`,
+        [targetRideId, Number(offer.driver_id), Number(pr.passenger_id)]
+      );
+      conversationId = Number((convInsertRes as any).insertId);
+    }
 
     // 14. Mark selected offer as accepted & link confirmed_ride_id
     const [acceptOfferRes] = await conn.query(
       `UPDATE driver_offers
        SET status = 'accepted', confirmed_ride_id = ?, updated_at = NOW()
        WHERE id = ? AND status = 'pending'`,
-      [newRideId, offerId]
+      [targetRideId, offerId]
     );
     if ((acceptOfferRes as any)?.affectedRows !== 1) {
       await conn.rollback();
@@ -2138,14 +2383,16 @@ export async function acceptDriverOffer(req: AuthRequest, res: Response): Promis
       userId: Number(offer.driver_id),
       type: 'offer_accepted',
       title: 'Your Ride Offer Was Accepted!',
-      message: `${req.user.name} accepted your ৳${Number(offer.fare)} offer from ${pr.pickup_name} to ${pr.dest_name}. A confirmed ride (#${newRideId}) is now scheduled.`,
-      link: `/rides/${newRideId}`
+      message: reusedExistingRide
+        ? `${req.user.name} accepted your ৳${Number(offer.fare)} offer from ${pr.pickup_name} to ${pr.dest_name} and joined your existing ride (#${targetRideId}).`
+        : `${req.user.name} accepted your ৳${Number(offer.fare)} offer from ${pr.pickup_name} to ${pr.dest_name}. A confirmed ride (#${targetRideId}) is now scheduled.`,
+      link: `/rides/${targetRideId}`
     });
     pushToUser(Number(offer.driver_id), {
       event: 'offer:accepted',
       requestId,
       offerId,
-      rideId: newRideId,
+      rideId: targetRideId,
       conversationId
     });
 
@@ -2154,13 +2401,13 @@ export async function acceptDriverOffer(req: AuthRequest, res: Response): Promis
       type: 'ride_matched',
       title: 'Ride Confirmed!',
       message: `Your ride with ${driver.name} (${pr.pickup_name} to ${pr.dest_name}) is confirmed for ৳${Number(offer.fare)}.`,
-      link: `/rides/${newRideId}`
+      link: `/rides/${targetRideId}`
     });
     pushToUser(Number(pr.passenger_id), {
       event: 'passenger_request:matched',
       requestId,
       offerId,
-      rideId: newRideId,
+      rideId: targetRideId,
       conversationId
     });
 
@@ -2180,8 +2427,11 @@ export async function acceptDriverOffer(req: AuthRequest, res: Response): Promis
 
     res.status(200).json({
       success: true,
-      message: 'Driver offer accepted! Confirmed ride and chat conversation created.',
-      rideId: newRideId,
+      message: reusedExistingRide
+        ? 'Driver offer accepted! Passenger linked to your existing ride and chat conversation ready.'
+        : 'Driver offer accepted! Confirmed ride and chat conversation created.',
+      rideId: targetRideId,
+      reusedExistingRide,
       conversationId,
       offerId,
       requestId

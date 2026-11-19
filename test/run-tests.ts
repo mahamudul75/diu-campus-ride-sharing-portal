@@ -3390,6 +3390,315 @@ async function runTests() {
       'My Offers client filter separates active accepted matches from cancelled matches cleanly'
     );
 
+    // -----------------------------------------------------------------------
+    // PHASE 25: Safe Driver Offer Matching & Existing Ride Reuse Tests
+    // -----------------------------------------------------------------------
+    console.log('\n[Phase 25] Safe Driver Offer Matching & Existing Ride Reuse Tests');
+
+    const [p25ObserverRows] = await db.query('SELECT id FROM users WHERE email = ?', ['observer.p22@diu.edu.bd']);
+    const p25ObserverId = Number((p25ObserverRows as any[])[0]?.id);
+    assert(p25ObserverId > 0, 'Located Phase 25 observer student ID');
+
+    const matchBaseTimeMs = Date.now() + 14 * 3600000;
+    const matchDepSql = formatDateToMySqlUtc(new Date(matchBaseTimeMs));
+    const matchDepNearSql = formatDateToMySqlUtc(new Date(matchBaseTimeMs + 20 * 60000));
+    const matchDepFarSql = formatDateToMySqlUtc(new Date(matchBaseTimeMs + 5 * 3600000));
+
+    // Scenario 1 & 5: Compatible existing ride (Nusrat, car, 2 seats, open) -> reused, no duplicate ride, passenger counted on GET /rides/mine
+    const [existingCompatRideRes] = await db.query(
+      `INSERT INTO rides
+        (driver_id, pickup_name, pickup_lat, pickup_lng, dest_name, dest_lat, dest_lng, departure_time, fare, seats_total, seats_available, vehicle_type, note, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 180, 2, 2, 'car', 'Existing compat car ride', 'open')`,
+      [nusratId, 'P25 Smart City Hub', 23.8768, 90.3202, 'P25 Banani Stop', 23.7937, 90.4066, matchDepSql]
+    );
+    const existingCompatRideId = Number((existingCompatRideRes as any).insertId);
+
+    const [compatPrInsert] = await db.query(
+      `INSERT INTO passenger_requests
+        (passenger_id, pickup_name, pickup_lat, pickup_lng, dest_name, dest_lat, dest_lng, departure_time, seats_needed, max_fare, vehicle_type, note, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 200, 'car', NULL, 'open')`,
+      [sadiaId, 'p25 smart city hub', 23.8768, 90.3202, 'P25 Banani Stop', 23.7937, 90.4066, matchDepNearSql]
+    );
+    const compatPrId = Number((compatPrInsert as any).insertId);
+    const [compatOfferInsert] = await db.query(
+      `INSERT INTO driver_offers (request_id, driver_id, fare, seats_offered, vehicle_type, pickup_time, status)
+       VALUES (?, ?, 175, 2, 'car', ?, 'pending')`,
+      [compatPrId, nusratId, matchDepNearSql]
+    );
+    const compatOfferId = Number((compatOfferInsert as any).insertId);
+
+    const [ridesCountBeforeRows] = await db.query('SELECT COUNT(*) AS posted_rides FROM rides WHERE driver_id = ?', [
+      nusratId
+    ]);
+    const nusratRideCountBefore = Number((ridesCountBeforeRows as any[])[0]?.posted_rides || 0);
+
+    const acceptCompatRes = await fetch(
+      `${baseUrl}/passenger-requests/${compatPrId}/offers/${compatOfferId}/accept`,
+      { method: 'PATCH', headers: { Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie } }
+    );
+    const acceptCompatJson: any = await acceptCompatRes.json();
+
+    const [ridesCountAfterRows] = await db.query('SELECT COUNT(*) AS posted_rides FROM rides WHERE driver_id = ?', [
+      nusratId
+    ]);
+    const nusratRideCountAfter = Number((ridesCountAfterRows as any[])[0]?.posted_rides || 0);
+
+    const [reusedRideRows] = await db.query('SELECT * FROM rides WHERE id = ?', [existingCompatRideId]);
+    const reusedRide = (reusedRideRows as any[])[0];
+    const [reusedOfferRows] = await db.query('SELECT status, confirmed_ride_id FROM driver_offers WHERE id = ?', [
+      compatOfferId
+    ]);
+    const reusedOffer = (reusedOfferRows as any[])[0];
+    const [reusedBookingsRows] = await db.query(
+      'SELECT * FROM ride_requests WHERE ride_id = ? AND passenger_id = ?',
+      [existingCompatRideId, sadiaId]
+    );
+    const myRidesAfterReuseJson: any = await (
+      await fetch(`${baseUrl}/rides/mine`, { headers: { Cookie: nusratLogin.cookie } })
+    ).json();
+    const reusedRideMineCard = (myRidesAfterReuseJson.rides || []).find(
+      (r: any) => Number(r.id) === existingCompatRideId
+    );
+
+    assert(
+      acceptCompatRes.status === 200 &&
+        acceptCompatJson.reusedExistingRide === true &&
+        Number(acceptCompatJson.rideId) === existingCompatRideId &&
+        Number(reusedOffer?.confirmed_ride_id) === existingCompatRideId &&
+        nusratRideCountAfter === nusratRideCountBefore &&
+        Number(reusedRide?.seats_available) === 1 &&
+        reusedRide?.status === 'open' &&
+        Array.isArray(reusedBookingsRows) &&
+        reusedBookingsRows.length === 1 &&
+        (reusedBookingsRows as any[])[0]?.status === 'accepted' &&
+        Number(reusedRideMineCard?.accepted_requests_count) === 1,
+      'Scenario 1 & 5: Compatible existing ride is reused without duplicates, decrements seats_available, and updates accepted_requests_count on GET /rides/mine'
+    );
+
+    // Scenario 6a: Duplicate offer acceptance on already matched request/offer returns 409 without duplicate booking
+    const dupOfferAcceptRes = await fetch(
+      `${baseUrl}/passenger-requests/${compatPrId}/offers/${compatOfferId}/accept`,
+      { method: 'PATCH', headers: { Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie } }
+    );
+    const [bookingsAfterDupRows] = await db.query(
+      'SELECT * FROM ride_requests WHERE ride_id = ? AND passenger_id = ?',
+      [existingCompatRideId, sadiaId]
+    );
+    assert(
+      dupOfferAcceptRes.status === 409 && Array.isArray(bookingsAfterDupRows) && bookingsAfterDupRows.length === 1,
+      'Scenario 6a: Duplicate offer acceptance returns 409 and prevents duplicate passenger booking'
+    );
+
+    // Scenario 6b: Passenger already has an accepted booking on existingCompatRideId; second offer from same driver does NOT double-book existingCompatRideId
+    const [secondPrForSamePassenger] = await db.query(
+      `INSERT INTO passenger_requests
+        (passenger_id, pickup_name, pickup_lat, pickup_lng, dest_name, dest_lat, dest_lng, departure_time, seats_needed, max_fare, vehicle_type, note, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 200, 'car', NULL, 'open')`,
+      [sadiaId, 'P25 Smart City Hub', 23.8768, 90.3202, 'P25 Banani Stop', 23.7937, 90.4066, matchDepNearSql]
+    );
+    const secondPrId = Number((secondPrForSamePassenger as any).insertId);
+    const [secondOfferInsert] = await db.query(
+      `INSERT INTO driver_offers (request_id, driver_id, fare, seats_offered, vehicle_type, pickup_time, status)
+       VALUES (?, ?, 175, 2, 'car', ?, 'pending')`,
+      [secondPrId, nusratId, matchDepNearSql]
+    );
+    const secondOfferId = Number((secondOfferInsert as any).insertId);
+    const acceptSecondSamePassengerRes = await fetch(
+      `${baseUrl}/passenger-requests/${secondPrId}/offers/${secondOfferId}/accept`,
+      { method: 'PATCH', headers: { Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie } }
+    );
+    const acceptSecondSamePassengerJson: any = await acceptSecondSamePassengerRes.json();
+    const [existingRideSeatCheckRows] = await db.query('SELECT seats_available FROM rides WHERE id = ?', [
+      existingCompatRideId
+    ]);
+    assert(
+      acceptSecondSamePassengerRes.status === 200 &&
+        Number(acceptSecondSamePassengerJson.rideId) !== existingCompatRideId &&
+        acceptSecondSamePassengerJson.reusedExistingRide === false &&
+        Number((existingRideSeatCheckRows as any[])[0]?.seats_available) === 1,
+      'Scenario 6b: Existing ride where passenger already holds an accepted booking is not reused/double-booked; falls back safely'
+    );
+
+    // Scenario 5b: Accepted passenger count remains 1 on reused ride through trip start -> complete
+    await fetch(`${baseUrl}/rides/${existingCompatRideId}/status`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: nusratLogin.cookie },
+      body: JSON.stringify({ status: 'in_progress' })
+    });
+    await fetch(`${baseUrl}/rides/${existingCompatRideId}/status`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: nusratLogin.cookie },
+      body: JSON.stringify({ status: 'completed' })
+    });
+    const myRidesCompletedJson: any = await (
+      await fetch(`${baseUrl}/rides/mine`, { headers: { Cookie: nusratLogin.cookie } })
+    ).json();
+    const completedReusedCard = (myRidesCompletedJson.rides || []).find(
+      (r: any) => Number(r.id) === existingCompatRideId
+    );
+    assert(
+      completedReusedCard?.status === 'completed' && Number(completedReusedCard?.accepted_requests_count) === 1,
+      'Scenario 5b: Reused ride retains accepted_requests_count=1 after trip completion'
+    );
+
+    // Scenario 4: Completed / cancelled / in_progress rides are NEVER reused -> fallback creates new ride
+    const [cancelledRideInsert] = await db.query(
+      `INSERT INTO rides
+        (driver_id, pickup_name, pickup_lat, pickup_lng, dest_name, dest_lat, dest_lng, departure_time, fare, seats_total, seats_available, vehicle_type, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 120, 1, 1, 'bike', 'cancelled')`,
+      [driverId, 'P25 Cancelled Gate', 23.8768, 90.3202, 'P25 Uttara Hub', 23.8742, 90.398, matchDepSql]
+    );
+    const cancelledRideId = Number((cancelledRideInsert as any).insertId);
+    const [completedRideInsert] = await db.query(
+      `INSERT INTO rides
+        (driver_id, pickup_name, pickup_lat, pickup_lng, dest_name, dest_lat, dest_lng, departure_time, fare, seats_total, seats_available, vehicle_type, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 120, 1, 1, 'bike', 'completed')`,
+      [driverId, 'P25 Cancelled Gate', 23.8768, 90.3202, 'P25 Uttara Hub', 23.8742, 90.398, matchDepSql]
+    );
+    const completedRideId = Number((completedRideInsert as any).insertId);
+    const [inProgRideInsert] = await db.query(
+      `INSERT INTO rides
+        (driver_id, pickup_name, pickup_lat, pickup_lng, dest_name, dest_lat, dest_lng, departure_time, fare, seats_total, seats_available, vehicle_type, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 120, 1, 1, 'bike', 'in_progress')`,
+      [driverId, 'P25 Cancelled Gate', 23.8768, 90.3202, 'P25 Uttara Hub', 23.8742, 90.398, matchDepSql]
+    );
+    const inProgRideId = Number((inProgRideInsert as any).insertId);
+
+    const [statusGuardPrInsert] = await db.query(
+      `INSERT INTO passenger_requests
+        (passenger_id, pickup_name, pickup_lat, pickup_lng, dest_name, dest_lat, dest_lng, departure_time, seats_needed, max_fare, vehicle_type, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 150, 'bike', 'open')`,
+      [sadiaId, 'P25 Cancelled Gate', 23.8768, 90.3202, 'P25 Uttara Hub', 23.8742, 90.398, matchDepSql]
+    );
+    const statusGuardPrId = Number((statusGuardPrInsert as any).insertId);
+    const [statusGuardOfferInsert] = await db.query(
+      `INSERT INTO driver_offers (request_id, driver_id, fare, seats_offered, vehicle_type, pickup_time, status)
+       VALUES (?, ?, 130, 1, 'bike', ?, 'pending')`,
+      [statusGuardPrId, driverId, matchDepSql]
+    );
+    const statusGuardOfferId = Number((statusGuardOfferInsert as any).insertId);
+    const statusGuardAcceptRes = await fetch(
+      `${baseUrl}/passenger-requests/${statusGuardPrId}/offers/${statusGuardOfferId}/accept`,
+      { method: 'PATCH', headers: { Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie } }
+    );
+    const statusGuardAcceptJson: any = await statusGuardAcceptRes.json();
+    const newFallbackRideId = Number(statusGuardAcceptJson.rideId);
+    assert(
+      statusGuardAcceptRes.status === 200 &&
+        statusGuardAcceptJson.reusedExistingRide === false &&
+        newFallbackRideId > 0 &&
+        newFallbackRideId !== cancelledRideId &&
+        newFallbackRideId !== completedRideId &&
+        newFallbackRideId !== inProgRideId,
+      'Scenario 4: Cancelled, completed, and in_progress rides are never reused; fallback creates a new ride'
+    );
+
+    // Scenario 3: No available seats (seats_available = 0, status = 'open' or 'full') -> not reused, creates new ride
+    const [zeroSeatRideInsert] = await db.query(
+      `INSERT INTO rides
+        (driver_id, pickup_name, pickup_lat, pickup_lng, dest_name, dest_lat, dest_lng, departure_time, fare, seats_total, seats_available, vehicle_type, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 160, 2, 0, 'car', 'open')`,
+      [nusratId, 'P25 Full Gate', 23.8768, 90.3202, 'P25 Dhanmondi Stop', 23.7538, 90.377, matchDepSql]
+    );
+    const zeroSeatRideId = Number((zeroSeatRideInsert as any).insertId);
+    const [zeroSeatPrInsert] = await db.query(
+      `INSERT INTO passenger_requests
+        (passenger_id, pickup_name, pickup_lat, pickup_lng, dest_name, dest_lat, dest_lng, departure_time, seats_needed, max_fare, vehicle_type, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 200, 'car', 'open')`,
+      [p25ObserverId, 'P25 Full Gate', 23.8768, 90.3202, 'P25 Dhanmondi Stop', 23.7538, 90.377, matchDepSql]
+    );
+    const zeroSeatPrId = Number((zeroSeatPrInsert as any).insertId);
+    const [zeroSeatOfferInsert] = await db.query(
+      `INSERT INTO driver_offers (request_id, driver_id, fare, seats_offered, vehicle_type, pickup_time, status)
+       VALUES (?, ?, 165, 2, 'car', ?, 'pending')`,
+      [zeroSeatPrId, nusratId, matchDepSql]
+    );
+    const zeroSeatOfferId = Number((zeroSeatOfferInsert as any).insertId);
+    const zeroSeatAcceptRes = await fetch(
+      `${baseUrl}/passenger-requests/${zeroSeatPrId}/offers/${zeroSeatOfferId}/accept`,
+      { method: 'PATCH', headers: { Origin: trustedOrigin, Cookie: observerCookie } }
+    );
+    const zeroSeatAcceptJson: any = await zeroSeatAcceptRes.json();
+    assert(
+      zeroSeatAcceptRes.status === 200 &&
+        zeroSeatAcceptJson.reusedExistingRide === false &&
+        Number(zeroSeatAcceptJson.rideId) > 0 &&
+        Number(zeroSeatAcceptJson.rideId) !== zeroSeatRideId,
+      'Scenario 3: Existing ride with 0 seats_available is not reused; fallback creates a new ride'
+    );
+
+    // Scenario 2: No compatible ride (incompatible departure time > 2h or different route) -> fallback creates new ride
+    const [farTimeRideInsert] = await db.query(
+      `INSERT INTO rides
+        (driver_id, pickup_name, pickup_lat, pickup_lng, dest_name, dest_lat, dest_lng, departure_time, fare, seats_total, seats_available, vehicle_type, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 160, 2, 2, 'car', 'scheduled')`,
+      [nusratId, 'P25 FarTime Gate', 23.8768, 90.3202, 'P25 Airport', 23.8513, 90.409, matchDepFarSql]
+    );
+    const farTimeRideId = Number((farTimeRideInsert as any).insertId);
+    const [farTimePrInsert] = await db.query(
+      `INSERT INTO passenger_requests
+        (passenger_id, pickup_name, pickup_lat, pickup_lng, dest_name, dest_lat, dest_lng, departure_time, seats_needed, max_fare, vehicle_type, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 220, 'car', 'open')`,
+      [p25ObserverId, 'P25 FarTime Gate', 23.8768, 90.3202, 'P25 Airport', 23.8513, 90.409, matchDepSql]
+    );
+    const farTimePrId = Number((farTimePrInsert as any).insertId);
+    const [farTimeOfferInsert] = await db.query(
+      `INSERT INTO driver_offers (request_id, driver_id, fare, seats_offered, vehicle_type, pickup_time, status)
+       VALUES (?, ?, 190, 2, 'car', ?, 'pending')`,
+      [farTimePrId, nusratId, matchDepSql]
+    );
+    const farTimeOfferId = Number((farTimeOfferInsert as any).insertId);
+    const farTimeAcceptRes = await fetch(
+      `${baseUrl}/passenger-requests/${farTimePrId}/offers/${farTimeOfferId}/accept`,
+      { method: 'PATCH', headers: { Origin: trustedOrigin, Cookie: observerCookie } }
+    );
+    const farTimeAcceptJson: any = await farTimeAcceptRes.json();
+    assert(
+      farTimeAcceptRes.status === 200 &&
+        farTimeAcceptJson.reusedExistingRide === false &&
+        Number(farTimeAcceptJson.rideId) > 0 &&
+        Number(farTimeAcceptJson.rideId) !== farTimeRideId,
+      'Scenario 2: Existing ride outside departure time compatibility window is not reused; fallback creates a new ride'
+    );
+
+    // Bonus check: 1-seat 'scheduled' compatible existing ride transitions cleanly to 'full' with seats_available = 0
+    const [sched1SeatInsert] = await db.query(
+      `INSERT INTO rides
+        (driver_id, pickup_name, pickup_lat, pickup_lng, dest_name, dest_lat, dest_lng, departure_time, fare, seats_total, seats_available, vehicle_type, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 135, 1, 1, 'bike', 'scheduled')`,
+      [rahatId, 'P25 Sched Gate', 23.8768, 90.3202, 'P25 Mirpur 11', 23.8191, 90.3654, matchDepSql]
+    );
+    const sched1SeatRideId = Number((sched1SeatInsert as any).insertId);
+    const [schedPrInsert] = await db.query(
+      `INSERT INTO passenger_requests
+        (passenger_id, pickup_name, pickup_lat, pickup_lng, dest_name, dest_lat, dest_lng, departure_time, seats_needed, max_fare, vehicle_type, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 160, 'bike', 'open')`,
+      [p25ObserverId, 'P25 Sched Gate', 23.8768, 90.3202, 'P25 Mirpur 11', 23.8191, 90.3654, matchDepSql]
+    );
+    const schedPrId = Number((schedPrInsert as any).insertId);
+    const [schedOfferInsert] = await db.query(
+      `INSERT INTO driver_offers (request_id, driver_id, fare, seats_offered, vehicle_type, pickup_time, status)
+       VALUES (?, ?, 135, 1, 'bike', ?, 'pending')`,
+      [schedPrId, rahatId, matchDepSql]
+    );
+    const schedOfferId = Number((schedOfferInsert as any).insertId);
+    const p25SchedAcceptRes = await fetch(
+      `${baseUrl}/passenger-requests/${schedPrId}/offers/${schedOfferId}/accept`,
+      { method: 'PATCH', headers: { Origin: trustedOrigin, Cookie: observerCookie } }
+    );
+    const p25SchedAcceptJson: any = await p25SchedAcceptRes.json();
+    const [schedRideAfterRows] = await db.query('SELECT status, seats_available FROM rides WHERE id = ?', [
+      sched1SeatRideId
+    ]);
+    assert(
+      p25SchedAcceptRes.status === 200 &&
+        p25SchedAcceptJson.reusedExistingRide === true &&
+        Number(p25SchedAcceptJson.rideId) === sched1SeatRideId &&
+        (schedRideAfterRows as any[])[0]?.status === 'full' &&
+        Number((schedRideAfterRows as any[])[0]?.seats_available) === 0,
+      'Compatible 1-seat scheduled ride is reused, sets seats_available=0, and transitions status to full'
+    );
+
     // Production guard
     const origEnv = process.env.NODE_ENV;
     process.env.NODE_ENV = 'production';
