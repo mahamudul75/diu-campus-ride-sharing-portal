@@ -57,8 +57,18 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({
         setProfileDropdownOpen(false);
       }
     };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setProfileDropdownOpen(false);
+        setMobileSidebarOpen(false);
+      }
+    };
     document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
   }, []);
 
   const isActive = (path: string) => {
@@ -129,6 +139,7 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({
           </Link>
 
           <button
+            type="button"
             onClick={() => setMobileSidebarOpen(false)}
             className="md:hidden p-1.5 rounded-lg text-[#66738A] hover:text-[#253149] dark:text-[#B4C0D3] dark:hover:text-[#F1F5FC] cursor-pointer"
             aria-label="Close sidebar"
@@ -224,8 +235,10 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({
               </div>
             </div>
             <button
+              type="button"
               onClick={() => logout()}
               title="Sign Out"
+              aria-label="Sign Out"
               className="p-1.5 text-[#66738A] dark:text-[#B4C0D3] hover:text-rose-600 dark:hover:text-rose-400 transition-colors cursor-pointer"
             >
               <LogOut className="w-4 h-4" />
@@ -239,6 +252,7 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({
         <header className="sticky top-0 z-30 h-16 bg-[#FFFFFF]/95 dark:bg-[#151F32]/95 backdrop-blur-md border-b border-[#DCE2EC] dark:border-[#34445D] px-4 sm:px-6 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <button
+              type="button"
               onClick={() => setMobileSidebarOpen(true)}
               className="md:hidden p-2 rounded-xl text-[#66738A] dark:text-[#B4C0D3] hover:bg-[#EEF0FA] dark:hover:bg-[#1B2940] cursor-pointer"
               aria-label="Open sidebar"
@@ -290,7 +304,11 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({
 
             <div className="relative" ref={profileDropdownRef}>
               <button
+                type="button"
                 onClick={() => setProfileDropdownOpen(!profileDropdownOpen)}
+                aria-expanded={profileDropdownOpen}
+                aria-haspopup="true"
+                aria-label="Account menu"
                 className="flex items-center gap-2 p-1 pl-2 rounded-xl hover:bg-[#EEF0FA] dark:hover:bg-[#1B2940] transition-colors cursor-pointer border border-transparent hover:border-[#DCE2EC] dark:hover:border-[#34445D]"
               >
                 {user?.avatar_url ? (
@@ -339,6 +357,7 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({
                   <div className="border-t border-[#DCE2EC] dark:border-[#34445D] my-1" />
 
                   <button
+                    type="button"
                     onClick={() => logout()}
                     className="w-full flex items-center gap-2 px-4 py-2 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 text-left cursor-pointer"
                   >
@@ -364,7 +383,7 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({
                   <p className="text-xs text-[#66738A] dark:text-[#B4C0D3]">{subtitle}</p>
                 )}
               </div>
-              {actions && <div className="flex items-center gap-2 shrink-0">{actions}</div>}
+              {actions && <div className="flex flex-wrap items-center gap-2 shrink-0">{actions}</div>}
             </div>
           )}
 

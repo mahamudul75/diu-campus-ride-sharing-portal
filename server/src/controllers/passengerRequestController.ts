@@ -2250,8 +2250,8 @@ export async function acceptDriverOffer(req: AuthRequest, res: Response): Promis
 
       const [rideUpdateRes] = await conn.query(
         `UPDATE rides
-         SET seats_available = seats_available - 1,
-             status = IF(seats_available - 1 = 0, 'full', status)
+         SET status = IF(seats_available = 1, 'full', status),
+             seats_available = seats_available - 1
          WHERE id = ? AND seats_available > 0`,
         [candidateRideId]
       );
@@ -2325,11 +2325,25 @@ export async function acceptDriverOffer(req: AuthRequest, res: Response): Promis
     if (Array.isArray(existingConvRows) && existingConvRows.length > 0) {
       conversationId = Number((existingConvRows[0] as any).id);
     } else {
-      const [convInsertRes] = await conn.query(
-        `INSERT INTO conversations (ride_id, driver_id, passenger_id) VALUES (?, ?, ?)`,
-        [targetRideId, Number(offer.driver_id), Number(pr.passenger_id)]
-      );
-      conversationId = Number((convInsertRes as any).insertId);
+      try {
+        const [convInsertRes] = await conn.query(
+          `INSERT INTO conversations (ride_id, driver_id, passenger_id) VALUES (?, ?, ?)`,
+          [targetRideId, Number(offer.driver_id), Number(pr.passenger_id)]
+        );
+        conversationId = Number((convInsertRes as any).insertId);
+      } catch (convErr: any) {
+        if (convErr?.code !== 'ER_DUP_ENTRY') {
+          throw convErr;
+        }
+        const [retryConvRows] = await conn.query(
+          'SELECT id FROM conversations WHERE ride_id = ? AND passenger_id = ? LIMIT 1 FOR UPDATE',
+          [targetRideId, Number(pr.passenger_id)]
+        );
+        if (!Array.isArray(retryConvRows) || retryConvRows.length === 0) {
+          throw convErr;
+        }
+        conversationId = Number((retryConvRows[0] as any).id);
+      }
     }
 
     // 14. Mark selected offer as accepted & link confirmed_ride_id

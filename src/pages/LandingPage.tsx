@@ -244,7 +244,7 @@ export const LandingPage: React.FC = () => {
               <span className="text-xs font-bold text-[#4F5FC9] dark:text-[#818CF8] uppercase tracking-widest block">
                 Student Safety First
               </span>
-              <h2 className="text-2xl sm:4xl font-black tracking-tight text-[#253149] dark:text-[#F1F5FC] leading-tight">
+              <h2 className="text-2xl sm:text-4xl font-black tracking-tight text-[#253149] dark:text-[#F1F5FC] leading-tight">
                 Built Exclusively for University Safety Standards
               </h2>
               <p className="text-sm sm:text-base text-[#66738A] dark:text-[#B4C0D3] leading-relaxed">

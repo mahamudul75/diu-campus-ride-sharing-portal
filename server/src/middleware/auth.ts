@@ -138,6 +138,13 @@ export async function authenticateToken(
     req.user = user;
     next();
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({
+        success: false,
+        message: error.message || 'Database service is temporarily unavailable. Please try again shortly.'
+      });
+      return;
+    }
     console.error('Auth middleware error:', error);
     res.status(500).json({
       success: false,

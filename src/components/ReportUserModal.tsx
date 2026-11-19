@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { ShieldAlert, X } from 'lucide-react';
 import api from '../services/api.ts';
 import { useToast } from '../context/ToastContext.tsx';
+import { useTopModalEscape } from './Modal.tsx';
 
 interface ReportUserModalProps {
   isOpen: boolean;
@@ -31,6 +32,8 @@ export const ReportUserModal: React.FC<ReportUserModalProps> = ({
   const [reason, setReason] = useState('unsafe_driving');
   const [description, setDescription] = useState('');
   const [submitting, setSubmitting] = useState(false);
+
+  useTopModalEscape(isOpen, onClose, submitting);
 
   if (!isOpen) return null;
 
@@ -62,8 +65,19 @@ export const ReportUserModal: React.FC<ReportUserModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 backdrop-blur-xs p-4">
-      <div className="bg-[#F5F7FC] dark:bg-[#1C2A40] rounded-2xl border border-[#D4DAE7] dark:border-[#34445E] max-w-md w-full p-6 shadow-2xl space-y-4">
+    <div
+      className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 backdrop-blur-xs p-4"
+      onClick={() => {
+        if (!submitting) onClose();
+      }}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Report ${reportedUserName}`}
+        className="bg-[#F5F7FC] dark:bg-[#1C2A40] rounded-2xl border border-[#D4DAE7] dark:border-[#34445E] max-w-md w-full max-h-[90vh] overflow-y-auto p-6 shadow-2xl space-y-4"
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="flex items-center justify-between border-b border-[#D4DAE7] dark:border-[#34445E] pb-3">
           <div className="flex items-center gap-2 text-rose-600 dark:text-rose-400">
             <ShieldAlert className="w-5 h-5" />
@@ -72,8 +86,13 @@ export const ReportUserModal: React.FC<ReportUserModalProps> = ({
             </h3>
           </div>
           <button
-            onClick={onClose}
-            className="p-1.5 rounded-lg text-[#626E86] dark:text-[#B0BCD0] hover:text-[#222B42] dark:hover:text-white cursor-pointer"
+            type="button"
+            disabled={submitting}
+            onClick={() => {
+              if (!submitting) onClose();
+            }}
+            aria-label="Close report dialog"
+            className="p-1.5 rounded-lg text-[#626E86] dark:text-[#B0BCD0] hover:text-[#222B42] dark:hover:text-white cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
           >
             <X className="w-4 h-4" />
           </button>
@@ -115,8 +134,11 @@ export const ReportUserModal: React.FC<ReportUserModalProps> = ({
           <div className="flex justify-end gap-2 pt-2 border-t border-[#D4DAE7] dark:border-[#34445E]">
             <button
               type="button"
-              onClick={onClose}
-              className="px-4 py-2 rounded-xl border border-[#D4DAE7] dark:border-[#34445E] font-semibold text-[#626E86] dark:text-[#B0BCD0] hover:bg-[#E8ECF4] dark:hover:bg-[#172235] cursor-pointer"
+              disabled={submitting}
+              onClick={() => {
+                if (!submitting) onClose();
+              }}
+              className="px-4 py-2 rounded-xl border border-[#D4DAE7] dark:border-[#34445E] font-semibold text-[#626E86] dark:text-[#B0BCD0] hover:bg-[#E8ECF4] dark:hover:bg-[#172235] cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
             >
               Cancel
             </button>

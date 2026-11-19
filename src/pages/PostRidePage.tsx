@@ -318,12 +318,12 @@ export const PostRidePage: React.FC = () => {
               </div>
             </div>
 
-            <div className="pt-6 border-t border-[#D4DAE7] dark:border-[#34445E] flex items-center justify-between">
-              <p className="text-[10px] text-[#626E86] dark:text-[#B0BCD0] max-w-[200px]">By publishing, you agree to DIU campus ride safety guidelines.</p>
+            <div className="pt-6 border-t border-[#D4DAE7] dark:border-[#34445E] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <p className="text-[10px] text-[#626E86] dark:text-[#B0BCD0] sm:max-w-[220px]">By publishing, you agree to DIU campus ride safety guidelines.</p>
               <button
                 type="submit"
                 disabled={submitting}
-                className="px-8 py-3 bg-[#515FC5] hover:bg-[#434FA8] dark:bg-[#818CF8] dark:hover:bg-[#6366F1] text-white font-black text-sm rounded-2xl shadow-xl shadow-[#515FC5]/25 transition-all flex items-center gap-3 cursor-pointer disabled:opacity-50 group"
+                className="w-full sm:w-auto justify-center px-8 py-3 bg-[#515FC5] hover:bg-[#434FA8] dark:bg-[#818CF8] dark:hover:bg-[#6366F1] text-white font-black text-sm rounded-2xl shadow-xl shadow-[#515FC5]/25 transition-all flex items-center gap-3 cursor-pointer disabled:opacity-50 group"
               >
                 {submitting ? <Spinner size="sm" /> : <PlusCircle className="w-5 h-5 group-hover:rotate-90 transition-transform" />}
                 {submitting ? 'Publishing...' : 'Publish Ride'}

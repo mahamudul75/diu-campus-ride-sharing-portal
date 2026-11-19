@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Link, useSearchParams, useNavigate } from 'react-router-dom';
 import { Lock, ArrowLeft, CheckCircle2 } from 'lucide-react';
 import api from '../services/api.ts';
@@ -15,6 +15,15 @@ export const ResetPasswordPage: React.FC = () => {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const redirectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (redirectTimerRef.current) {
+        clearTimeout(redirectTimerRef.current);
+      }
+    };
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -42,7 +51,7 @@ export const ResetPasswordPage: React.FC = () => {
       });
       if (res.data?.success) {
         setSuccessMsg(res.data.message || 'Password reset successfully.');
-        setTimeout(() => navigate('/login'), 1800);
+        redirectTimerRef.current = setTimeout(() => navigate('/login'), 1800);
       }
     } catch (err: any) {
       setError(err.response?.data?.message || 'Password reset failed.');
@@ -53,7 +62,7 @@ export const ResetPasswordPage: React.FC = () => {
 
   return (
     <div className="min-h-[80vh] flex items-center justify-center py-12 px-4 sm:px-6 lg:px-8 bg-[#E8ECF4] dark:bg-[#111827]">
-      <div className="max-w-md w-full space-y-6 bg-[#F5F7FC] dark:bg-[#1C2A40] p-8 sm:p-10 rounded-2xl shadow-xl border border-[#D4DAE7] dark:border-[#34445E]">
+      <div className="max-w-md w-full space-y-6 bg-[#F5F7FC] dark:bg-[#1C2A40] p-5 sm:p-10 rounded-2xl shadow-xl border border-[#D4DAE7] dark:border-[#34445E]">
         <div className="text-center space-y-2">
           <div className="w-10 h-10 bg-[#DDE2FA]/70 dark:bg-[#24334B] text-[#515FC5] dark:text-[#818CF8] rounded-xl flex items-center justify-center mx-auto border border-[#515FC5]/20 dark:border-[#818CF8]/30">
             <Lock className="w-5 h-5" />

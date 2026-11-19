@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import {
   ShieldAlert,
@@ -19,22 +19,45 @@ import Spinner from '../components/Spinner.tsx';
 export const AdminDashboardPage: React.FC = () => {
   const [stats, setStats] = useState<AdminStats | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const abortControllerRef = useRef<AbortController | null>(null);
 
-  useEffect(() => {
-    async function loadStats() {
-      try {
-        const res = await api.get('/admin/stats');
-        if (res.data?.success) {
-          setStats(res.data.stats);
-        }
-      } catch (err) {
-        console.warn('Failed to load admin stats:', err);
-      } finally {
+  const loadStats = useCallback(async () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
+    setLoading(true);
+    setError('');
+    try {
+      const res = await api.get('/admin/stats', { signal: controller.signal });
+      if (res.data?.success) {
+        setStats(res.data.stats);
+      } else {
+        setError('Unable to load campus statistics.');
+      }
+    } catch (err: any) {
+      if (err?.name === 'CanceledError' || err?.code === 'ERR_CANCELED') {
+        return;
+      }
+      setError(err.response?.data?.message || 'Unable to load campus statistics.');
+    } finally {
+      if (!controller.signal.aborted) {
         setLoading(false);
       }
     }
-    loadStats();
   }, []);
+
+  useEffect(() => {
+    loadStats();
+    return () => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+    };
+  }, [loadStats]);
 
   if (loading) {
     return (
@@ -45,6 +68,28 @@ export const AdminDashboardPage: React.FC = () => {
       >
         <div className="py-24 flex justify-center">
           <Spinner size="lg" />
+        </div>
+      </DashboardLayout>
+    );
+  }
+
+  if (!stats && error) {
+    return (
+      <DashboardLayout
+        breadcrumbs={[{ label: 'Admin', path: '/admin' }, { label: 'Overview' }]}
+        title="Admin Control"
+        subtitle="University metrics, driver verifications, ride moderation, and safety governance."
+      >
+        <div className="bg-[#F5F7FC] dark:bg-[#1C2A40] rounded-2xl border border-rose-200 dark:border-rose-900/60 p-8 text-center space-y-3">
+          <ShieldAlert className="w-8 h-8 text-rose-500 mx-auto" />
+          <p className="text-sm font-bold text-[#222B42] dark:text-[#F1F4FC]">{error}</p>
+          <button
+            type="button"
+            onClick={loadStats}
+            className="px-4 py-2 rounded-xl bg-[#515FC5] hover:bg-[#434FA8] dark:bg-[#818CF8] dark:hover:bg-[#6366F1] text-white text-xs font-bold cursor-pointer"
+          >
+            Retry
+          </button>
         </div>
       </DashboardLayout>
     );

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import {
   CheckCircle2,
@@ -21,9 +21,11 @@ export const AdminDriverApprovalsPage: React.FC = () => {
   const { showToast } = useToast();
   const [pendingDrivers, setPendingDrivers] = useState<UserModel[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [approvingId, setApprovingId] = useState<number | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   // Rejection modal
   const [selectedDriver, setSelectedDriver] = useState<UserModel | null>(null);
@@ -32,13 +34,23 @@ export const AdminDriverApprovalsPage: React.FC = () => {
   const [processing, setProcessing] = useState(false);
 
   const fetchPendingDrivers = async (append = false, preserveCount?: number) => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     if (append) {
       setLoadingMore(true);
+    } else {
+      setLoading(true);
+      setError('');
     }
     try {
       const limit = append ? 100 : Math.min(200, Math.max(100, preserveCount || 100));
       const res = await api.get('/admin/drivers/pending', {
-        params: { limit, offset: append ? pendingDrivers.length : 0 }
+        params: { limit, offset: append ? pendingDrivers.length : 0 },
+        signal: controller.signal
       });
       if (res.data?.success) {
         const incoming: UserModel[] = res.data.drivers || [];
@@ -52,16 +64,30 @@ export const AdminDriverApprovalsPage: React.FC = () => {
         }
         setHasMore(Boolean(res.data.pagination?.has_more) && incoming.length > 0);
       }
-    } catch (err) {
-      console.warn('Failed to fetch pending drivers:', err);
+    } catch (err: any) {
+      if (err?.name === 'CanceledError' || err?.code === 'ERR_CANCELED') {
+        return;
+      }
+      if (!append) {
+        setError(err.response?.data?.message || 'Unable to load pending driver applications.');
+      } else {
+        showToast(err.response?.data?.message || 'Failed to load more applications.', 'error');
+      }
     } finally {
-      setLoading(false);
-      setLoadingMore(false);
+      if (!controller.signal.aborted) {
+        setLoading(false);
+        setLoadingMore(false);
+      }
     }
   };
 
   useEffect(() => {
     fetchPendingDrivers(false);
+    return () => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+    };
   }, []);
 
   const handleApprove = async (driverId: number, name: string) => {
@@ -116,6 +142,17 @@ export const AdminDriverApprovalsPage: React.FC = () => {
           <div className="py-20 flex justify-center">
             <Spinner size="lg" />
           </div>
+        ) : error ? (
+          <div className="bg-[#F5F7FC] dark:bg-[#1C2A40] rounded-2xl border border-rose-200 dark:border-rose-900/60 p-8 text-center space-y-3">
+            <p className="text-sm font-bold text-[#222B42] dark:text-[#F1F4FC]">{error}</p>
+            <button
+              type="button"
+              onClick={() => fetchPendingDrivers(false)}
+              className="px-4 py-2 rounded-xl bg-[#515FC5] hover:bg-[#434FA8] dark:bg-[#818CF8] dark:hover:bg-[#6366F1] text-white text-xs font-bold cursor-pointer"
+            >
+              Retry
+            </button>
+          </div>
         ) : pendingDrivers.length === 0 ? (
           <EmptyState
             icon={FileCheck}
@@ -164,13 +201,13 @@ export const AdminDriverApprovalsPage: React.FC = () => {
 
                     {/* Student Contact */}
                     <div className="p-3 bg-white dark:bg-[#24334B] rounded-xl border border-[#D4DAE7] dark:border-[#34445E] space-y-1.5 text-xs">
-                      <div className="flex items-center gap-2 text-[#626E86] dark:text-[#B0BCD0]">
-                        <Mail className="w-3.5 h-3.5 text-[#626E86] dark:text-[#B0BCD0]" />
+                      <div className="flex items-center gap-2 min-w-0 text-[#626E86] dark:text-[#B0BCD0]">
+                        <Mail className="w-3.5 h-3.5 shrink-0 text-[#626E86] dark:text-[#B0BCD0]" />
                         <span className="font-mono truncate">{driver.email}</span>
                       </div>
-                      <div className="flex items-center gap-2 text-[#626E86] dark:text-[#B0BCD0]">
-                        <Phone className="w-3.5 h-3.5 text-[#626E86] dark:text-[#B0BCD0]" />
-                        <span className="font-mono">{driver.phone}</span>
+                      <div className="flex items-center gap-2 min-w-0 text-[#626E86] dark:text-[#B0BCD0]">
+                        <Phone className="w-3.5 h-3.5 shrink-0 text-[#626E86] dark:text-[#B0BCD0]" />
+                        <span className="font-mono truncate">{driver.phone}</span>
                       </div>
                     </div>
 
@@ -208,6 +245,7 @@ export const AdminDriverApprovalsPage: React.FC = () => {
                   {/* Actions */}
                   <div className="pt-3 border-t border-[#D4DAE7]/50 dark:border-[#34445E] grid grid-cols-2 gap-2">
                     <button
+                      type="button"
                       onClick={() => {
                         setSelectedDriver(driver);
                         setShowRejectModal(true);
@@ -217,6 +255,7 @@ export const AdminDriverApprovalsPage: React.FC = () => {
                       <XCircle className="w-4 h-4" /> Reject
                     </button>
                     <button
+                      type="button"
                       onClick={() => handleApprove(driver.id, driver.name)}
                       disabled={approvingId === driver.id}
                       className="py-2 px-3 rounded-xl bg-[#515FC5] hover:bg-[#434FA8] dark:bg-[#818CF8] dark:hover:bg-[#6366F1] text-white text-xs font-bold shadow-xs transition-colors cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-50"
@@ -231,6 +270,7 @@ export const AdminDriverApprovalsPage: React.FC = () => {
           {hasMore && (
             <div className="flex justify-center">
               <button
+                type="button"
                 onClick={() => fetchPendingDrivers(true)}
                 disabled={loadingMore}
                 className="px-4 py-2 rounded-xl border border-[#D4DAE7] dark:border-[#34445E] bg-[#F5F7FC] dark:bg-[#1C2A40] hover:bg-[#E8ECF4] dark:hover:bg-[#24334B] text-xs font-bold text-[#515FC5] dark:text-[#818CF8] cursor-pointer disabled:opacity-50"
@@ -273,6 +313,7 @@ export const AdminDriverApprovalsPage: React.FC = () => {
           </div>
           <div className="flex items-center justify-end gap-2 pt-2">
             <button
+              type="button"
               onClick={() => {
                 setShowRejectModal(false);
                 setSelectedDriver(null);
@@ -283,9 +324,10 @@ export const AdminDriverApprovalsPage: React.FC = () => {
               Cancel
             </button>
             <button
+              type="button"
               onClick={handleReject}
               disabled={processing}
-              className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl shadow-xs cursor-pointer"
+              className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl shadow-xs cursor-pointer disabled:opacity-50"
             >
               {processing ? 'Rejecting...' : 'Reject Application'}
             </button>

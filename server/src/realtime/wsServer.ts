@@ -84,8 +84,12 @@ export function initWebSocketServer(
         client.isAlive = true;
         wss.emit('connection', client, request);
       });
-    } catch {
-      socket.write('HTTP/1.1 500 Internal Server Error\r\n\r\n');
+    } catch (err: any) {
+      if (err?.isDatabaseUnavailable || err?.status === 503) {
+        socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n');
+      } else {
+        socket.write('HTTP/1.1 500 Internal Server Error\r\n\r\n');
+      }
       socket.destroy();
     }
   });
@@ -102,7 +106,11 @@ export function initWebSocketServer(
     }
     userSockets.get(userId)!.add(ws);
 
-    ws.send(JSON.stringify({ event: 'ws:connected', userId }));
+    try {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ event: 'ws:connected', userId }));
+      }
+    } catch {}
 
     ws.on('pong', () => {
       ws.isAlive = true;
@@ -111,7 +119,7 @@ export function initWebSocketServer(
     ws.on('message', (raw) => {
       try {
         const data = JSON.parse(raw.toString());
-        if (data?.type === 'ping') {
+        if (data?.type === 'ping' && ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ event: 'pong', ts: Date.now() }));
         }
       } catch {
@@ -176,7 +184,9 @@ export function pushToUser(userId: number, payload: Record<string, any>): void {
   const serialized = JSON.stringify(payload);
   for (const client of sockets) {
     if (client.readyState === WebSocket.OPEN) {
-      client.send(serialized);
+      try {
+        client.send(serialized);
+      } catch {}
     }
   }
 }

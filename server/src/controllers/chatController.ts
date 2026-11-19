@@ -155,6 +155,10 @@ export async function getConversations(req: AuthRequest, res: Response): Promise
       throw err;
     }
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({ success: false, message: error.message || 'Database service is temporarily unavailable.' });
+      return;
+    }
     console.error('getConversations error:', error);
     res.status(500).json({ success: false, message: 'Failed to load conversations.' });
   }
@@ -225,22 +229,40 @@ export async function getOrCreateConversation(req: AuthRequest, res: Response): 
       return;
     }
 
-    const [insertRes] = await db.query(
-      'INSERT INTO conversations (ride_id, driver_id, passenger_id) VALUES (?, ?, ?)',
-      [rideId, driverId, passengerId]
-    );
+    try {
+      const [insertRes] = await db.query(
+        'INSERT INTO conversations (ride_id, driver_id, passenger_id) VALUES (?, ?, ?)',
+        [rideId, driverId, passengerId]
+      );
 
-    const newId = (insertRes as any).insertId;
-    res.status(201).json({
-      success: true,
-      conversation: {
-        id: newId,
-        ride_id: rideId,
-        driver_id: driverId,
-        passenger_id: passengerId
+      const newId = (insertRes as any).insertId;
+      res.status(201).json({
+        success: true,
+        conversation: {
+          id: newId,
+          ride_id: rideId,
+          driver_id: driverId,
+          passenger_id: passengerId
+        }
+      });
+    } catch (insertErr: any) {
+      if (insertErr?.code === 'ER_DUP_ENTRY') {
+        const [retryRows] = await db.query(
+          'SELECT id, ride_id, driver_id, passenger_id, created_at, updated_at FROM conversations WHERE ride_id = ? AND passenger_id = ?',
+          [rideId, passengerId]
+        );
+        if (Array.isArray(retryRows) && retryRows.length > 0) {
+          res.status(200).json({ success: true, conversation: retryRows[0] });
+          return;
+        }
       }
-    });
+      throw insertErr;
+    }
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({ success: false, message: error.message || 'Database service is temporarily unavailable.' });
+      return;
+    }
     if (error?.code === 'ER_NO_SUCH_TABLE') {
       res.status(503).json({ success: false, message: 'Chat tables require Migration 002.' });
       return;
@@ -350,6 +372,10 @@ export async function getConversationMessages(req: AuthRequest, res: Response): 
       }
     });
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({ success: false, message: error.message || 'Database service is temporarily unavailable.' });
+      return;
+    }
     if (error?.code === 'ER_NO_SUCH_TABLE') {
       res.status(503).json({ success: false, message: 'Chat tables require Migration 002.' });
       return;
@@ -394,6 +420,10 @@ export async function markConversationMessagesRead(req: AuthRequest, res: Respon
 
     res.status(200).json({ success: true });
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({ success: false, message: error.message || 'Database service is temporarily unavailable.' });
+      return;
+    }
     if (error?.code === 'ER_NO_SUCH_TABLE') {
       res.status(503).json({ success: false, message: 'Chat tables require Migration 002.' });
       return;
@@ -487,6 +517,10 @@ export async function sendMessage(req: AuthRequest, res: Response): Promise<void
       message: messagePayload
     });
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({ success: false, message: error.message || 'Database service is temporarily unavailable.' });
+      return;
+    }
     if (error?.code === 'ER_NO_SUCH_TABLE') {
       res.status(503).json({ success: false, message: 'Chat tables require Migration 002.' });
       return;

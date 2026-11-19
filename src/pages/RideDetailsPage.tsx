@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import {
   Clock,
@@ -17,7 +17,8 @@ import {
   Flag,
   Ban,
   BadgeCheck,
-  Route
+  Route,
+  RotateCcw
 } from 'lucide-react';
 import api from '../services/api.ts';
 import { Ride, RideRequest, Review, EligibleReviewTarget } from '../types/index.ts';
@@ -46,10 +47,12 @@ export const RideDetailsPage: React.FC = () => {
   const [eligibleTargets, setEligibleTargets] = useState<EligibleReviewTarget[]>([]);
 
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [requesting, setRequesting] = useState(false);
   const [cancellingRequest, setCancellingRequest] = useState(false);
   const [openingChat, setOpeningChat] = useState(false);
   const [blockingDriver, setBlockingDriver] = useState(false);
+  const fetchAbortRef = useRef<AbortController | null>(null);
 
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [showCancelModal, setShowCancelModal] = useState(false);
@@ -57,31 +60,53 @@ export const RideDetailsPage: React.FC = () => {
   const [rateTarget, setRateTarget] = useState<EligibleReviewTarget | null>(null);
 
   const fetchRideDetails = async () => {
+    fetchAbortRef.current?.abort();
+    const controller = new AbortController();
+    fetchAbortRef.current = controller;
+    setLoadError(null);
+    if (!ride) {
+      setLoading(true);
+    }
     try {
       const [rideRes, revRes] = await Promise.allSettled([
-        api.get(`/rides/${id}`),
-        api.get(`/reviews/ride/${id}`)
+        api.get(`/rides/${id}`, { signal: controller.signal }),
+        api.get(`/reviews/ride/${id}`, { signal: controller.signal })
       ]);
+      if (controller.signal.aborted) return;
 
       if (rideRes.status === 'fulfilled' && rideRes.value.data?.success) {
         setRide(rideRes.value.data.ride);
         setUserRequest(rideRes.value.data.userRequest || null);
         setIsDriver(Boolean(rideRes.value.data.isDriver));
         setIsBlockedPair(Boolean(rideRes.value.data.isBlockedPair));
+      } else if (rideRes.status === 'rejected' && rideRes.reason?.code !== 'ERR_CANCELED') {
+        const status = rideRes.reason?.response?.status;
+        if (status === 404 || status === 400) {
+          setRide(null);
+        } else {
+          setLoadError(rideRes.reason?.response?.data?.message || 'Unable to load ride details. Please try again.');
+        }
       }
       if (revRes.status === 'fulfilled' && revRes.value.data?.success) {
         setReviews(revRes.value.data.reviews || []);
         setEligibleTargets(revRes.value.data.eligible_targets || []);
       }
     } catch (err: any) {
-      console.warn('Ride details error:', err);
+      if (err?.code !== 'ERR_CANCELED' && err?.name !== 'AbortError') {
+        setLoadError(err?.response?.data?.message || 'Unable to load ride details.');
+      }
     } finally {
-      setLoading(false);
+      if (!controller.signal.aborted) {
+        setLoading(false);
+      }
     }
   };
 
   useEffect(() => {
     fetchRideDetails();
+    return () => {
+      fetchAbortRef.current?.abort();
+    };
   }, [id, user]);
 
   const handleBookRequest = async () => {
@@ -158,6 +183,33 @@ export const RideDetailsPage: React.FC = () => {
     return (
       <div className="py-24 flex justify-center">
         <Spinner size="lg" />
+      </div>
+    );
+  }
+
+  if (loadError && !ride) {
+    return (
+      <div className="max-w-md mx-auto my-20 p-8 text-center bg-[#F5F7FC] dark:bg-[#1C2A40] rounded-2xl border border-rose-200 dark:border-rose-800 shadow-sm space-y-4">
+        <AlertCircle className="w-10 h-10 text-rose-500 mx-auto" />
+        <div>
+          <h2 className="text-lg font-bold text-[#222B42] dark:text-[#F1F4FC] mb-1">Could Not Load Ride</h2>
+          <p className="text-xs text-[#626E86] dark:text-[#B0BCD0]">{loadError}</p>
+        </div>
+        <div className="flex items-center justify-center gap-2">
+          <button
+            type="button"
+            onClick={fetchRideDetails}
+            className="inline-flex items-center gap-1.5 px-4 py-2 bg-[#515FC5] hover:bg-[#434FA8] dark:bg-[#818CF8] text-white dark:text-[#111827] rounded-xl text-xs font-bold cursor-pointer"
+          >
+            <RotateCcw className="w-3.5 h-3.5" /> Retry
+          </button>
+          <Link
+            to="/search"
+            className="inline-flex items-center gap-1.5 px-4 py-2 border border-[#D4DAE7] dark:border-[#34445E] text-[#222B42] dark:text-[#F1F4FC] rounded-xl text-xs font-bold"
+          >
+            <ArrowLeft className="w-3.5 h-3.5" /> Search
+          </Link>
+        </div>
       </div>
     );
   }
@@ -619,15 +671,17 @@ export const RideDetailsPage: React.FC = () => {
           </div>
           <div className="flex items-center justify-end gap-2 pt-2">
             <button
+              type="button"
               onClick={() => setShowConfirmModal(false)}
-              className="px-4 py-2 border border-[#D4DAE7] dark:border-[#34445E] text-xs font-bold text-[#222B42] dark:text-[#F1F4FC] rounded-xl hover:bg-[#E1E6F0] dark:hover:bg-[#24334B]"
+              className="px-4 py-2 border border-[#D4DAE7] dark:border-[#34445E] text-xs font-bold text-[#222B42] dark:text-[#F1F4FC] rounded-xl hover:bg-[#E1E6F0] dark:hover:bg-[#24334B] cursor-pointer"
             >
               Cancel
             </button>
             <button
+              type="button"
               onClick={handleBookRequest}
               disabled={requesting}
-              className="px-4 py-2 bg-[#515FC5] hover:bg-[#434FA8] dark:bg-[#818CF8] dark:hover:bg-[#6366F1] text-white dark:text-[#111827] text-xs font-bold rounded-xl shadow-xs flex items-center gap-1.5"
+              className="px-4 py-2 bg-[#515FC5] hover:bg-[#434FA8] dark:bg-[#818CF8] dark:hover:bg-[#6366F1] text-white dark:text-[#111827] text-xs font-bold rounded-xl shadow-xs flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
             >
               {requesting ? <Spinner size="sm" /> : <CheckCircle2 className="w-4 h-4" />}
               {requesting ? 'Requesting...' : 'Confirm'}
@@ -648,12 +702,14 @@ export const RideDetailsPage: React.FC = () => {
           </p>
           <div className="flex items-center justify-end gap-2 pt-2">
             <button
+              type="button"
               onClick={() => setShowCancelModal(false)}
-              className="px-4 py-2 border border-[#D4DAE7] dark:border-[#34445E] text-xs font-bold text-[#222B42] dark:text-[#F1F4FC] rounded-xl hover:bg-[#E1E6F0] dark:hover:bg-[#24334B]"
+              className="px-4 py-2 border border-[#D4DAE7] dark:border-[#34445E] text-xs font-bold text-[#222B42] dark:text-[#F1F4FC] rounded-xl hover:bg-[#E1E6F0] dark:hover:bg-[#24334B] cursor-pointer"
             >
               Keep Booking
             </button>
             <button
+              type="button"
               onClick={handleCancelMyRequest}
               disabled={cancellingRequest}
               className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl shadow-xs disabled:opacity-50 cursor-pointer"

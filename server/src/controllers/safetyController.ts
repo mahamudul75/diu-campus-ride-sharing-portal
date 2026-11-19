@@ -40,6 +40,10 @@ export async function getEmergencyContacts(req: AuthRequest, res: Response): Pro
       throw err;
     }
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({ success: false, message: error.message || 'Database service is temporarily unavailable.' });
+      return;
+    }
     console.error('getEmergencyContacts error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch emergency contacts.' });
   }
@@ -99,6 +103,10 @@ export async function addEmergencyContact(req: AuthRequest, res: Response): Prom
       }
     });
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({ success: false, message: error.message || 'Database service is temporarily unavailable.' });
+      return;
+    }
     if (error?.code === 'ER_NO_SUCH_TABLE') {
       res.status(503).json({ success: false, message: 'Emergency contacts require Migration 002.' });
       return;
@@ -135,6 +143,10 @@ export async function deleteEmergencyContact(req: AuthRequest, res: Response): P
     await db.query('DELETE FROM emergency_contacts WHERE id = ? AND user_id = ?', [contactId, req.user.id]);
     res.status(200).json({ success: true, message: 'Emergency contact removed.' });
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({ success: false, message: error.message || 'Database service is temporarily unavailable.' });
+      return;
+    }
     if (error?.code === 'ER_NO_SUCH_TABLE') {
       res.status(503).json({ success: false, message: 'Emergency contacts require Migration 002.' });
       return;
@@ -152,12 +164,19 @@ export async function submitUserReport(req: AuthRequest, res: Response): Promise
     }
 
     const reportedUserId = isPositiveIntId(req.body?.reported_user_id);
-    const rideId = req.body?.ride_id ? isPositiveIntId(req.body.ride_id) : null;
+    const rawRideId = req.body?.ride_id;
+    const hasRideId = rawRideId !== undefined && rawRideId !== null && String(rawRideId).trim() !== '';
+    const rideId = hasRideId ? isPositiveIntId(rawRideId) : null;
     const reason = req.body?.reason;
     const description = req.body?.description;
 
     if (!reportedUserId) {
       res.status(400).json({ success: false, message: 'Valid reported_user_id is required.' });
+      return;
+    }
+
+    if (hasRideId && !rideId) {
+      res.status(400).json({ success: false, message: 'Invalid ride_id.' });
       return;
     }
 
@@ -183,6 +202,14 @@ export async function submitUserReport(req: AuthRequest, res: Response): Promise
     if (!Array.isArray(userRows) || userRows.length === 0) {
       res.status(404).json({ success: false, message: 'Reported user not found.' });
       return;
+    }
+
+    if (rideId) {
+      const [rideRows] = await db.query('SELECT id FROM rides WHERE id = ?', [rideId]);
+      if (!Array.isArray(rideRows) || rideRows.length === 0) {
+        res.status(404).json({ success: false, message: 'Associated ride not found.' });
+        return;
+      }
     }
 
     const [insertRes] = await db.query(
@@ -211,6 +238,14 @@ export async function submitUserReport(req: AuthRequest, res: Response): Promise
       reportId: (insertRes as any).insertId
     });
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({ success: false, message: error.message || 'Database service is temporarily unavailable.' });
+      return;
+    }
+    if (error?.code === 'ER_NO_REFERENCED_ROW_2' || error?.code === 'ER_NO_REFERENCED_ROW') {
+      res.status(400).json({ success: false, message: 'Referenced user or ride does not exist.' });
+      return;
+    }
     if (error?.code === 'ER_NO_SUCH_TABLE') {
       res.status(503).json({ success: false, message: 'Safety reports require Migration 002.' });
       return;
@@ -269,6 +304,10 @@ export async function getMyReports(req: AuthRequest, res: Response): Promise<voi
       throw err;
     }
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({ success: false, message: error.message || 'Database service is temporarily unavailable.' });
+      return;
+    }
     console.error('getMyReports error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch submitted reports.' });
   }
@@ -321,6 +360,10 @@ export async function getBlockedUsers(req: AuthRequest, res: Response): Promise<
       throw err;
     }
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({ success: false, message: error.message || 'Database service is temporarily unavailable.' });
+      return;
+    }
     console.error('getBlockedUsers error:', error);
     res.status(500).json({ success: false, message: 'Failed to load blocked users.' });
   }
@@ -366,6 +409,10 @@ export async function blockUser(req: AuthRequest, res: Response): Promise<void> 
       message: `${(userRows[0] as any).name} has been blocked. They can no longer message you or join your rides.`
     });
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({ success: false, message: error.message || 'Database service is temporarily unavailable.' });
+      return;
+    }
     if (error?.code === 'ER_NO_SUCH_TABLE') {
       res.status(503).json({ success: false, message: 'User blocking requires Migration 002.' });
       return;
@@ -395,6 +442,10 @@ export async function unblockUser(req: AuthRequest, res: Response): Promise<void
 
     res.status(200).json({ success: true, message: 'User unblocked successfully.' });
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({ success: false, message: error.message || 'Database service is temporarily unavailable.' });
+      return;
+    }
     if (error?.code === 'ER_NO_SUCH_TABLE') {
       res.status(503).json({ success: false, message: 'User blocking requires Migration 002.' });
       return;

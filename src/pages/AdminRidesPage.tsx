@@ -36,12 +36,15 @@ export const AdminRidesPage: React.FC = () => {
   const [loadingMoreBookings, setLoadingMoreBookings] = useState(false);
   const [loadingRides, setLoadingRides] = useState(true);
   const [loadingBookings, setLoadingBookings] = useState(true);
+  const [ridesError, setRidesError] = useState('');
+  const [bookingsError, setBookingsError] = useState('');
 
   const [searchTerm, setSearchTerm] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const ridesSeqRef = useRef(0);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const bookingsAbortRef = useRef<AbortController | null>(null);
 
   // Moderate modal
   const [targetRide, setTargetRide] = useState<Ride | null>(null);
@@ -66,7 +69,10 @@ export const AdminRidesPage: React.FC = () => {
     if (append) {
       setLoadingMoreRides(true);
     } else {
-      setLoadingRides(true);
+      if (preserveCount === undefined || rides.length === 0) {
+        setLoadingRides(true);
+      }
+      setRidesError('');
     }
     try {
       const limit = append ? 100 : Math.min(200, Math.max(100, preserveCount || 100));
@@ -97,10 +103,14 @@ export const AdminRidesPage: React.FC = () => {
         return;
       }
       if (seq === ridesSeqRef.current) {
-        console.warn('Admin rides load error:', err);
+        if (!append) {
+          setRidesError(err.response?.data?.message || 'Unable to load rides.');
+        } else {
+          showToast(err.response?.data?.message || 'Failed to load more rides.', 'error');
+        }
       }
     } finally {
-      if (seq === ridesSeqRef.current) {
+      if (seq === ridesSeqRef.current && !controller.signal.aborted) {
         setLoadingRides(false);
         setLoadingMoreRides(false);
       }
@@ -108,15 +118,25 @@ export const AdminRidesPage: React.FC = () => {
   };
 
   const fetchBookings = async (append = false, preserveCount?: number) => {
+    if (bookingsAbortRef.current) {
+      bookingsAbortRef.current.abort();
+    }
+    const controller = new AbortController();
+    bookingsAbortRef.current = controller;
+
     if (append) {
       setLoadingMoreBookings(true);
     } else {
-      setLoadingBookings(true);
+      if (preserveCount === undefined || bookings.length === 0) {
+        setLoadingBookings(true);
+      }
+      setBookingsError('');
     }
     try {
       const limit = append ? 100 : Math.min(200, Math.max(100, preserveCount || 100));
       const res = await api.get('/admin/bookings', {
-        params: { limit, offset: append ? bookings.length : 0 }
+        params: { limit, offset: append ? bookings.length : 0 },
+        signal: controller.signal
       });
       if (res.data?.success) {
         const incoming: AdminBooking[] = res.data.bookings || [];
@@ -130,20 +150,39 @@ export const AdminRidesPage: React.FC = () => {
         }
         setBookingsHasMore(Boolean(res.data.pagination?.has_more) && incoming.length > 0);
       }
-    } catch (err) {
-      console.warn('Admin bookings load error:', err);
+    } catch (err: any) {
+      if (err?.name === 'CanceledError' || err?.code === 'ERR_CANCELED') {
+        return;
+      }
+      if (!append) {
+        setBookingsError(err.response?.data?.message || 'Unable to load bookings.');
+      } else {
+        showToast(err.response?.data?.message || 'Failed to load more bookings.', 'error');
+      }
     } finally {
-      setLoadingBookings(false);
-      setLoadingMoreBookings(false);
+      if (!controller.signal.aborted) {
+        setLoadingBookings(false);
+        setLoadingMoreBookings(false);
+      }
     }
   };
 
   useEffect(() => {
     fetchRides(false);
+    return () => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+    };
   }, [debouncedSearch, statusFilter]);
 
   useEffect(() => {
     fetchBookings(false);
+    return () => {
+      if (bookingsAbortRef.current) {
+        bookingsAbortRef.current.abort();
+      }
+    };
   }, []);
 
   const handleModerateCancel = async () => {
@@ -179,6 +218,7 @@ export const AdminRidesPage: React.FC = () => {
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="flex items-center gap-1 p-1 bg-[#E1E6F0] dark:bg-[#151F32] rounded-xl border border-[#D4DAE7] dark:border-[#34445E] w-fit">
             <button
+              type="button"
               onClick={() => setActiveTab('rides')}
               className={`px-4 py-1.5 text-xs font-bold rounded-lg transition-colors cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
                 activeTab === 'rides'
@@ -189,6 +229,7 @@ export const AdminRidesPage: React.FC = () => {
               <Compass className="w-3.5 h-3.5" /> Rides ({rides.length}{ridesHasMore ? '+' : ''})
             </button>
             <button
+              type="button"
               onClick={() => setActiveTab('bookings')}
               className={`px-4 py-1.5 text-xs font-bold rounded-lg transition-colors cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
                 activeTab === 'bookings'
@@ -234,7 +275,18 @@ export const AdminRidesPage: React.FC = () => {
             <Spinner size="lg" />
           </div>
         ) : activeTab === 'rides' ? (
-          rides.length === 0 ? (
+          ridesError ? (
+            <div className="bg-[#F5F7FC] dark:bg-[#1C2A40] rounded-2xl border border-rose-200 dark:border-rose-900/60 p-8 text-center space-y-3">
+              <p className="text-sm font-bold text-[#222B42] dark:text-[#F1F4FC]">{ridesError}</p>
+              <button
+                type="button"
+                onClick={() => fetchRides(false)}
+                className="px-4 py-2 rounded-xl bg-[#515FC5] hover:bg-[#434FA8] dark:bg-[#818CF8] dark:hover:bg-[#6366F1] text-white text-xs font-bold cursor-pointer"
+              >
+                Retry
+              </button>
+            </div>
+          ) : rides.length === 0 ? (
             <EmptyState
               icon={Compass}
               title="No rides found"
@@ -285,6 +337,7 @@ export const AdminRidesPage: React.FC = () => {
                           <td className="py-3 px-4 text-right">
                             {canCancel ? (
                               <button
+                                type="button"
                                 onClick={() => setTargetRide(r)}
                                 className="px-2.5 py-1 rounded-lg bg-rose-50 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 border border-rose-200 dark:border-rose-800 hover:bg-rose-100 font-bold text-[11px] inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
                               >
@@ -303,6 +356,7 @@ export const AdminRidesPage: React.FC = () => {
               {ridesHasMore && (
                 <div className="px-4 py-3 border-t border-[#D4DAE7]/50 dark:border-[#34445E] flex justify-center">
                   <button
+                    type="button"
                     onClick={() => fetchRides(true)}
                     disabled={loadingMoreRides}
                     className="px-4 py-1.5 rounded-xl border border-[#D4DAE7] dark:border-[#34445E] text-xs font-bold text-[#515FC5] dark:text-[#818CF8] hover:bg-[#E8ECF4] dark:hover:bg-[#24334B] cursor-pointer disabled:opacity-50"
@@ -313,6 +367,17 @@ export const AdminRidesPage: React.FC = () => {
               )}
             </div>
           )
+        ) : bookingsError ? (
+          <div className="bg-[#F5F7FC] dark:bg-[#1C2A40] rounded-2xl border border-rose-200 dark:border-rose-900/60 p-8 text-center space-y-3">
+            <p className="text-sm font-bold text-[#222B42] dark:text-[#F1F4FC]">{bookingsError}</p>
+            <button
+              type="button"
+              onClick={() => fetchBookings(false)}
+              className="px-4 py-2 rounded-xl bg-[#515FC5] hover:bg-[#434FA8] dark:bg-[#818CF8] dark:hover:bg-[#6366F1] text-white text-xs font-bold cursor-pointer"
+            >
+              Retry
+            </button>
+          </div>
         ) : bookings.length === 0 ? (
           <EmptyState
             icon={FileCheck}
@@ -363,6 +428,7 @@ export const AdminRidesPage: React.FC = () => {
             {bookingsHasMore && (
               <div className="px-4 py-3 border-t border-[#D4DAE7]/50 dark:border-[#34445E] flex justify-center">
                 <button
+                  type="button"
                   onClick={() => fetchBookings(true)}
                   disabled={loadingMoreBookings}
                   className="px-4 py-1.5 rounded-xl border border-[#D4DAE7] dark:border-[#34445E] text-xs font-bold text-[#515FC5] dark:text-[#818CF8] hover:bg-[#E8ECF4] dark:hover:bg-[#24334B] cursor-pointer disabled:opacity-50"
@@ -404,6 +470,7 @@ export const AdminRidesPage: React.FC = () => {
           </div>
           <div className="flex justify-end gap-2 pt-2">
             <button
+              type="button"
               onClick={() => {
                 setTargetRide(null);
                 setReason('');
@@ -413,9 +480,10 @@ export const AdminRidesPage: React.FC = () => {
               Keep Ride
             </button>
             <button
+              type="button"
               onClick={handleModerateCancel}
               disabled={moderating}
-              className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl font-bold cursor-pointer"
+              className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl font-bold cursor-pointer disabled:opacity-50"
             >
               {moderating ? 'Cancelling...' : 'Cancel Ride'}
             </button>

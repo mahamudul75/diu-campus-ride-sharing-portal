@@ -22,7 +22,10 @@ import {
   addTestMessageRecordForTesting
 } from '../server/src/config/db.ts';
 import apiRouter from '../server/src/routes/index.ts';
-import { getConversations } from '../server/src/controllers/chatController.ts';
+import { getConversations, getOrCreateConversation } from '../server/src/controllers/chatController.ts';
+import { createRideRequest, acceptRequest } from '../server/src/controllers/requestController.ts';
+import { resetPassword, verifyEmail } from '../server/src/controllers/authController.ts';
+import { submitUserReport } from '../server/src/controllers/safetyController.ts';
 import {
   createPassengerRequest,
   handlePassengerRequestError
@@ -3697,6 +3700,156 @@ async function runTests() {
         (schedRideAfterRows as any[])[0]?.status === 'full' &&
         Number((schedRideAfterRows as any[])[0]?.seats_available) === 0,
       'Compatible 1-seat scheduled ride is reused, sets seats_available=0, and transitions status to full'
+    );
+
+    // -----------------------------------------------------------------------
+    // PHASE 26: Stabilization Regression Guards
+    // -----------------------------------------------------------------------
+    console.log('\n[Phase 26] Stabilization Regression Guards');
+
+    const callController = async (
+      fn: (req: any, res: any) => Promise<void>,
+      reqData: Record<string, any>
+    ): Promise<{ status: number; body: any }> => {
+      let status = 200;
+      let body: any = null;
+      await fn(reqData as any, {
+        status: (code: number) => {
+          status = code;
+          return {
+            json: (payload: any) => {
+              body = payload;
+            }
+          };
+        }
+      } as any);
+      return { status, body };
+    };
+
+    // 1. Direct booking acceptRequest on a 2-seat ride leaves status='open' and seats_available=1
+    const [p26RideInsert] = await db.query(
+      `INSERT INTO rides
+        (driver_id, pickup_name, pickup_lat, pickup_lng, dest_name, dest_lat, dest_lng, departure_time, fare, seats_total, seats_available, vehicle_type, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 150, 2, 2, 'car', 'open')`,
+      [nusratId, 'P26 Gate', 23.8768, 90.3202, 'P26 Banani', 23.7937, 90.4066, matchDepSql]
+    );
+    const p26RideId = Number((p26RideInsert as any).insertId);
+
+    const p26ReqCall = await callController(createRideRequest, {
+      user: { id: p25ObserverId, name: 'Observer P22', role: 'student' },
+      params: { id: String(p26RideId) }
+    });
+    const p26ReqId = Number(p26ReqCall.body?.requestId);
+    assert(p26ReqCall.status === 201 && p26ReqId > 0, 'Observer submits booking request on 2-seat ride');
+
+    const p26AcceptCall = await callController(acceptRequest, {
+      user: { id: nusratId, name: 'Nusrat Driver', role: 'student' },
+      params: { id: String(p26ReqId) }
+    });
+    const [p26RideAfterRows] = await db.query('SELECT status, seats_available FROM rides WHERE id = ?', [p26RideId]);
+    assert(
+      p26AcceptCall.status === 200 &&
+        (p26RideAfterRows as any[])[0]?.status === 'open' &&
+        Number((p26RideAfterRows as any[])[0]?.seats_available) === 1,
+      'acceptRequest on 2-seat ride decrements seats_available to 1 and keeps status=open'
+    );
+
+    // 2. Concurrent getOrCreateConversation resolves without 500 or duplicate rows
+    const [chatRaceA, chatRaceB] = await Promise.all([
+      callController(getOrCreateConversation, {
+        user: { id: p25ObserverId, name: 'Observer P22', role: 'student' },
+        body: { ride_id: p26RideId }
+      }),
+      callController(getOrCreateConversation, {
+        user: { id: p25ObserverId, name: 'Observer P22', role: 'student' },
+        body: { ride_id: p26RideId }
+      })
+    ]);
+    const [p26ConvRows] = await db.query('SELECT id FROM conversations WHERE ride_id = ? AND passenger_id = ?', [
+      p26RideId,
+      p25ObserverId
+    ]);
+    assert(
+      (chatRaceA.status === 200 || chatRaceA.status === 201) &&
+        (chatRaceB.status === 200 || chatRaceB.status === 201) &&
+        Number(chatRaceA.body?.conversation?.id) > 0 &&
+        Number(chatRaceA.body?.conversation?.id) === Number(chatRaceB.body?.conversation?.id) &&
+        Array.isArray(p26ConvRows) &&
+        p26ConvRows.length === 1,
+      'Concurrent getOrCreateConversation creates/returns a single conversation without 500'
+    );
+
+    // 3. Atomic single-use token consumption on resetPassword and verifyEmail
+    const p26ResetRaw = crypto.randomBytes(32).toString('hex');
+    const p26ResetHash = crypto.createHash('sha256').update(p26ResetRaw).digest('hex');
+    await db.query(
+      'INSERT INTO auth_tokens (user_id, purpose, token_hash, expires_at) VALUES (?, ?, ?, ?)',
+      [p25ObserverId, 'password_reset', p26ResetHash, formatDateToMySqlUtc(new Date(Date.now() + 1800000))]
+    );
+    const [resetRaceA, resetRaceB] = await Promise.all([
+      callController(resetPassword, {
+        body: {
+          token: p26ResetRaw,
+          new_password: 'ResetPass26!A',
+          confirm_new_password: 'ResetPass26!A'
+        }
+      }),
+      callController(resetPassword, {
+        body: {
+          token: p26ResetRaw,
+          new_password: 'ResetPass26!B',
+          confirm_new_password: 'ResetPass26!B'
+        }
+      })
+    ]);
+    const resetStatuses = [resetRaceA.status, resetRaceB.status].sort((a, b) => a - b);
+    assert(
+      resetStatuses[0] === 200 && resetStatuses[1] === 400,
+      'Concurrent resetPassword allows exactly one 200 and rejects replay with 400'
+    );
+
+    const p26VerifyRaw = crypto.randomBytes(32).toString('hex');
+    const p26VerifyHash = crypto.createHash('sha256').update(p26VerifyRaw).digest('hex');
+    await db.query(
+      'INSERT INTO auth_tokens (user_id, purpose, token_hash, expires_at) VALUES (?, ?, ?, ?)',
+      [p25ObserverId, 'email_verify', p26VerifyHash, formatDateToMySqlUtc(new Date(Date.now() + 1800000))]
+    );
+    const [verifyRaceA, verifyRaceB] = await Promise.all([
+      callController(verifyEmail, {
+        body: { token: p26VerifyRaw }
+      }),
+      callController(verifyEmail, {
+        body: { token: p26VerifyRaw }
+      })
+    ]);
+    const verifyStatuses = [verifyRaceA.status, verifyRaceB.status].sort((a, b) => a - b);
+    assert(
+      verifyStatuses[0] === 200 && verifyStatuses[1] === 400,
+      'Concurrent verifyEmail allows exactly one 200 and rejects replay with 400'
+    );
+
+    // 4. Safety report ride_id validation returns 400/404 instead of FK 500
+    const badRideReportCall = await callController(submitUserReport, {
+      user: { id: p25ObserverId, name: 'Observer P22', role: 'student' },
+      body: {
+        reported_user_id: nusratId,
+        ride_id: 'not-a-number',
+        reason: 'other',
+        description: 'Invalid ride_id format check.'
+      }
+    });
+    const missingRideReportCall = await callController(submitUserReport, {
+      user: { id: p25ObserverId, name: 'Observer P22', role: 'student' },
+      body: {
+        reported_user_id: nusratId,
+        ride_id: 9999999,
+        reason: 'other',
+        description: 'Non-existent ride_id FK guard check.'
+      }
+    });
+    assert(
+      badRideReportCall.status === 400 && missingRideReportCall.status === 404,
+      'submitUserReport rejects malformed ride_id with 400 and missing ride_id with 404'
     );
 
     // Production guard

@@ -28,6 +28,10 @@ export async function createRideRequest(req: AuthRequest, res: Response): Promis
   try {
     conn = await db.getConnection();
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({ success: false, message: error.message || 'Database service is temporarily unavailable. Please try again shortly.' });
+      return;
+    }
     console.error('createRideRequest error:', error);
     res.status(500).json({ success: false, message: 'Failed to submit ride request.' });
     return;
@@ -174,6 +178,14 @@ export async function createRideRequest(req: AuthRequest, res: Response): Promis
       res.status(409).json({ success: false, message: 'A request for this ride already exists.' });
       return;
     }
+    if (error?.code === 'ER_LOCK_DEADLOCK' || error?.errno === 1213) {
+      res.status(409).json({ success: false, message: 'Concurrent booking update conflict. Please try again.' });
+      return;
+    }
+    if (error?.code === 'ER_LOCK_WAIT_TIMEOUT' || error?.errno === 1205 || error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({ success: false, message: 'Database busy or unavailable. Please try again shortly.' });
+      return;
+    }
     console.error('createRideRequest error:', error);
     res.status(500).json({ success: false, message: 'Failed to submit ride request.' });
   } finally {
@@ -261,6 +273,10 @@ export async function getRideRequests(req: AuthRequest, res: Response): Promise<
       }
     });
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({ success: false, message: error.message || 'Database service is temporarily unavailable.' });
+      return;
+    }
     console.error('getRideRequests error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch ride requests.' });
   }
@@ -282,6 +298,10 @@ export async function acceptRequest(req: AuthRequest, res: Response): Promise<vo
   try {
     conn = await db.getConnection();
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({ success: false, message: error.message || 'Database service is temporarily unavailable. Please try again shortly.' });
+      return;
+    }
     console.error('acceptRequest error:', error);
     res.status(500).json({ success: false, message: 'Failed to accept ride request.' });
     return;
@@ -368,8 +388,8 @@ export async function acceptRequest(req: AuthRequest, res: Response): Promise<vo
 
     const [rideUpdateResult] = await conn.query(
       `UPDATE rides 
-       SET seats_available = seats_available - 1,
-           status = IF(seats_available - 1 = 0, 'full', status)
+       SET status = IF(seats_available = 1, 'full', status),
+           seats_available = seats_available - 1
        WHERE id = ? AND seats_available > 0`,
       [ride.id]
     );
@@ -425,6 +445,14 @@ export async function acceptRequest(req: AuthRequest, res: Response): Promise<vo
         console.error('acceptRequest rollback error:', rollbackErr);
       }
     }
+    if (error?.code === 'ER_LOCK_DEADLOCK' || error?.errno === 1213) {
+      res.status(409).json({ success: false, message: 'Concurrent booking update conflict. Please try again.' });
+      return;
+    }
+    if (error?.code === 'ER_LOCK_WAIT_TIMEOUT' || error?.errno === 1205 || error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({ success: false, message: 'Database busy or unavailable. Please try again shortly.' });
+      return;
+    }
     console.error('acceptRequest error:', error);
     res.status(500).json({ success: false, message: 'Failed to accept ride request.' });
   } finally {
@@ -448,6 +476,10 @@ export async function rejectRequest(req: AuthRequest, res: Response): Promise<vo
   try {
     conn = await db.getConnection();
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({ success: false, message: error.message || 'Database service is temporarily unavailable. Please try again shortly.' });
+      return;
+    }
     console.error('rejectRequest error:', error);
     res.status(500).json({ success: false, message: 'Failed to reject request.' });
     return;
@@ -525,6 +557,14 @@ export async function rejectRequest(req: AuthRequest, res: Response): Promise<vo
       } catch (rollbackErr) {
         console.error('rejectRequest rollback error:', rollbackErr);
       }
+    }
+    if (error?.code === 'ER_LOCK_DEADLOCK' || error?.errno === 1213) {
+      res.status(409).json({ success: false, message: 'Concurrent update conflict. Please try again.' });
+      return;
+    }
+    if (error?.code === 'ER_LOCK_WAIT_TIMEOUT' || error?.errno === 1205 || error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({ success: false, message: 'Database busy or unavailable. Please try again shortly.' });
+      return;
     }
     console.error('rejectRequest error:', error);
     res.status(500).json({ success: false, message: 'Failed to reject request.' });
@@ -690,7 +730,11 @@ export async function cancelRequest(req: AuthRequest, res: Response): Promise<vo
         console.error('cancelRequest rollback error:', rollbackErr);
       }
     }
-    if (error?.isDatabaseUnavailable || error?.status === 503) {
+    if (error?.code === 'ER_LOCK_DEADLOCK' || error?.errno === 1213) {
+      res.status(409).json({ success: false, message: 'Concurrent booking update conflict. Please try again.' });
+      return;
+    }
+    if (error?.code === 'ER_LOCK_WAIT_TIMEOUT' || error?.errno === 1205 || error?.isDatabaseUnavailable || error?.status === 503) {
       res.status(503).json({
         success: false,
         message: error.message || 'Database service is temporarily unavailable. Please try again shortly.'
@@ -797,6 +841,10 @@ export async function getMyRequests(req: AuthRequest, res: Response): Promise<vo
       }
     });
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({ success: false, message: error.message || 'Database service is temporarily unavailable.' });
+      return;
+    }
     console.error('getMyRequests error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch your ride requests.' });
   }

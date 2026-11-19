@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Shield,
   PhoneCall,
@@ -6,7 +6,9 @@ import {
   Trash2,
   Ban,
   Flag,
-  Unlock
+  Unlock,
+  AlertCircle,
+  RotateCcw
 } from 'lucide-react';
 import api from '../services/api.ts';
 import { EmergencyContact, UserBlock, UserReport } from '../types/index.ts';
@@ -26,34 +28,64 @@ export const SafetyPage: React.FC = () => {
   const [reportsHasMore, setReportsHasMore] = useState(false);
   const [loadingMoreReports, setLoadingMoreReports] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   // Add Contact Form
   const [name, setName] = useState('');
   const [relationship, setRelationship] = useState('');
   const [phone, setPhone] = useState('');
   const [savingContact, setSavingContact] = useState(false);
+  const [deletingContactId, setDeletingContactId] = useState<number | null>(null);
+  const [unblockingUserId, setUnblockingUserId] = useState<number | null>(null);
 
   const loadSafetyData = async () => {
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setLoadError(null);
+    if (contacts.length === 0 && blocks.length === 0 && reports.length === 0) {
+      setLoading(true);
+    }
     try {
       const [cRes, bRes, rRes] = await Promise.allSettled([
-        api.get('/safety/emergency-contacts'),
-        api.get('/safety/blocks', { params: { limit: 50, offset: 0 } }),
-        api.get('/safety/reports/mine', { params: { limit: 50, offset: 0 } })
+        api.get('/safety/emergency-contacts', { signal: controller.signal }),
+        api.get('/safety/blocks', { params: { limit: 50, offset: 0 }, signal: controller.signal }),
+        api.get('/safety/reports/mine', { params: { limit: 50, offset: 0 }, signal: controller.signal })
       ]);
+      if (controller.signal.aborted) return;
+
+      let failureCount = 0;
+      let firstErrorMsg: string | null = null;
 
       if (cRes.status === 'fulfilled' && cRes.value.data?.success) {
         setContacts(cRes.value.data.contacts || []);
+      } else if (cRes.status === 'rejected' && cRes.reason?.code !== 'ERR_CANCELED') {
+        failureCount++;
+        firstErrorMsg = firstErrorMsg || cRes.reason?.response?.data?.message || 'Failed to load safety data.';
       }
       if (bRes.status === 'fulfilled' && bRes.value.data?.success) {
         setBlocks(bRes.value.data.blocks || []);
         setBlocksHasMore(Boolean(bRes.value.data.pagination?.has_more));
+      } else if (bRes.status === 'rejected' && bRes.reason?.code !== 'ERR_CANCELED') {
+        failureCount++;
+        firstErrorMsg = firstErrorMsg || bRes.reason?.response?.data?.message || 'Failed to load safety data.';
       }
       if (rRes.status === 'fulfilled' && rRes.value.data?.success) {
         setReports(rRes.value.data.reports || []);
         setReportsHasMore(Boolean(rRes.value.data.pagination?.has_more));
+      } else if (rRes.status === 'rejected' && rRes.reason?.code !== 'ERR_CANCELED') {
+        failureCount++;
+        firstErrorMsg = firstErrorMsg || rRes.reason?.response?.data?.message || 'Failed to load safety data.';
+      }
+
+      if (failureCount > 0) {
+        setLoadError(firstErrorMsg || 'Some safety records could not be loaded.');
       }
     } finally {
-      setLoading(false);
+      if (!controller.signal.aborted) {
+        setLoading(false);
+      }
     }
   };
 
@@ -99,6 +131,9 @@ export const SafetyPage: React.FC = () => {
 
   useEffect(() => {
     loadSafetyData();
+    return () => {
+      abortRef.current?.abort();
+    };
   }, []);
 
   const handleAddContact = async (e: React.FormEvent) => {
@@ -125,6 +160,8 @@ export const SafetyPage: React.FC = () => {
   };
 
   const handleDeleteContact = async (contactId: number) => {
+    if (deletingContactId === contactId) return;
+    setDeletingContactId(contactId);
     try {
       const res = await api.delete(`/safety/emergency-contacts/${contactId}`);
       if (res.data?.success) {
@@ -133,10 +170,14 @@ export const SafetyPage: React.FC = () => {
       }
     } catch (err: any) {
       showToast(err.response?.data?.message || 'Failed to remove contact.', 'error');
+    } finally {
+      setDeletingContactId(null);
     }
   };
 
   const handleUnblock = async (blockedId: number) => {
+    if (unblockingUserId === blockedId) return;
+    setUnblockingUserId(blockedId);
     try {
       const res = await api.delete(`/safety/blocks/${blockedId}`);
       if (res.data?.success) {
@@ -145,6 +186,8 @@ export const SafetyPage: React.FC = () => {
       }
     } catch (err: any) {
       showToast(err.response?.data?.message || 'Failed to unblock user.', 'error');
+    } finally {
+      setUnblockingUserId(null);
     }
   };
 
@@ -169,6 +212,21 @@ export const SafetyPage: React.FC = () => {
       subtitle="Manage emergency contacts, blocked users, and submitted safety reports."
     >
       <div className="max-w-5xl space-y-6">
+        {loadError && (
+          <div className="p-3.5 rounded-xl bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-800 text-xs text-rose-700 dark:text-rose-300 flex items-center justify-between gap-3">
+            <span className="flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 shrink-0" />
+              {loadError}
+            </span>
+            <button
+              type="button"
+              onClick={loadSafetyData}
+              className="px-3 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-bold inline-flex items-center gap-1 cursor-pointer shrink-0"
+            >
+              <RotateCcw className="w-3 h-3" /> Retry
+            </button>
+          </div>
+        )}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
           {/* Emergency Contacts Section */}
           <div className="lg:col-span-7 bg-[#F5F7FC] dark:bg-[#1C2A40] p-6 rounded-2xl border border-[#D4DAE7] dark:border-[#34445E] shadow-xs space-y-5">
@@ -204,9 +262,12 @@ export const SafetyPage: React.FC = () => {
                       </a>
                     </div>
                     <button
+                      type="button"
+                      disabled={deletingContactId === c.id}
                       onClick={() => handleDeleteContact(c.id)}
                       title="Delete contact"
-                      className="p-1.5 rounded-lg text-[#626E86] dark:text-[#B0BCD0] hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/30 cursor-pointer"
+                      aria-label={`Delete emergency contact ${c.name}`}
+                      className="p-1.5 rounded-lg text-[#626E86] dark:text-[#B0BCD0] hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/30 cursor-pointer disabled:opacity-50"
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>
@@ -285,16 +346,19 @@ export const SafetyPage: React.FC = () => {
                       <p className="text-[11px] font-mono text-[#626E86] dark:text-[#B0BCD0]">{b.blocked_student_id}</p>
                     </div>
                     <button
+                      type="button"
+                      disabled={unblockingUserId === b.blocked_id}
                       onClick={() => handleUnblock(b.blocked_id)}
-                      className="px-3 py-1.5 rounded-lg border border-[#D4DAE7] dark:border-[#34445E] text-[#222B42] dark:text-[#F1F4FC] hover:bg-[#E8ECF4] dark:hover:bg-[#24334B] font-semibold flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                      className="px-3 py-1.5 rounded-lg border border-[#D4DAE7] dark:border-[#34445E] text-[#222B42] dark:text-[#F1F4FC] hover:bg-[#E8ECF4] dark:hover:bg-[#24334B] font-semibold flex items-center gap-1 cursor-pointer whitespace-nowrap disabled:opacity-50"
                     >
-                      <Unlock className="w-3 h-3" /> Unblock
+                      <Unlock className="w-3 h-3" /> {unblockingUserId === b.blocked_id ? 'Unblocking...' : 'Unblock'}
                     </button>
                   </div>
                 ))}
                 {blocksHasMore && (
                   <div className="pt-3 flex justify-center">
                     <button
+                      type="button"
                       onClick={loadMoreBlocks}
                       disabled={loadingMoreBlocks}
                       className="px-3.5 py-1.5 rounded-xl border border-[#D4DAE7] dark:border-[#34445E] text-xs font-bold text-[#515FC5] dark:text-[#818CF8] hover:bg-[#E8ECF4] dark:hover:bg-[#24334B] cursor-pointer disabled:opacity-50"
@@ -354,6 +418,7 @@ export const SafetyPage: React.FC = () => {
               {reportsHasMore && (
                 <div className="pt-3 flex justify-center">
                   <button
+                    type="button"
                     onClick={loadMoreReports}
                     disabled={loadingMoreReports}
                     className="px-4 py-1.5 rounded-xl border border-[#D4DAE7] dark:border-[#34445E] text-xs font-bold text-[#515FC5] dark:text-[#818CF8] hover:bg-[#E8ECF4] dark:hover:bg-[#24334B] cursor-pointer disabled:opacity-50"

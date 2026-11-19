@@ -16,8 +16,17 @@ export const NotificationBell: React.FC = () => {
         setOpen(false);
       }
     };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setOpen(false);
+      }
+    };
     document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
   }, []);
 
   const recent = notifications.slice(0, 6);
@@ -25,8 +34,11 @@ export const NotificationBell: React.FC = () => {
   return (
     <div ref={containerRef} className="relative">
       <button
+        type="button"
         onClick={() => setOpen((o) => !o)}
         aria-label="Notifications"
+        aria-expanded={open}
+        aria-haspopup="true"
         className="relative p-2 rounded-xl text-[#626E86] dark:text-[#B0BCD0] hover:bg-[#E8ECF4] dark:hover:bg-[#1C2A40] transition-colors cursor-pointer"
       >
         <Bell className="w-4 h-4" />
@@ -38,13 +50,14 @@ export const NotificationBell: React.FC = () => {
       </button>
 
       {open && (
-        <div className="absolute right-0 mt-2 w-80 max-w-[calc(100vw-2rem)] bg-white dark:bg-[#1C2A40] rounded-2xl shadow-xl border border-[#D4DAE7] dark:border-[#34445E] z-50 overflow-hidden text-xs">
+        <div className="fixed sm:absolute left-3 right-3 sm:left-auto sm:right-0 top-16 sm:top-auto sm:mt-2 sm:w-80 bg-white dark:bg-[#1C2A40] rounded-2xl shadow-xl border border-[#D4DAE7] dark:border-[#34445E] z-50 overflow-hidden text-xs">
           <div className="px-4 py-3 border-b border-[#D4DAE7] dark:border-[#34445E] flex items-center justify-between bg-[#F5F7FC] dark:bg-[#151F32]">
             <span className="font-bold text-[#222B42] dark:text-[#F1F4FC]">
               Notifications {unreadCount > 0 && `(${unreadCount})`}
             </span>
             {unreadCount > 0 && (
               <button
+                type="button"
                 onClick={() => markAllAsRead()}
                 className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#515FC5] dark:text-[#818CF8] hover:underline cursor-pointer"
               >
@@ -62,6 +75,7 @@ export const NotificationBell: React.FC = () => {
               recent.map((n) => (
                 <button
                   key={n.id}
+                  type="button"
                   onClick={async () => {
                     if (!isDbFlagTrue(n.is_read)) await markAsRead(n.id);
                     setOpen(false);

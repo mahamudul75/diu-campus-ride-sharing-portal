@@ -787,7 +787,7 @@ export const PassengerRequestDetailsPage: React.FC = () => {
                       />
                     </div>
 
-                    <div className="grid grid-cols-3 gap-3 text-xs">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
                       <div className="p-3 rounded-xl bg-white dark:bg-[#24334B] border border-[#D4DAE7] dark:border-[#34445E]">
                         <span className="text-[10px] font-bold uppercase text-[#626E86] dark:text-[#B0BCD0] block">
                           Your Fare

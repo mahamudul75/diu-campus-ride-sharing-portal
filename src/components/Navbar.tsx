@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import {
   Car,
@@ -30,6 +30,27 @@ export const Navbar: React.FC = () => {
   const location = useLocation();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [profileDropdownOpen, setProfileDropdownOpen] = useState(false);
+  const profileRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (profileRef.current && !profileRef.current.contains(e.target as Node)) {
+        setProfileDropdownOpen(false);
+      }
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setProfileDropdownOpen(false);
+        setMobileMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, []);
 
   const handleOfferRideClick = () => {
     if (!user) {
@@ -90,6 +111,7 @@ export const Navbar: React.FC = () => {
             </Link>
 
             <button
+              type="button"
               onClick={handleOfferRideClick}
               className="px-3 py-2 rounded-xl text-xs font-semibold text-[#66738A] dark:text-[#B4C0D3] hover:text-[#253149] dark:hover:text-[#F1F5FC] hover:bg-[#EEF0FA] dark:hover:bg-[#1B2940] transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
             >
@@ -209,9 +231,12 @@ export const Navbar: React.FC = () => {
                 </Link>
               </div>
             ) : (
-              <div className="relative">
+              <div className="relative" ref={profileRef}>
                 <button
+                  type="button"
                   onClick={() => setProfileDropdownOpen(!profileDropdownOpen)}
+                  aria-expanded={profileDropdownOpen}
+                  aria-haspopup="true"
                   className="flex items-center gap-2 p-1.5 pl-3 rounded-xl border border-[#DCE2EC] dark:border-[#34445D] hover:bg-[#EEF0FA] dark:hover:bg-[#1B2940] transition-all cursor-pointer"
                 >
                   <div className="text-left hidden sm:block">
@@ -318,6 +343,7 @@ export const Navbar: React.FC = () => {
                     <div className="border-t border-[#DCE2EC] dark:border-[#34445D] my-1"></div>
 
                     <button
+                      type="button"
                       onClick={() => logout()}
                       className="w-full flex items-center gap-2.5 px-4 py-2 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 cursor-pointer text-left"
                     >
@@ -332,7 +358,9 @@ export const Navbar: React.FC = () => {
             {/* Mobile Menu Button */}
             <div className="flex md:hidden">
               <button
+                type="button"
                 onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+                aria-expanded={mobileMenuOpen}
                 className="p-2 rounded-xl text-[#66738A] dark:text-[#B4C0D3] hover:bg-[#EEF0FA] dark:hover:bg-[#1B2940] focus:outline-hidden"
                 aria-label="Toggle navigation menu"
               >
@@ -356,6 +384,7 @@ export const Navbar: React.FC = () => {
           </Link>
 
           <button
+            type="button"
             onClick={() => {
               closeMenus();
               handleOfferRideClick();
@@ -453,6 +482,7 @@ export const Navbar: React.FC = () => {
 
               <div className="pt-2 border-t border-[#DCE2EC] dark:border-[#34445D]">
                 <button
+                  type="button"
                   onClick={() => {
                     closeMenus();
                     logout();

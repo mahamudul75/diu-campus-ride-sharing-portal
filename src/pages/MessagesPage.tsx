@@ -47,6 +47,7 @@ export const MessagesPage: React.FC = () => {
 
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
+  const [blockingPeer, setBlockingPeer] = useState(false);
   const [showReportModal, setShowReportModal] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const skipNextAutoScrollRef = useRef(false);
@@ -274,7 +275,8 @@ export const MessagesPage: React.FC = () => {
   };
 
   const handleBlockPeer = async () => {
-    if (!activeConversation) return;
+    if (!activeConversation || blockingPeer) return;
+    setBlockingPeer(true);
     try {
       const res = await api.post('/safety/blocks', { blocked_id: activeConversation.peer_id });
       if (res.data?.success) {
@@ -284,6 +286,8 @@ export const MessagesPage: React.FC = () => {
       }
     } catch (err: any) {
       showToast(err.response?.data?.message || 'Failed to block user.', 'error');
+    } finally {
+      setBlockingPeer(false);
     }
   };
 
@@ -346,6 +350,7 @@ export const MessagesPage: React.FC = () => {
               const isSelected = conv.id === selectedConvId;
               return (
                 <button
+                  type="button"
                   key={conv.id}
                   onClick={() => handleSelectConversation(conv.id)}
                   className={`w-full text-left p-4 transition-colors cursor-pointer space-y-1 ${
@@ -381,6 +386,7 @@ export const MessagesPage: React.FC = () => {
             {convHasMore && (
               <div className="p-3 text-center">
                 <button
+                  type="button"
                   onClick={() => fetchConversations(true)}
                   disabled={loadingMoreConvs}
                   className="w-full py-1.5 rounded-lg border border-[#D4DAE7] dark:border-[#34445E] text-[11px] font-bold text-[#515FC5] dark:text-[#818CF8] hover:bg-[#E8ECF4] dark:hover:bg-[#24334B] cursor-pointer disabled:opacity-50"
@@ -415,6 +421,7 @@ export const MessagesPage: React.FC = () => {
 
                   <div className="flex items-center gap-2 shrink-0">
                     <button
+                      type="button"
                       onClick={() => setShowReportModal(true)}
                       className="px-2.5 py-1.5 rounded-lg border border-[#D4DAE7] dark:border-[#34445E] text-[11px] font-semibold text-[#626E86] dark:text-[#B0BCD0] hover:text-rose-600 flex items-center gap-1 cursor-pointer whitespace-nowrap"
                     >
@@ -422,10 +429,12 @@ export const MessagesPage: React.FC = () => {
                     </button>
                     {!isBlockedPair && (
                       <button
+                        type="button"
+                        disabled={blockingPeer}
                         onClick={handleBlockPeer}
-                        className="px-2.5 py-1.5 rounded-lg border border-rose-200 dark:border-rose-800 text-[11px] font-semibold text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                        className="px-2.5 py-1.5 rounded-lg border border-rose-200 dark:border-rose-800 text-[11px] font-semibold text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 flex items-center gap-1 cursor-pointer whitespace-nowrap disabled:opacity-50"
                       >
-                        <Ban className="w-3 h-3" /> Block
+                        <Ban className="w-3 h-3" /> {blockingPeer ? 'Blocking...' : 'Block'}
                       </button>
                     )}
                   </div>
@@ -458,6 +467,7 @@ export const MessagesPage: React.FC = () => {
                       {messagesHasMore && (
                         <div className="flex justify-center pb-2">
                           <button
+                            type="button"
                             onClick={loadOlderMessages}
                             disabled={loadingOlderMessages}
                             className="px-3.5 py-1.5 rounded-xl border border-[#D4DAE7] dark:border-[#34445E] bg-white dark:bg-[#24334B] text-[11px] font-bold text-[#515FC5] dark:text-[#818CF8] hover:bg-[#E8ECF4] dark:hover:bg-[#1C2A40] cursor-pointer disabled:opacity-50"
@@ -515,7 +525,7 @@ export const MessagesPage: React.FC = () => {
                       onChange={(e) => setDraft(e.target.value)}
                       placeholder="Write a message about pickup point or timing..."
                       maxLength={1000}
-                      className="flex-1 text-xs px-4 py-2.5 bg-white dark:bg-[#24334B] border border-[#D4DAE7] dark:border-[#34445E] rounded-xl focus:outline-hidden focus:ring-2 focus:ring-[#515FC5] dark:focus:ring-[#818CF8] text-[#222B42] dark:text-[#F1F4FC]"
+                      className="flex-1 min-w-0 text-xs px-4 py-2.5 bg-white dark:bg-[#24334B] border border-[#D4DAE7] dark:border-[#34445E] rounded-xl focus:outline-hidden focus:ring-2 focus:ring-[#515FC5] dark:focus:ring-[#818CF8] text-[#222B42] dark:text-[#F1F4FC]"
                     />
                     <button
                       type="submit"

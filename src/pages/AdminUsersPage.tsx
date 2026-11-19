@@ -28,8 +28,10 @@ export const AdminUsersPage: React.FC = () => {
 
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [verifyingUserId, setVerifyingUserId] = useState<number | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [sortField, setSortField] = useState<'name' | 'student_id' | 'driver_status'>('name');
@@ -64,6 +66,11 @@ export const AdminUsersPage: React.FC = () => {
 
     if (append) {
       setLoadingMore(true);
+    } else {
+      if (preserveCount === undefined || users.length === 0) {
+        setLoading(true);
+      }
+      setError('');
     }
     try {
       const limit = append ? 100 : Math.min(200, Math.max(100, preserveCount || 100));
@@ -95,11 +102,15 @@ export const AdminUsersPage: React.FC = () => {
         return false;
       }
       if (seq === fetchSeqRef.current) {
-        console.warn('Failed to fetch users:', err);
+        if (!append) {
+          setError(err.response?.data?.message || 'Unable to load student directory.');
+        } else {
+          showToast(err.response?.data?.message || 'Failed to load more students.', 'error');
+        }
       }
       return false;
     } finally {
-      if (seq === fetchSeqRef.current) {
+      if (seq === fetchSeqRef.current && !controller.signal.aborted) {
         setLoading(false);
         setLoadingMore(false);
       }
@@ -109,6 +120,11 @@ export const AdminUsersPage: React.FC = () => {
   useEffect(() => {
     fetchUsers(false);
     setCurrentPage(1);
+    return () => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+    };
   }, [debouncedSearch]);
 
   const handleToggleBlock = async () => {
@@ -164,6 +180,8 @@ export const AdminUsersPage: React.FC = () => {
   };
 
   const handleToggleVerify = async (u: User) => {
+    if (verifyingUserId === u.id) return;
+    setVerifyingUserId(u.id);
     try {
       const nextState = isDbFlagTrue(u.student_verified) ? 0 : 1;
       const res = await api.patch(`/admin/users/${u.id}/verify`, {
@@ -175,6 +193,8 @@ export const AdminUsersPage: React.FC = () => {
       }
     } catch (err: any) {
       showToast(err.response?.data?.message || 'Verification update failed.', 'error');
+    } finally {
+      setVerifyingUserId(null);
     }
   };
 
@@ -223,6 +243,17 @@ export const AdminUsersPage: React.FC = () => {
         {loading ? (
           <div className="py-20 flex justify-center">
             <Spinner size="lg" />
+          </div>
+        ) : error ? (
+          <div className="bg-[#F5F7FC] dark:bg-[#1C2A40] rounded-2xl border border-rose-200 dark:border-rose-900/60 p-8 text-center space-y-3">
+            <p className="text-sm font-bold text-[#222B42] dark:text-[#F1F4FC]">{error}</p>
+            <button
+              type="button"
+              onClick={() => fetchUsers(false)}
+              className="px-4 py-2 rounded-xl bg-[#515FC5] hover:bg-[#434FA8] dark:bg-[#818CF8] dark:hover:bg-[#6366F1] text-white text-xs font-bold cursor-pointer"
+            >
+              Retry
+            </button>
           </div>
         ) : users.length === 0 ? (
           <EmptyState
@@ -357,9 +388,12 @@ export const AdminUsersPage: React.FC = () => {
                         <td className="py-3 px-4 text-right">
                           <div className="inline-flex items-center gap-1.5">
                             <button
+                              type="button"
                               onClick={() => handleToggleVerify(u)}
+                              disabled={verifyingUserId === u.id}
+                              aria-label={isDbFlagTrue(u.student_verified) ? 'Remove Student Verification' : 'Verify DIU Student'}
                               title={isDbFlagTrue(u.student_verified) ? 'Remove Student Verification' : 'Verify DIU Student'}
-                              className={`p-1.5 rounded-lg border transition-colors cursor-pointer ${
+                              className={`p-1.5 rounded-lg border transition-colors cursor-pointer disabled:opacity-40 ${
                                 isDbFlagTrue(u.student_verified)
                                   ? 'bg-[#DDE2FA]/70 dark:bg-[#24334B] text-[#515FC5] dark:text-[#818CF8] border-[#515FC5]/30 dark:border-[#818CF8]/30'
                                   : 'bg-white dark:bg-[#24334B] text-[#626E86] dark:text-[#B0BCD0] border-[#D4DAE7] dark:border-[#34445E] hover:text-[#515FC5]'
@@ -369,11 +403,13 @@ export const AdminUsersPage: React.FC = () => {
                             </button>
 
                             <button
+                              type="button"
                               onClick={() => {
                                 setTargetUser(u);
                                 setShowBlockModal(true);
                               }}
                               disabled={isCurrentAdmin}
+                              aria-label={isBlocked ? 'Unblock user' : 'Suspend user'}
                               title={isBlocked ? 'Unblock' : 'Suspend'}
                               className={`p-1.5 rounded-lg border transition-colors cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed ${
                                 isBlocked
@@ -385,11 +421,13 @@ export const AdminUsersPage: React.FC = () => {
                             </button>
 
                             <button
+                              type="button"
                               onClick={() => {
                                 setTargetUser(u);
                                 setShowDeleteModal(true);
                               }}
                               disabled={isCurrentAdmin}
+                              aria-label="Delete user"
                               title="Delete"
                               className="p-1.5 rounded-lg border border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 hover:bg-rose-100 dark:hover:bg-rose-900/50 transition-colors cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
                             >
@@ -413,6 +451,7 @@ export const AdminUsersPage: React.FC = () => {
                 <div className="flex items-center gap-2">
                   {hasMore && (
                     <button
+                      type="button"
                       onClick={() => fetchUsers(true)}
                       disabled={loadingMore}
                       className="px-2.5 py-1 rounded-lg border border-[#D4DAE7] dark:border-[#34445E] text-[11px] font-bold text-[#515FC5] dark:text-[#818CF8] hover:bg-[#E8ECF4] dark:hover:bg-[#24334B] cursor-pointer disabled:opacity-50"
@@ -421,6 +460,8 @@ export const AdminUsersPage: React.FC = () => {
                     </button>
                   )}
                   <button
+                    type="button"
+                    aria-label="Previous page"
                     onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
                     disabled={currentPage === 1}
                     className="p-1 rounded-lg border border-[#D4DAE7] dark:border-[#34445E] disabled:opacity-40 cursor-pointer hover:bg-[#E8ECF4] dark:hover:bg-[#24334B]"
@@ -428,6 +469,8 @@ export const AdminUsersPage: React.FC = () => {
                     <ChevronLeft className="w-4 h-4" />
                   </button>
                   <button
+                    type="button"
+                    aria-label="Next page"
                     onClick={async () => {
                       if (currentPage < totalPages) {
                         setCurrentPage((p) => p + 1);
@@ -467,6 +510,7 @@ export const AdminUsersPage: React.FC = () => {
           </p>
           <div className="flex items-center justify-end gap-2 pt-2">
             <button
+              type="button"
               onClick={() => {
                 setShowBlockModal(false);
                 setTargetUser(null);
@@ -476,9 +520,10 @@ export const AdminUsersPage: React.FC = () => {
               Cancel
             </button>
             <button
+              type="button"
               onClick={handleToggleBlock}
               disabled={processing}
-              className={`px-4 py-2 text-white text-xs font-bold rounded-xl shadow-xs cursor-pointer ${
+              className={`px-4 py-2 text-white text-xs font-bold rounded-xl shadow-xs cursor-pointer disabled:opacity-50 ${
                 isDbFlagTrue(targetUser?.is_blocked)
                   ? 'bg-[#515FC5] hover:bg-[#434FA8] dark:bg-[#818CF8] dark:hover:bg-[#6366F1]'
                   : 'bg-amber-600 hover:bg-amber-700'
@@ -505,6 +550,7 @@ export const AdminUsersPage: React.FC = () => {
           </p>
           <div className="flex items-center justify-end gap-2 pt-2">
             <button
+              type="button"
               onClick={() => {
                 setShowDeleteModal(false);
                 setTargetUser(null);
@@ -514,9 +560,10 @@ export const AdminUsersPage: React.FC = () => {
               Cancel
             </button>
             <button
+              type="button"
               onClick={handleDeleteUser}
               disabled={processing}
-              className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl shadow-xs cursor-pointer"
+              className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl shadow-xs cursor-pointer disabled:opacity-50"
             >
               {processing ? 'Deleting...' : 'Delete Account'}
             </button>

@@ -14,10 +14,12 @@ export const AdminReportsPage: React.FC = () => {
   const { showToast } = useToast();
   const [reports, setReports] = useState<UserReport[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [statusFilter, setStatusFilter] = useState<'all' | ReportStatus>('all');
   const fetchSeqRef = useRef(0);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   // Review Modal
   const [activeReport, setActiveReport] = useState<UserReport | null>(null);
@@ -28,10 +30,19 @@ export const AdminReportsPage: React.FC = () => {
 
   const fetchReports = async (append = false, preserveCount?: number) => {
     const seq = ++fetchSeqRef.current;
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     if (append) {
       setLoadingMore(true);
     } else {
-      setLoading(true);
+      if (preserveCount === undefined || reports.length === 0) {
+        setLoading(true);
+      }
+      setError('');
     }
     try {
       const limit = append ? 100 : Math.min(200, Math.max(100, preserveCount || 100));
@@ -40,7 +51,8 @@ export const AdminReportsPage: React.FC = () => {
           status: statusFilter === 'all' ? undefined : statusFilter,
           limit,
           offset: append ? reports.length : 0
-        }
+        },
+        signal: controller.signal
       });
       if (seq !== fetchSeqRef.current) return;
       if (res.data?.success) {
@@ -55,12 +67,19 @@ export const AdminReportsPage: React.FC = () => {
         }
         setHasMore(Boolean(res.data.pagination?.has_more) && incoming.length > 0);
       }
-    } catch (err) {
+    } catch (err: any) {
+      if (err?.name === 'CanceledError' || err?.code === 'ERR_CANCELED') {
+        return;
+      }
       if (seq === fetchSeqRef.current) {
-        console.warn('Failed to fetch reports:', err);
+        if (!append) {
+          setError(err.response?.data?.message || 'Unable to load safety reports.');
+        } else {
+          showToast(err.response?.data?.message || 'Failed to load more reports.', 'error');
+        }
       }
     } finally {
-      if (seq === fetchSeqRef.current) {
+      if (seq === fetchSeqRef.current && !controller.signal.aborted) {
         setLoading(false);
         setLoadingMore(false);
       }
@@ -69,6 +88,11 @@ export const AdminReportsPage: React.FC = () => {
 
   useEffect(() => {
     fetchReports(false);
+    return () => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+    };
   }, [statusFilter]);
 
   const openReviewModal = (report: UserReport) => {
@@ -114,6 +138,7 @@ export const AdminReportsPage: React.FC = () => {
         <div className="flex flex-wrap items-center gap-1 p-1 bg-[#E8ECF4] dark:bg-[#172235] rounded-xl border border-[#D4DAE7] dark:border-[#34445E] w-fit">
           {(['all', 'pending', 'under_review', 'resolved', 'dismissed'] as const).map((st) => (
             <button
+              type="button"
               key={st}
               onClick={() => setStatusFilter(st)}
               className={`px-3.5 py-1.5 text-xs font-bold rounded-lg capitalize transition-colors cursor-pointer whitespace-nowrap ${
@@ -130,6 +155,17 @@ export const AdminReportsPage: React.FC = () => {
         {loading ? (
           <div className="py-20 flex justify-center">
             <Spinner size="lg" />
+          </div>
+        ) : error ? (
+          <div className="bg-[#F5F7FC] dark:bg-[#1C2A40] rounded-2xl border border-rose-200 dark:border-rose-900/60 p-8 text-center space-y-3">
+            <p className="text-sm font-bold text-[#222B42] dark:text-[#F1F4FC]">{error}</p>
+            <button
+              type="button"
+              onClick={() => fetchReports(false)}
+              className="px-4 py-2 rounded-xl bg-[#515FC5] hover:bg-[#434FA8] dark:bg-[#818CF8] dark:hover:bg-[#6366F1] text-white text-xs font-bold cursor-pointer"
+            >
+              Retry
+            </button>
           </div>
         ) : filtered.length === 0 ? (
           <EmptyState
@@ -169,6 +205,7 @@ export const AdminReportsPage: React.FC = () => {
                   </div>
 
                   <button
+                    type="button"
                     onClick={() => openReviewModal(rp)}
                     className="px-3.5 py-1.5 rounded-xl bg-[#515FC5] hover:bg-[#434FA8] dark:bg-[#818CF8] dark:hover:bg-[#6B79F2] text-white dark:text-[#111827] text-xs font-bold shadow-xs cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors"
                   >
@@ -191,6 +228,7 @@ export const AdminReportsPage: React.FC = () => {
             {hasMore && (
               <div className="flex justify-center pt-1">
                 <button
+                  type="button"
                   onClick={() => fetchReports(true)}
                   disabled={loadingMore}
                   className="px-4 py-2 rounded-xl border border-[#D4DAE7] dark:border-[#34445E] bg-[#F5F7FC] dark:bg-[#1C2A40] hover:bg-[#E8ECF4] dark:hover:bg-[#24334B] text-xs font-bold text-[#515FC5] dark:text-[#818CF8] cursor-pointer disabled:opacity-50"

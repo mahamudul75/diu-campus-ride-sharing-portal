@@ -45,6 +45,7 @@ export const MyRequestsPage: React.FC = () => {
   const [cancelModalOpen, setCancelModalOpen] = useState(false);
   const [selectedReqToCancel, setSelectedReqToCancel] = useState<{ id: number; wasAccepted: boolean } | null>(null);
   const [cancelling, setCancelling] = useState(false);
+  const [openingChatRideId, setOpeningChatRideId] = useState<number | null>(null);
 
   // Rate & Report modals
   const [rateTarget, setRateTarget] = useState<{ rideId: number; driverId: number; driverName: string } | null>(null);
@@ -135,6 +136,8 @@ export const MyRequestsPage: React.FC = () => {
   };
 
   const handleMessageDriver = async (rideId: number) => {
+    if (openingChatRideId === rideId) return;
+    setOpeningChatRideId(rideId);
     try {
       const res = await api.post('/chat/conversations', { ride_id: rideId });
       if (res.data?.success && res.data.conversation?.id) {
@@ -142,6 +145,8 @@ export const MyRequestsPage: React.FC = () => {
       }
     } catch (err: any) {
       showToast(err.response?.data?.message || 'Unable to start chat.', 'error');
+    } finally {
+      setOpeningChatRideId(null);
     }
   };
 
@@ -187,6 +192,7 @@ export const MyRequestsPage: React.FC = () => {
             ] as const
           ).map((tab) => (
             <button
+              type="button"
               key={tab.key}
               onClick={() => setFilter(tab.key)}
               className={`px-3.5 py-1.5 text-xs font-bold rounded-lg transition-colors cursor-pointer whitespace-nowrap ${
@@ -254,6 +260,7 @@ export const MyRequestsPage: React.FC = () => {
                 </Link>
               ) : (
                 <button
+                  type="button"
                   onClick={() => setFilter('all')}
                   className="px-4 py-2 bg-[#515FC5] hover:bg-[#434FA8] dark:bg-[#818CF8] dark:hover:bg-[#6366F1] text-white text-xs font-bold rounded-xl shadow-xs cursor-pointer"
                 >
@@ -325,8 +332,10 @@ export const MyRequestsPage: React.FC = () => {
                     <div className="flex flex-wrap items-center gap-2">
                       {canMessage && (
                         <button
+                          type="button"
+                          disabled={openingChatRideId === req.ride_id}
                           onClick={() => handleMessageDriver(req.ride_id)}
-                          className="px-3 py-1.5 rounded-xl bg-[#DDE2FA]/70 hover:bg-[#DDE2FA] dark:bg-[#24334B] dark:hover:bg-[#172235] text-[#515FC5] dark:text-[#818CF8] text-xs font-bold transition-colors cursor-pointer flex items-center gap-1 whitespace-nowrap"
+                          className="px-3 py-1.5 rounded-xl bg-[#DDE2FA]/70 hover:bg-[#DDE2FA] dark:bg-[#24334B] dark:hover:bg-[#172235] text-[#515FC5] dark:text-[#818CF8] text-xs font-bold transition-colors cursor-pointer flex items-center gap-1 whitespace-nowrap disabled:opacity-50"
                         >
                           <MessageSquare className="w-3.5 h-3.5" /> Chat
                         </button>
@@ -334,6 +343,7 @@ export const MyRequestsPage: React.FC = () => {
 
                       {canRate && req.driver_id && (
                         <button
+                          type="button"
                           onClick={() =>
                             setRateTarget({
                               rideId: req.ride_id,
@@ -356,6 +366,7 @@ export const MyRequestsPage: React.FC = () => {
 
                       {req.driver_id && (
                         <button
+                          type="button"
                           onClick={() =>
                             setReportTarget({
                               rideId: req.ride_id,
@@ -372,6 +383,7 @@ export const MyRequestsPage: React.FC = () => {
 
                       {canCancel && (
                         <button
+                          type="button"
                           onClick={() => openCancelModal(req.id, isAccepted)}
                           className="px-3 py-1.5 rounded-xl bg-rose-50 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 hover:bg-rose-100 dark:hover:bg-rose-900/60 text-xs font-bold transition-colors cursor-pointer flex items-center gap-1 whitespace-nowrap"
                         >
@@ -405,8 +417,10 @@ export const MyRequestsPage: React.FC = () => {
                       </div>
 
                       <button
+                        type="button"
+                        disabled={openingChatRideId === req.ride_id}
                         onClick={() => handleMessageDriver(req.ride_id)}
-                        className="px-3 py-1.5 rounded-lg bg-[#515FC5] hover:bg-[#434FA8] dark:bg-[#818CF8] dark:hover:bg-[#6366F1] text-white text-xs font-bold transition-all shadow-xs flex items-center gap-1 self-start sm:self-center cursor-pointer"
+                        className="px-3 py-1.5 rounded-lg bg-[#515FC5] hover:bg-[#434FA8] dark:bg-[#818CF8] dark:hover:bg-[#6366F1] text-white text-xs font-bold transition-all shadow-xs flex items-center gap-1 self-start sm:self-center cursor-pointer disabled:opacity-50"
                       >
                         <MessageSquare className="w-3.5 h-3.5" />
                         Chat Now
@@ -424,6 +438,7 @@ export const MyRequestsPage: React.FC = () => {
             {hasMore && (
               <div className="flex justify-center pt-1">
                 <button
+                  type="button"
                   onClick={() => fetchRequests(true)}
                   disabled={loadingMore}
                   className="px-4 py-2 rounded-xl border border-[#D4DAE7] dark:border-[#34445E] bg-[#F5F7FC] dark:bg-[#1C2A40] hover:bg-[#E8ECF4] dark:hover:bg-[#24334B] text-xs font-bold text-[#515FC5] dark:text-[#818CF8] cursor-pointer disabled:opacity-50"
@@ -441,6 +456,7 @@ export const MyRequestsPage: React.FC = () => {
         isOpen={cancelModalOpen}
         onClose={() => setCancelModalOpen(false)}
         title="Cancel Ride Request"
+        preventClose={cancelling}
       >
         <div className="space-y-4">
           <p className="text-xs text-[#626E86] dark:text-[#B0BCD0] leading-relaxed">
@@ -450,12 +466,15 @@ export const MyRequestsPage: React.FC = () => {
           </p>
           <div className="flex items-center justify-end gap-2 pt-2">
             <button
+              type="button"
+              disabled={cancelling}
               onClick={() => setCancelModalOpen(false)}
-              className="px-3 py-1.5 rounded-xl border border-[#D4DAE7] dark:border-[#34445E] text-xs font-semibold text-[#626E86] dark:text-[#B0BCD0] hover:bg-[#E8ECF4] dark:hover:bg-[#172235] cursor-pointer"
+              className="px-3 py-1.5 rounded-xl border border-[#D4DAE7] dark:border-[#34445E] text-xs font-semibold text-[#626E86] dark:text-[#B0BCD0] hover:bg-[#E8ECF4] dark:hover:bg-[#172235] cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
             >
               Keep Request
             </button>
             <button
+              type="button"
               onClick={handleConfirmCancel}
               disabled={cancelling}
               className="px-3.5 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold shadow-xs transition-colors cursor-pointer disabled:opacity-50"

@@ -1880,6 +1880,9 @@ async function executeMemoryQuery(sql: string, params: any[] = []): Promise<[any
     if (lower.includes('where id = ?')) {
       const tok = memoryStore.authTokens.find((t) => t.id === Number(params[0]));
       if (tok) {
+        if (lower.includes('used_at is null') && tok.used_at !== null) {
+          return [{ insertId: 0, affectedRows: 0 }, []];
+        }
         tok.used_at = new Date().toISOString();
         return [{ insertId: 0, affectedRows: 1 }, []];
       }

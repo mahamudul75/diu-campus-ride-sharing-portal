@@ -2,7 +2,7 @@ import type { Response } from 'express';
 import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import type { AuthRequest } from '../middleware/auth.ts';
-import { db } from '../config/db.ts';
+import { db, type IDatabaseConnection } from '../config/db.ts';
 import { generateToken, setAuthCookie, clearAuthCookie } from '../utils/jwt.ts';
 import { isValidStudentId, isValidDiuEmail, isValidPhone, sanitizePhone, isNonEmptyString, isTruthyDbFlag } from '../utils/validators.ts';
 import { getUserExtendedFields } from '../utils/dbHelpers.ts';
@@ -11,6 +11,15 @@ import { sendTransactionalEmail, isSmtpConfigured } from '../utils/mailer.ts';
 
 function hashToken(rawToken: string): string {
   return crypto.createHash('sha256').update(rawToken).digest('hex');
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 function getAppBaseUrl(): string {
@@ -131,11 +140,12 @@ export async function register(req: AuthRequest, res: Response): Promise<void> {
     const rawVerifyToken = await createAuthToken(newUserId, 'email_verify', 24 * 60);
     if (rawVerifyToken && isSmtpConfigured()) {
       const verifyUrl = `${getAppBaseUrl()}/verify-email?token=${encodeURIComponent(rawVerifyToken)}`;
+      const safeHtmlName = escapeHtml(name.trim());
       const emailRes = await sendTransactionalEmail({
         to: cleanEmail,
         subject: 'Verify your DIU Campus Ride Sharing email',
         text: `Hello ${name.trim()},\n\nVerify your DIU student email by opening:\n${verifyUrl}\n\nThis link expires in 24 hours.`,
-        html: `<p>Hello ${name.trim()},</p><p>Verify your DIU student email address by clicking below:</p><p><a href="${verifyUrl}">Verify DIU Email</a></p><p>This link expires in 24 hours.</p>`
+        html: `<p>Hello ${safeHtmlName},</p><p>Verify your DIU student email address by clicking below:</p><p><a href="${verifyUrl}">Verify DIU Email</a></p><p>This link expires in 24 hours.</p>`
       });
       emailVerificationSent = emailRes.delivered;
     }
@@ -178,6 +188,10 @@ export async function register(req: AuthRequest, res: Response): Promise<void> {
       user: userPayload
     });
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({ success: false, message: error.message || 'Database service is temporarily unavailable.' });
+      return;
+    }
     if (error?.code === 'ER_DUP_ENTRY') {
       res.status(409).json({
         success: false,
@@ -287,6 +301,10 @@ export async function login(req: AuthRequest, res: Response): Promise<void> {
       user: safeUser
     });
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({ success: false, message: error.message || 'Database service is temporarily unavailable.' });
+      return;
+    }
     console.error('Login error:', error);
     res.status(500).json({ success: false, message: 'Login failed due to a server error.' });
   }
@@ -356,11 +374,12 @@ export async function requestPasswordReset(req: AuthRequest, res: Response): Pro
         return;
       }
       const resetUrl = `${getAppBaseUrl()}/reset-password?token=${encodeURIComponent(rawToken)}`;
+      const safeHtmlName = escapeHtml(String(user.name || 'Student'));
       await sendTransactionalEmail({
         to: user.email,
         subject: 'DIU Campus Ride Sharing — Password Reset',
         text: `Hello ${user.name},\n\nReset your password using this link (valid for 30 minutes):\n${resetUrl}`,
-        html: `<p>Hello ${user.name},</p><p>Click below to reset your password (expires in 30 minutes):</p><p><a href="${resetUrl}">Reset Password</a></p>`
+        html: `<p>Hello ${safeHtmlName},</p><p>Click below to reset your password (expires in 30 minutes):</p><p><a href="${resetUrl}">Reset Password</a></p>`
       });
     }
 
@@ -371,6 +390,10 @@ export async function requestPasswordReset(req: AuthRequest, res: Response): Pro
       message: 'If an active DIU account exists for this email, a password reset link has been sent.'
     });
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({ success: false, message: error.message || 'Database service is temporarily unavailable.' });
+      return;
+    }
     console.error('requestPasswordReset error:', error);
     res.status(500).json({ success: false, message: 'Failed to process password reset request.' });
   }
@@ -399,33 +422,83 @@ export async function resetPassword(req: AuthRequest, res: Response): Promise<vo
     }
 
     const tokenHash = hashToken(token.trim());
-    const [rows] = await db.query(
-      `SELECT id, user_id, expires_at FROM auth_tokens
-       WHERE token_hash = ? AND purpose = 'password_reset' AND used_at IS NULL`,
-      [tokenHash]
-    );
-
-    const record = Array.isArray(rows) && rows.length > 0 ? (rows[0] as any) : null;
-    if (!record) {
-      res.status(400).json({ success: false, message: 'Invalid or already used password reset token.' });
-      return;
-    }
-
-    const expiresAt = parseRideDateTime(record.expires_at);
-    if (!expiresAt || expiresAt.getTime() <= Date.now()) {
-      res.status(400).json({ success: false, message: 'This password reset token has expired.' });
-      return;
-    }
-
     const newHash = await bcrypt.hash(new_password, 10);
-    await db.query('UPDATE users SET password_hash = ? WHERE id = ?', [newHash, record.user_id]);
-    await db.query('UPDATE auth_tokens SET used_at = NOW() WHERE id = ?', [record.id]);
 
-    res.status(200).json({
-      success: true,
-      message: 'Your password has been reset successfully. You can now sign in.'
-    });
+    const conn: IDatabaseConnection = await db.getConnection();
+    let txActive = false;
+    try {
+      await conn.beginTransaction();
+      txActive = true;
+
+      const [rows] = await conn.query(
+        `SELECT id, user_id, expires_at FROM auth_tokens
+         WHERE token_hash = ? AND purpose = 'password_reset' AND used_at IS NULL
+         FOR UPDATE`,
+        [tokenHash]
+      );
+
+      const record = Array.isArray(rows) && rows.length > 0 ? (rows[0] as any) : null;
+      if (!record) {
+        await conn.rollback();
+        txActive = false;
+        res.status(400).json({ success: false, message: 'Invalid or already used password reset token.' });
+        return;
+      }
+
+      const expiresAt = parseRideDateTime(record.expires_at);
+      if (!expiresAt || expiresAt.getTime() <= Date.now()) {
+        await conn.rollback();
+        txActive = false;
+        res.status(400).json({ success: false, message: 'This password reset token has expired.' });
+        return;
+      }
+
+      const [consumeRes] = await conn.query(
+        'UPDATE auth_tokens SET used_at = NOW() WHERE id = ? AND used_at IS NULL',
+        [record.id]
+      );
+      if ((consumeRes as any)?.affectedRows !== 1) {
+        await conn.rollback();
+        txActive = false;
+        res.status(400).json({ success: false, message: 'Invalid or already used password reset token.' });
+        return;
+      }
+
+      const [userUpdateRes] = await conn.query('UPDATE users SET password_hash = ? WHERE id = ?', [
+        newHash,
+        record.user_id
+      ]);
+      if ((userUpdateRes as any)?.affectedRows !== 1) {
+        await conn.rollback();
+        txActive = false;
+        res.status(400).json({ success: false, message: 'Invalid or already used password reset token.' });
+        return;
+      }
+
+      await conn.commit();
+      txActive = false;
+
+      res.status(200).json({
+        success: true,
+        message: 'Your password has been reset successfully. You can now sign in.'
+      });
+    } catch (txErr: any) {
+      if (txActive) {
+        try {
+          await conn.rollback();
+        } catch (rollbackErr) {
+          console.error('resetPassword rollback error:', rollbackErr);
+        }
+      }
+      throw txErr;
+    } finally {
+      conn.release();
+    }
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({ success: false, message: error.message || 'Database service is temporarily unavailable.' });
+      return;
+    }
     if (error?.code === 'ER_NO_SUCH_TABLE') {
       res.status(503).json({ success: false, message: 'Password reset storage requires Migration 002.' });
       return;
@@ -469,11 +542,12 @@ export async function resendVerificationEmail(req: AuthRequest, res: Response): 
     }
 
     const verifyUrl = `${getAppBaseUrl()}/verify-email?token=${encodeURIComponent(rawToken)}`;
+    const safeHtmlName = escapeHtml(String(req.user.name || 'Student'));
     const result = await sendTransactionalEmail({
       to: req.user.email,
       subject: 'Verify your DIU Campus Ride Sharing email',
       text: `Hello ${req.user.name},\n\nClick to verify your email:\n${verifyUrl}`,
-      html: `<p>Hello ${req.user.name},</p><p><a href="${verifyUrl}">Verify DIU Email</a></p>`
+      html: `<p>Hello ${safeHtmlName},</p><p><a href="${verifyUrl}">Verify DIU Email</a></p>`
     });
 
     res.status(200).json({
@@ -485,6 +559,10 @@ export async function resendVerificationEmail(req: AuthRequest, res: Response): 
         : 'Unable to send verification email via SMTP right now.'
     });
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({ success: false, message: error.message || 'Database service is temporarily unavailable.' });
+      return;
+    }
     console.error('resendVerificationEmail error:', error);
     res.status(500).json({ success: false, message: 'Failed to resend verification email.' });
   }
@@ -499,32 +577,79 @@ export async function verifyEmail(req: AuthRequest, res: Response): Promise<void
     }
 
     const tokenHash = hashToken(rawToken.trim());
-    const [rows] = await db.query(
-      `SELECT id, user_id, expires_at FROM auth_tokens
-       WHERE token_hash = ? AND purpose = 'email_verify' AND used_at IS NULL`,
-      [tokenHash]
-    );
 
-    const record = Array.isArray(rows) && rows.length > 0 ? (rows[0] as any) : null;
-    if (!record) {
-      res.status(400).json({ success: false, message: 'Invalid or already used verification token.' });
-      return;
+    const conn: IDatabaseConnection = await db.getConnection();
+    let txActive = false;
+    try {
+      await conn.beginTransaction();
+      txActive = true;
+
+      const [rows] = await conn.query(
+        `SELECT id, user_id, expires_at FROM auth_tokens
+         WHERE token_hash = ? AND purpose = 'email_verify' AND used_at IS NULL
+         FOR UPDATE`,
+        [tokenHash]
+      );
+
+      const record = Array.isArray(rows) && rows.length > 0 ? (rows[0] as any) : null;
+      if (!record) {
+        await conn.rollback();
+        txActive = false;
+        res.status(400).json({ success: false, message: 'Invalid or already used verification token.' });
+        return;
+      }
+
+      const expiresAt = parseRideDateTime(record.expires_at);
+      if (!expiresAt || expiresAt.getTime() <= Date.now()) {
+        await conn.rollback();
+        txActive = false;
+        res.status(400).json({ success: false, message: 'This verification token has expired.' });
+        return;
+      }
+
+      const [consumeRes] = await conn.query(
+        'UPDATE auth_tokens SET used_at = NOW() WHERE id = ? AND used_at IS NULL',
+        [record.id]
+      );
+      if ((consumeRes as any)?.affectedRows !== 1) {
+        await conn.rollback();
+        txActive = false;
+        res.status(400).json({ success: false, message: 'Invalid or already used verification token.' });
+        return;
+      }
+
+      const [userUpdateRes] = await conn.query('UPDATE users SET email_verified = 1 WHERE id = ?', [record.user_id]);
+      if ((userUpdateRes as any)?.affectedRows !== 1) {
+        await conn.rollback();
+        txActive = false;
+        res.status(400).json({ success: false, message: 'Invalid or already used verification token.' });
+        return;
+      }
+
+      await conn.commit();
+      txActive = false;
+
+      res.status(200).json({
+        success: true,
+        message: 'Your DIU email address has been verified!'
+      });
+    } catch (txErr: any) {
+      if (txActive) {
+        try {
+          await conn.rollback();
+        } catch (rollbackErr) {
+          console.error('verifyEmail rollback error:', rollbackErr);
+        }
+      }
+      throw txErr;
+    } finally {
+      conn.release();
     }
-
-    const expiresAt = parseRideDateTime(record.expires_at);
-    if (!expiresAt || expiresAt.getTime() <= Date.now()) {
-      res.status(400).json({ success: false, message: 'This verification token has expired.' });
-      return;
-    }
-
-    await db.query('UPDATE users SET email_verified = 1 WHERE id = ?', [record.user_id]);
-    await db.query('UPDATE auth_tokens SET used_at = NOW() WHERE id = ?', [record.id]);
-
-    res.status(200).json({
-      success: true,
-      message: 'Your DIU email address has been verified!'
-    });
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({ success: false, message: error.message || 'Database service is temporarily unavailable.' });
+      return;
+    }
     if (error?.code === 'ER_NO_SUCH_TABLE' || error?.code === 'ER_BAD_FIELD_ERROR') {
       res.status(503).json({ success: false, message: 'Email verification requires Migration 002.' });
       return;
