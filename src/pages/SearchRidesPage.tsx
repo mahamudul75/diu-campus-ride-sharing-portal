@@ -8,7 +8,10 @@ import {
   Calendar,
   RotateCcw,
   Map as MapIcon,
-  AlertCircle
+  AlertCircle,
+  LocateFixed,
+  Loader2,
+  X
 } from 'lucide-react';
 import axios from 'axios';
 import api from '../services/api.ts';
@@ -39,14 +42,19 @@ export const SearchRidesPage: React.FC = () => {
   const [selectedRide, setSelectedRide] = useState<Ride | null>(null);
   const [viewMode, setViewMode] = useState<'split' | 'list' | 'map'>('split');
   const [tileError, setTileError] = useState(false);
+  const [isLocating, setIsLocating] = useState(false);
+  const [locationError, setLocationError] = useState<string | null>(null);
   const fetchSeqRef = useRef(0);
   const fetchAbortRef = useRef<AbortController | null>(null);
+  const isMountedRef = useRef(true);
+  const locateSeqRef = useRef(0);
 
   // Leaflet map refs
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
   const markersLayerRef = useRef<L.LayerGroup | null>(null);
   const tileLayerRef = useRef<ResilientTileLayerHandle | null>(null);
+  const userLocationMarkerRef = useRef<L.Marker | null>(null);
 
   const fetchRides = async (append = false) => {
     const seq = ++fetchSeqRef.current;
@@ -142,9 +150,95 @@ export const SearchRidesPage: React.FC = () => {
     setSearchParams({});
   };
 
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      locateSeqRef.current += 1;
+    };
+  }, []);
+
+  const createUserLocationIcon = () => {
+    return L.divIcon({
+      className: 'custom-map-marker',
+      html: `
+        <div style="position: relative; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center;">
+          <span style="position: absolute; inset: 0; border-radius: 9999px; background-color: rgba(37, 99, 235, 0.25);"></span>
+          <span style="position: relative; width: 14px; height: 14px; border-radius: 9999px; background-color: #2563EB; border: 2.5px solid #FFFFFF; box-shadow: 0 2px 8px rgba(37, 99, 235, 0.55);"></span>
+        </div>
+      `,
+      iconSize: [28, 28],
+      iconAnchor: [14, 14],
+      popupAnchor: [0, -14]
+    });
+  };
+
+  const getGeolocationErrorMessage = (err: GeolocationPositionError) => {
+    switch (err.code) {
+      case 1:
+        return 'Location permission denied. Please allow location access in your browser settings.';
+      case 2:
+        return 'Your current location is unavailable. Please check your device GPS or network connection.';
+      case 3:
+        return 'Location request timed out. Please try again.';
+      default:
+        return 'Unable to detect your current location. Please try again.';
+    }
+  };
+
+  const handleMyLocation = () => {
+    if (isLocating) return;
+
+    if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      setLocationError('Geolocation is not supported by your browser.');
+      return;
+    }
+
+    const seq = ++locateSeqRef.current;
+    setIsLocating(true);
+    setLocationError(null);
+
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        if (!isMountedRef.current || seq !== locateSeqRef.current) return;
+        setIsLocating(false);
+
+        const map = mapInstanceRef.current;
+        if (!map) return;
+
+        const { latitude, longitude } = position.coords;
+
+        if (userLocationMarkerRef.current) {
+          userLocationMarkerRef.current.setLatLng([latitude, longitude]);
+        } else {
+          userLocationMarkerRef.current = L.marker([latitude, longitude], {
+            icon: createUserLocationIcon(),
+            zIndexOffset: 900
+          })
+            .addTo(map)
+            .bindPopup('Your Location');
+        }
+
+        map.flyTo([latitude, longitude], 15, { animate: true });
+      },
+      (err) => {
+        if (!isMountedRef.current || seq !== locateSeqRef.current) return;
+        setIsLocating(false);
+        setLocationError(getGeolocationErrorMessage(err));
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }
+    );
+  };
+
   // Initialize Leaflet Map
   useEffect(() => {
     if (viewMode === 'list') {
+      locateSeqRef.current += 1;
+      setIsLocating(false);
+      if (userLocationMarkerRef.current) {
+        userLocationMarkerRef.current.remove();
+        userLocationMarkerRef.current = null;
+      }
       if (mapInstanceRef.current) {
         mapInstanceRef.current.remove();
         mapInstanceRef.current = null;
@@ -184,7 +278,12 @@ export const SearchRidesPage: React.FC = () => {
     }
 
     return () => {
+      locateSeqRef.current += 1;
       resizeObserver?.disconnect();
+      if (userLocationMarkerRef.current) {
+        userLocationMarkerRef.current.remove();
+        userLocationMarkerRef.current = null;
+      }
       if (tileLayerRef.current) {
         tileLayerRef.current.remove();
         tileLayerRef.current = null;
@@ -639,6 +738,42 @@ export const SearchRidesPage: React.FC = () => {
                 ref={mapContainerRef}
                 style={{ height: viewMode === 'split' ? '720px' : '800px', width: '100%' }}
               />
+              {/* My Location Button & Error Notice */}
+              <div className="absolute top-3 right-3 z-[400] flex flex-col items-end gap-2 max-w-[calc(100%-4rem)]">
+                <button
+                  type="button"
+                  onClick={handleMyLocation}
+                  disabled={isLocating}
+                  aria-busy={isLocating}
+                  aria-label="Center map on my location"
+                  className="px-3 py-2 bg-[#FFFFFF]/95 dark:bg-[#1B2940]/95 hover:bg-[#EEF0FA] dark:hover:bg-[#243750] disabled:opacity-60 disabled:cursor-not-allowed backdrop-blur-md text-[#253149] dark:text-[#F1F5FC] border border-[#DCE2EC] dark:border-[#34445D] rounded-xl shadow-md text-[11px] font-bold flex items-center gap-1.5 transition-all cursor-pointer"
+                >
+                  {isLocating ? (
+                    <Loader2 className="w-3.5 h-3.5 text-[#4F5FC9] dark:text-[#818CF8] animate-spin" />
+                  ) : (
+                    <LocateFixed className="w-3.5 h-3.5 text-[#2563EB] dark:text-[#60A5FA]" />
+                  )}
+                  <span>{isLocating ? 'Locating...' : 'My Location'}</span>
+                </button>
+
+                {locationError && (
+                  <div
+                    role="alert"
+                    className="max-w-xs bg-rose-50/95 dark:bg-rose-950/95 backdrop-blur-sm border border-rose-200 dark:border-rose-800 text-rose-900 dark:text-rose-200 text-[11px] px-3 py-2 rounded-xl shadow-lg flex items-start gap-2"
+                  >
+                    <AlertCircle className="w-3.5 h-3.5 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
+                    <span className="leading-snug flex-1">{locationError}</span>
+                    <button
+                      type="button"
+                      onClick={() => setLocationError(null)}
+                      aria-label="Dismiss location error"
+                      className="text-rose-500 hover:text-rose-700 dark:text-rose-300 dark:hover:text-white shrink-0 cursor-pointer"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                )}
+              </div>
               {tileError && (
                 <div className="absolute bottom-3 left-3 right-3 z-[400] bg-amber-50/95 dark:bg-amber-950/95 backdrop-blur-sm border border-amber-200 dark:border-amber-900 text-amber-900 dark:text-amber-200 text-[10px] px-3 py-2 rounded-lg shadow-lg flex items-center justify-between gap-2">
                   <div className="flex items-center gap-2 min-w-0">

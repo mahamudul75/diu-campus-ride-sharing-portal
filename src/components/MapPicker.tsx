@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
-import { Search, MapPin, AlertCircle, Navigation, Car, Clock, X, RotateCcw } from 'lucide-react';
+import { Search, MapPin, AlertCircle, Navigation, Car, Clock, X, RotateCcw, LocateFixed, Loader2 } from 'lucide-react';
 import axios from 'axios';
 import { createResilientTileLayer, ResilientTileLayerHandle } from '../utils/mapConfig.ts';
 import { useTheme } from '../context/ThemeContext.tsx';
@@ -63,6 +63,7 @@ export const MapPicker: React.FC<MapPickerProps> = ({
   const pickupMarkerRef = useRef<L.Marker | null>(null);
   const destMarkerRef = useRef<L.Marker | null>(null);
   const polylineRef = useRef<L.Polyline | null>(null);
+  const userLocationMarkerRef = useRef<L.Marker | null>(null);
 
   const [activeSelection, setActiveSelection] = useState<'pickup' | 'dest'>('pickup');
   const [pickup, setPickup] = useState<LocationPoint | null>(initialPickup || null);
@@ -77,11 +78,15 @@ export const MapPicker: React.FC<MapPickerProps> = ({
   const [isStraightLineFallback, setIsStraightLineFallback] = useState(false);
   const [isRouting, setIsRouting] = useState(false);
   const [tileError, setTileError] = useState(false);
+  const [isLocating, setIsLocating] = useState(false);
+  const [locationError, setLocationError] = useState<string | null>(null);
 
   const activeSelectionRef = useRef(activeSelection);
   const onPickupChangeRef = useRef(onPickupChange);
   const onDestChangeRef = useRef(onDestChange);
   const isDarkRef = useRef(isDark);
+  const isMountedRef = useRef(true);
+  const locateSeqRef = useRef(0);
   const routeAbortRef = useRef<AbortController | null>(null);
   const routeSeqRef = useRef(0);
   const reverseAbortRef = useRef<AbortController | null>(null);
@@ -104,6 +109,21 @@ export const MapPicker: React.FC<MapPickerProps> = ({
       iconSize: [32, 32],
       iconAnchor: [16, 32],
       popupAnchor: [0, -32]
+    });
+  };
+
+  const createUserLocationIcon = () => {
+    return L.divIcon({
+      className: 'custom-map-marker',
+      html: `
+        <div style="position: relative; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center;">
+          <span style="position: absolute; inset: 0; border-radius: 9999px; background-color: rgba(37, 99, 235, 0.25);"></span>
+          <span style="position: relative; width: 14px; height: 14px; border-radius: 9999px; background-color: #2563EB; border: 2.5px solid #FFFFFF; box-shadow: 0 2px 8px rgba(37, 99, 235, 0.55);"></span>
+        </div>
+      `,
+      iconSize: [28, 28],
+      iconAnchor: [14, 14],
+      popupAnchor: [0, -14]
     });
   };
 
@@ -329,6 +349,7 @@ export const MapPicker: React.FC<MapPickerProps> = ({
   };
 
   useEffect(() => {
+    isMountedRef.current = true;
     if (!mapContainerRef.current || mapInstanceRef.current) return;
 
     const map = L.map(mapContainerRef.current, {
@@ -387,10 +408,16 @@ export const MapPicker: React.FC<MapPickerProps> = ({
     }
 
     return () => {
+      isMountedRef.current = false;
+      locateSeqRef.current += 1;
       resizeObserver?.disconnect();
       routeAbortRef.current?.abort();
       reverseAbortRef.current?.abort();
       searchAbortRef.current?.abort();
+      if (userLocationMarkerRef.current) {
+        userLocationMarkerRef.current.remove();
+        userLocationMarkerRef.current = null;
+      }
       if (tileLayerRef.current) {
         tileLayerRef.current.remove();
         tileLayerRef.current = null;
@@ -505,6 +532,63 @@ export const MapPicker: React.FC<MapPickerProps> = ({
     if (mapInstanceRef.current) {
       mapInstanceRef.current.flyTo([presetPoint.lat, presetPoint.lng], 14, { animate: true });
     }
+  };
+
+  const getGeolocationErrorMessage = (err: GeolocationPositionError) => {
+    switch (err.code) {
+      case 1:
+        return 'Location permission denied. Please allow location access in your browser settings.';
+      case 2:
+        return 'Your current location is unavailable. Please check your device GPS or network connection.';
+      case 3:
+        return 'Location request timed out. Please try again.';
+      default:
+        return 'Unable to detect your current location. Please try again.';
+    }
+  };
+
+  const handleMyLocation = () => {
+    if (isLocating) return;
+
+    if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      setLocationError('Geolocation is not supported by your browser.');
+      return;
+    }
+
+    const seq = ++locateSeqRef.current;
+    setIsLocating(true);
+    setLocationError(null);
+
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        if (!isMountedRef.current || seq !== locateSeqRef.current) return;
+        setIsLocating(false);
+
+        const map = mapInstanceRef.current;
+        if (!map) return;
+
+        const { latitude, longitude } = position.coords;
+
+        if (userLocationMarkerRef.current) {
+          userLocationMarkerRef.current.setLatLng([latitude, longitude]);
+        } else {
+          userLocationMarkerRef.current = L.marker([latitude, longitude], {
+            icon: createUserLocationIcon(),
+            zIndexOffset: 900
+          })
+            .addTo(map)
+            .bindPopup('Your Location');
+        }
+
+        map.flyTo([latitude, longitude], 15, { animate: true });
+      },
+      (err) => {
+        if (!isMountedRef.current || seq !== locateSeqRef.current) return;
+        setIsLocating(false);
+        setLocationError(getGeolocationErrorMessage(err));
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }
+    );
   };
 
   const handleUseCurrentLocation = () => {
@@ -674,51 +758,91 @@ export const MapPicker: React.FC<MapPickerProps> = ({
           </div>
         </div>
 
-        {/* Selected Locations Info Cards (Bottom) */}
-        <div className="absolute bottom-4 left-4 right-4 z-20 grid grid-cols-1 sm:grid-cols-2 gap-3 pointer-events-none">
-          {pickup && (
-            <div className="pointer-events-auto bg-white/95 dark:bg-[#1C2A40]/95 backdrop-blur-md p-3.5 rounded-2xl border border-[#515FC5]/40 dark:border-[#818CF8]/40 shadow-xl flex items-start gap-3">
-              <div className="w-8 h-8 rounded-xl bg-[#DDE2FA]/50 dark:bg-[#24334B] flex items-center justify-center shrink-0">
-                <MapPin className="w-4 h-4 text-[#515FC5] dark:text-[#818CF8]" />
+        {/* Bottom Overlay Stack: My Location Button & Selected Locations Info Cards */}
+        <div className="absolute bottom-6 left-4 right-4 z-20 flex flex-col gap-3 pointer-events-none">
+          <div className="flex flex-col items-end gap-2 pointer-events-none">
+            {locationError && (
+              <div
+                role="alert"
+                className="pointer-events-auto max-w-xs bg-rose-50/95 dark:bg-rose-950/95 backdrop-blur-sm border border-rose-200 dark:border-rose-800 text-rose-900 dark:text-rose-200 text-[11px] px-3 py-2 rounded-xl shadow-lg flex items-start gap-2"
+              >
+                <AlertCircle className="w-3.5 h-3.5 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
+                <span className="leading-snug flex-1">{locationError}</span>
+                <button
+                  type="button"
+                  onClick={() => setLocationError(null)}
+                  aria-label="Dismiss location error"
+                  className="text-rose-500 hover:text-rose-700 dark:text-rose-300 dark:hover:text-white shrink-0 cursor-pointer"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
               </div>
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-[10px] font-black text-[#515FC5] dark:text-[#818CF8] uppercase tracking-widest">Pickup</span>
-                  <button 
-                    type="button" 
-                    aria-label="Clear pickup location"
-                    onClick={() => { setPickup(null); onPickupChange({name: '', lat: 0, lng: 0}); }}
-                    className="text-[#626E86] hover:text-rose-500 transition-colors cursor-pointer"
-                  >
-                    <X className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-                <p className="text-xs font-bold text-[#222B42] dark:text-[#F1F4FC] truncate mt-0.5">{pickup.name}</p>
-                <p className="text-[10px] text-[#626E86] dark:text-[#B0BCD0] font-mono mt-0.5">{pickup.lat.toFixed(5)}, {pickup.lng.toFixed(5)}</p>
-              </div>
-            </div>
-          )}
+            )}
 
-          {dest && (
-            <div className="pointer-events-auto bg-white/95 dark:bg-[#1C2A40]/95 backdrop-blur-md p-3.5 rounded-2xl border border-[#8175D5]/40 dark:border-[#A78BFA]/40 shadow-xl flex items-start gap-3">
-              <div className="w-8 h-8 rounded-xl bg-[#DDE2FA]/50 dark:bg-[#24334B] flex items-center justify-center shrink-0">
-                <Navigation className="w-4 h-4 text-[#8175D5] dark:text-[#A78BFA]" />
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-[10px] font-black text-[#8175D5] dark:text-[#A78BFA] uppercase tracking-widest">Destination</span>
-                  <button 
-                    type="button" 
-                    aria-label="Clear destination location"
-                    onClick={() => { setDest(null); onDestChange({name: '', lat: 0, lng: 0}); }}
-                    className="text-[#626E86] hover:text-rose-500 transition-colors cursor-pointer"
-                  >
-                    <X className="w-3.5 h-3.5" />
-                  </button>
+            <button
+              type="button"
+              onClick={handleMyLocation}
+              disabled={isLocating}
+              aria-busy={isLocating}
+              aria-label="Center map on my location"
+              className="pointer-events-auto px-3 py-2 bg-white/95 dark:bg-[#1C2A40]/95 hover:bg-[#EEF0FA] dark:hover:bg-[#24334B] disabled:opacity-60 disabled:cursor-not-allowed backdrop-blur-md text-[#222B42] dark:text-[#F1F4FC] border border-[#D4DAE7] dark:border-[#34445E] rounded-xl shadow-lg text-[11px] font-bold flex items-center gap-1.5 transition-all cursor-pointer"
+            >
+              {isLocating ? (
+                <Loader2 className="w-3.5 h-3.5 text-[#515FC5] dark:text-[#818CF8] animate-spin" />
+              ) : (
+                <LocateFixed className="w-3.5 h-3.5 text-[#2563EB] dark:text-[#60A5FA]" />
+              )}
+              <span>{isLocating ? 'Locating...' : 'My Location'}</span>
+            </button>
+          </div>
+
+          {(pickup || dest) && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pointer-events-none">
+              {pickup && (
+                <div className="pointer-events-auto bg-white/95 dark:bg-[#1C2A40]/95 backdrop-blur-md p-3.5 rounded-2xl border border-[#515FC5]/40 dark:border-[#818CF8]/40 shadow-xl flex items-start gap-3">
+                  <div className="w-8 h-8 rounded-xl bg-[#DDE2FA]/50 dark:bg-[#24334B] flex items-center justify-center shrink-0">
+                    <MapPin className="w-4 h-4 text-[#515FC5] dark:text-[#818CF8]" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[10px] font-black text-[#515FC5] dark:text-[#818CF8] uppercase tracking-widest">Pickup</span>
+                      <button 
+                        type="button" 
+                        aria-label="Clear pickup location"
+                        onClick={() => { setPickup(null); onPickupChange({name: '', lat: 0, lng: 0}); }}
+                        className="text-[#626E86] hover:text-rose-500 transition-colors cursor-pointer"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                    <p className="text-xs font-bold text-[#222B42] dark:text-[#F1F4FC] truncate mt-0.5">{pickup.name}</p>
+                    <p className="text-[10px] text-[#626E86] dark:text-[#B0BCD0] font-mono mt-0.5">{pickup.lat.toFixed(5)}, {pickup.lng.toFixed(5)}</p>
+                  </div>
                 </div>
-                <p className="text-xs font-bold text-[#222B42] dark:text-[#F1F4FC] truncate mt-0.5">{dest.name}</p>
-                <p className="text-[10px] text-[#626E86] dark:text-[#B0BCD0] font-mono mt-0.5">{dest.lat.toFixed(5)}, {dest.lng.toFixed(5)}</p>
-              </div>
+              )}
+
+              {dest && (
+                <div className="pointer-events-auto bg-white/95 dark:bg-[#1C2A40]/95 backdrop-blur-md p-3.5 rounded-2xl border border-[#8175D5]/40 dark:border-[#A78BFA]/40 shadow-xl flex items-start gap-3">
+                  <div className="w-8 h-8 rounded-xl bg-[#DDE2FA]/50 dark:bg-[#24334B] flex items-center justify-center shrink-0">
+                    <Navigation className="w-4 h-4 text-[#8175D5] dark:text-[#A78BFA]" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[10px] font-black text-[#8175D5] dark:text-[#A78BFA] uppercase tracking-widest">Destination</span>
+                      <button 
+                        type="button" 
+                        aria-label="Clear destination location"
+                        onClick={() => { setDest(null); onDestChange({name: '', lat: 0, lng: 0}); }}
+                        className="text-[#626E86] hover:text-rose-500 transition-colors cursor-pointer"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                    <p className="text-xs font-bold text-[#222B42] dark:text-[#F1F4FC] truncate mt-0.5">{dest.name}</p>
+                    <p className="text-[10px] text-[#626E86] dark:text-[#B0BCD0] font-mono mt-0.5">{dest.lat.toFixed(5)}, {dest.lng.toFixed(5)}</p>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
