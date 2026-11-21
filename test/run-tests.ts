@@ -25,7 +25,14 @@ import apiRouter from '../server/src/routes/index.ts';
 import { getConversations, getOrCreateConversation } from '../server/src/controllers/chatController.ts';
 import { createRideRequest, acceptRequest } from '../server/src/controllers/requestController.ts';
 import { resetPassword, verifyEmail } from '../server/src/controllers/authController.ts';
-import { submitUserReport } from '../server/src/controllers/safetyController.ts';
+import {
+  submitUserReport,
+  addEmergencyContact,
+  blockUser
+} from '../server/src/controllers/safetyController.ts';
+import { applyForDriver } from '../server/src/controllers/driverController.ts';
+import { approveDriver, rejectDriver } from '../server/src/controllers/adminController.ts';
+import { shouldClearSessionOnAuthCheckError } from '../src/context/AuthContext.tsx';
 import {
   createPassengerRequest,
   handlePassengerRequestError
@@ -3865,6 +3872,295 @@ async function runTests() {
       resetDbPoolForTesting();
     }
     assert(refusedInProd, 'Production environment strictly refuses in-memory fallback');
+
+    // -----------------------------------------------------------------------
+    // PHASE 27: Audit Follow-Up Concurrency & Session Resilience Guards
+    // -----------------------------------------------------------------------
+    console.log('\n[Phase 27] Audit Follow-Up Concurrency & Session Resilience Guards');
+
+    // Re-initialize isolated memory DB cleanly after Phase 26's resetDbPoolForTesting()
+    await enableIsolatedTestMemoryDb();
+
+    // 1. AuthContext session check helper only clears session on 401/403
+    assert(
+      shouldClearSessionOnAuthCheckError({ response: { status: 401 } }) === true &&
+        shouldClearSessionOnAuthCheckError({ response: { status: 403 } }) === true &&
+        shouldClearSessionOnAuthCheckError({ response: { status: 503 } }) === false &&
+        shouldClearSessionOnAuthCheckError({ response: { status: 500 } }) === false &&
+        shouldClearSessionOnAuthCheckError({ code: 'ERR_NETWORK', message: 'Network Error' }) === false &&
+        shouldClearSessionOnAuthCheckError({ name: 'CanceledError', code: 'ERR_CANCELED' }) === false,
+      'AuthContext clears session only on 401/403 and preserves session on 503, 500, network, and abort errors'
+    );
+
+    // Seed clean users for Phase 27 concurrency tests
+    const p27PassHash = await bcrypt.hash('Pass27!123', 10);
+    const [p27Student1Res] = await db.query(
+      `INSERT INTO users (student_id, name, email, phone, password_hash, role, driver_status, is_blocked)
+       VALUES (?, ?, ?, ?, ?, 'student', 'none', 0)`,
+      ['221-15-701', 'P27 Applicant One', 'p27one@diu.edu.bd', '+8801711000701', p27PassHash]
+    );
+    const p27Student1Id = Number((p27Student1Res as any).insertId);
+
+    const [p27Student2Res] = await db.query(
+      `INSERT INTO users (student_id, name, email, phone, password_hash, role, driver_status, is_blocked)
+       VALUES (?, ?, ?, ?, ?, 'student', 'none', 0)`,
+      ['221-15-702', 'P27 Applicant Two', 'p27two@diu.edu.bd', '+8801711000702', p27PassHash]
+    );
+    const p27Student2Id = Number((p27Student2Res as any).insertId);
+
+    const [p27AdminRows] = await db.query("SELECT id FROM users WHERE role = 'admin' LIMIT 1");
+    const p27AdminId = Number((p27AdminRows as any[])[0]?.id || 1);
+
+    // 2A. Concurrent applyForDriver creates exactly 1 pending application (200 + 409)
+    const [applyRaceA, applyRaceB] = await Promise.all([
+      callController(applyForDriver, {
+        user: { id: p27Student1Id, role: 'student' },
+        body: {
+          vehicle_type: 'bike',
+          vehicle_model: 'Suzuki Gixxer',
+          vehicle_plate: 'Dhaka Metro-HA 77-1001'
+        }
+      }),
+      callController(applyForDriver, {
+        user: { id: p27Student1Id, role: 'student' },
+        body: {
+          vehicle_type: 'bike',
+          vehicle_model: 'Suzuki Gixxer',
+          vehicle_plate: 'Dhaka Metro-HA 77-1001'
+        }
+      })
+    ]);
+    const applyStatuses = [applyRaceA.status, applyRaceB.status].sort((a, b) => a - b);
+    const [p27Apps1] = await db.query('SELECT * FROM driver_applications WHERE user_id = ?', [p27Student1Id]);
+    assert(
+      applyStatuses[0] === 200 &&
+        applyStatuses[1] === 409 &&
+        Array.isArray(p27Apps1) &&
+        p27Apps1.length === 1 &&
+        (p27Apps1[0] as any).status === 'pending',
+      'Concurrent applyForDriver settles to 200 + 409 with a single pending driver_applications row'
+    );
+
+    // 2B. Concurrent approveDriver sends only one notification and returns 200 + 409
+    const origQueryForApprove = db.query.bind(db);
+    let approveNotifInserts = 0;
+    (db as any).query = async (sql: string, params?: any[]) => {
+      if (sql.toLowerCase().startsWith('insert into notifications') || sql.toLowerCase().includes('insert into notifications')) {
+        if (Number(params?.[0]) === p27Student1Id && params?.[1] === 'driver_approved') {
+          approveNotifInserts++;
+        }
+      }
+      return origQueryForApprove(sql, params);
+    };
+    let approveRaceA: { status: number; body: any };
+    let approveRaceB: { status: number; body: any };
+    try {
+      [approveRaceA, approveRaceB] = await Promise.all([
+        callController(approveDriver, {
+          user: { id: p27AdminId, role: 'admin' },
+          params: { id: String(p27Student1Id) },
+          body: { admin_note: 'Verified papers' }
+        }),
+        callController(approveDriver, {
+          user: { id: p27AdminId, role: 'admin' },
+          params: { id: String(p27Student1Id) },
+          body: { admin_note: 'Verified papers' }
+        })
+      ]);
+    } finally {
+      (db as any).query = origQueryForApprove;
+    }
+    const approveStatuses = [approveRaceA.status, approveRaceB.status].sort((a, b) => a - b);
+    const [p27User1After] = await db.query('SELECT driver_status FROM users WHERE id = ?', [p27Student1Id]);
+    const [p27Apps1After] = await db.query('SELECT status FROM driver_applications WHERE user_id = ?', [p27Student1Id]);
+    assert(
+      approveStatuses[0] === 200 &&
+        approveStatuses[1] === 409 &&
+        (p27User1After as any[])[0]?.driver_status === 'approved' &&
+        (p27Apps1After as any[])[0]?.status === 'approved' &&
+        approveNotifInserts === 1,
+      'Concurrent approveDriver settles to 200 + 409 with exactly one driver_approved notification'
+    );
+
+    // 2C. Concurrent approveDriver vs rejectDriver settles to a single consistent status & 1 notification
+    await callController(applyForDriver, {
+      user: { id: p27Student2Id, role: 'student' },
+      body: {
+        vehicle_type: 'car',
+        vehicle_model: 'Toyota Axio',
+        vehicle_plate: 'Dhaka Metro-GA 88-2002'
+      }
+    });
+    const origQueryForReview = db.query.bind(db);
+    let reviewNotifInserts = 0;
+    (db as any).query = async (sql: string, params?: any[]) => {
+      if (sql.toLowerCase().includes('insert into notifications')) {
+        if (
+          Number(params?.[0]) === p27Student2Id &&
+          (params?.[1] === 'driver_approved' || params?.[1] === 'driver_rejected')
+        ) {
+          reviewNotifInserts++;
+        }
+      }
+      return origQueryForReview(sql, params);
+    };
+    let reviewRaceApprove: { status: number; body: any };
+    let reviewRaceReject: { status: number; body: any };
+    try {
+      [reviewRaceApprove, reviewRaceReject] = await Promise.all([
+        callController(approveDriver, {
+          user: { id: p27AdminId, role: 'admin' },
+          params: { id: String(p27Student2Id) },
+          body: { admin_note: 'Approve race' }
+        }),
+        callController(rejectDriver, {
+          user: { id: p27AdminId, role: 'admin' },
+          params: { id: String(p27Student2Id) },
+          body: { admin_note: 'Reject race' }
+        })
+      ]);
+    } finally {
+      (db as any).query = origQueryForReview;
+    }
+    const reviewStatuses = [reviewRaceApprove.status, reviewRaceReject.status].sort((a, b) => a - b);
+    const [p27User2After] = await db.query('SELECT driver_status FROM users WHERE id = ?', [p27Student2Id]);
+    const [p27Apps2After] = await db.query('SELECT status FROM driver_applications WHERE user_id = ?', [p27Student2Id]);
+    const finalStatus2 = (p27User2After as any[])[0]?.driver_status;
+    assert(
+      reviewStatuses[0] === 200 &&
+        reviewStatuses[1] === 409 &&
+        (finalStatus2 === 'approved' || finalStatus2 === 'rejected') &&
+        (p27Apps2After as any[])[0]?.status === finalStatus2 &&
+        reviewNotifInserts === 1,
+      'Concurrent approveDriver vs rejectDriver settles consistently (200 + 409) with a single review notification'
+    );
+
+    // 2D. Transaction failure inside applyForDriver rolls back users update atomically
+    const origGetConn = db.getConnection.bind(db);
+    let txRolledBack = false;
+    (db as any).getConnection = async () => {
+      const realConn = await origGetConn();
+      return {
+        beginTransaction: () => realConn.beginTransaction(),
+        commit: () => realConn.commit(),
+        rollback: async () => {
+          txRolledBack = true;
+          return realConn.rollback();
+        },
+        release: () => realConn.release(),
+        execute: (sql: string, params?: any[]) => realConn.execute(sql, params),
+        query: async (sql: string, params?: any[]) => {
+          if (sql.toLowerCase().includes('insert into driver_applications')) {
+            const err: any = new Error('Lock wait timeout exceeded');
+            err.code = 'ER_LOCK_WAIT_TIMEOUT';
+            throw err;
+          }
+          return realConn.query(sql, params);
+        }
+      };
+    };
+    const [p27Student3Res] = await db.query(
+      `INSERT INTO users (student_id, name, email, phone, password_hash, role, driver_status, is_blocked)
+       VALUES (?, ?, ?, ?, ?, 'student', 'none', 0)`,
+      ['221-15-703', 'P27 Rollback User', 'p27three@diu.edu.bd', '+8801711000703', p27PassHash]
+    );
+    const p27Student3Id = Number((p27Student3Res as any).insertId);
+    let rollbackApplyRes = { status: 0, body: null as any };
+    try {
+      rollbackApplyRes = await callController(applyForDriver, {
+        user: { id: p27Student3Id, role: 'student' },
+        body: {
+          vehicle_type: 'bike',
+          vehicle_model: 'Honda Hornet',
+          vehicle_plate: 'Dhaka Metro-LA 99-3003'
+        }
+      });
+    } finally {
+      (db as any).getConnection = origGetConn;
+    }
+    const [p27User3After] = await db.query('SELECT driver_status FROM users WHERE id = ?', [p27Student3Id]);
+    assert(
+      txRolledBack &&
+        rollbackApplyRes.status === 503 &&
+        (p27User3After as any[])[0]?.driver_status === 'none',
+      'applyForDriver rolls back users.driver_status and returns 503 when driver_applications insert fails'
+    );
+
+    // 3A. Concurrent addEmergencyContact strictly enforces max 5 limit
+    for (let i = 1; i <= 4; i++) {
+      await callController(addEmergencyContact, {
+        user: { id: p27Student1Id, role: 'student' },
+        body: {
+          name: `Emergency Contact ${i}`,
+          relationship: 'Family',
+          phone: `0171100080${i}`
+        }
+      });
+    }
+    const ecRaces = await Promise.all([
+      callController(addEmergencyContact, {
+        user: { id: p27Student1Id, role: 'student' },
+        body: { name: 'Contact Race A', relationship: 'Friend', phone: '01711000811' }
+      }),
+      callController(addEmergencyContact, {
+        user: { id: p27Student1Id, role: 'student' },
+        body: { name: 'Contact Race B', relationship: 'Friend', phone: '01711000812' }
+      }),
+      callController(addEmergencyContact, {
+        user: { id: p27Student1Id, role: 'student' },
+        body: { name: 'Contact Race C', relationship: 'Friend', phone: '01711000813' }
+      })
+    ]);
+    const ecStatuses = ecRaces.map((r) => r.status).sort((a, b) => a - b);
+    const [p27ContactsAfter] = await db.query('SELECT id FROM emergency_contacts WHERE user_id = ?', [
+      p27Student1Id
+    ]);
+    assert(
+      ecStatuses[0] === 201 &&
+        ecStatuses[1] === 400 &&
+        ecStatuses[2] === 400 &&
+        Array.isArray(p27ContactsAfter) &&
+        p27ContactsAfter.length === 5,
+      'Concurrent addEmergencyContact strictly enforces 5-contact limit (201 + 400 + 400)'
+    );
+
+    // 3B. Concurrent blockUser handles ER_DUP_ENTRY idempotently without 500 or duplicates
+    const origDbQuery = db.query.bind(db);
+    let sawBlockSelectCount = 0;
+    (db as any).query = async (sql: string, params?: any[]) => {
+      // Simulate both concurrent requests passing the pre-INSERT SELECT check simultaneously
+      if (sql.toLowerCase().includes('from user_blocks where blocker_id = ? and blocked_id = ?') && sawBlockSelectCount < 2) {
+        sawBlockSelectCount++;
+        return [[], []];
+      }
+      return origDbQuery(sql, params);
+    };
+    let blockRaceRes: Array<{ status: number; body: any }> = [];
+    try {
+      blockRaceRes = await Promise.all([
+        callController(blockUser, {
+          user: { id: p27Student1Id, role: 'student' },
+          body: { blocked_id: p27Student2Id }
+        }),
+        callController(blockUser, {
+          user: { id: p27Student1Id, role: 'student' },
+          body: { blocked_id: p27Student2Id }
+        })
+      ]);
+    } finally {
+      (db as any).query = origDbQuery;
+    }
+    const [p27BlockRows] = await db.query(
+      'SELECT id FROM user_blocks WHERE blocker_id = ? AND blocked_id = ?',
+      [p27Student1Id, p27Student2Id]
+    );
+    assert(
+      blockRaceRes[0]?.status === 200 &&
+        blockRaceRes[1]?.status === 200 &&
+        Array.isArray(p27BlockRows) &&
+        p27BlockRows.length === 1,
+      'Concurrent blockUser recovers from ER_DUP_ENTRY idempotently (200 + 200) with 1 block row'
+    );
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }

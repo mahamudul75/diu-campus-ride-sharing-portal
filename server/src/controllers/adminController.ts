@@ -416,30 +416,55 @@ export async function getPendingDrivers(req: AuthRequest, res: Response): Promis
 }
 
 export async function approveDriver(req: AuthRequest, res: Response): Promise<void> {
+  const targetUserId = isPositiveIntId(req.params.id);
+  if (!targetUserId) {
+    res.status(400).json({ success: false, message: 'Invalid user ID.' });
+    return;
+  }
+
+  const adminNote =
+    typeof req.body?.admin_note === 'string' && req.body.admin_note.trim()
+      ? req.body.admin_note.trim().slice(0, 500)
+      : null;
+
+  let conn: IDatabaseConnection;
   try {
-    const targetUserId = isPositiveIntId(req.params.id);
-    if (!targetUserId) {
-      res.status(400).json({ success: false, message: 'Invalid user ID.' });
+    conn = await db.getConnection();
+  } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({
+        success: false,
+        message: error.message || 'Database service is temporarily unavailable.'
+      });
       return;
     }
+    console.error('approveDriver connection error:', error);
+    res.status(500).json({ success: false, message: 'Failed to approve driver application.' });
+    return;
+  }
 
-    const adminNote =
-      typeof req.body?.admin_note === 'string' && req.body.admin_note.trim()
-        ? req.body.admin_note.trim().slice(0, 500)
-        : null;
+  let txActive = false;
+  let committed = false;
+  try {
+    await conn.beginTransaction();
+    txActive = true;
 
-    const [userRows] = await db.query(
-      'SELECT id, driver_status, vehicle_type, vehicle_model, vehicle_plate FROM users WHERE id = ?',
+    const [userRows] = await conn.query(
+      'SELECT id, driver_status, vehicle_type, vehicle_model, vehicle_plate FROM users WHERE id = ? FOR UPDATE',
       [targetUserId]
     );
     const targetUser = Array.isArray(userRows) && userRows.length > 0 ? (userRows[0] as any) : null;
 
     if (!targetUser) {
+      await conn.rollback();
+      txActive = false;
       res.status(404).json({ success: false, message: 'Student not found.' });
       return;
     }
 
     if (targetUser.driver_status === 'approved') {
+      await conn.rollback();
+      txActive = false;
       res.status(409).json({
         success: false,
         message: 'Student is already an approved driver.'
@@ -448,6 +473,8 @@ export async function approveDriver(req: AuthRequest, res: Response): Promise<vo
     }
 
     if (targetUser.driver_status !== 'pending') {
+      await conn.rollback();
+      txActive = false;
       res.status(409).json({
         success: false,
         message: 'Only pending driver applications can be approved.'
@@ -456,6 +483,8 @@ export async function approveDriver(req: AuthRequest, res: Response): Promise<vo
     }
 
     if (!targetUser.vehicle_type || !targetUser.vehicle_model || !targetUser.vehicle_plate) {
+      await conn.rollback();
+      txActive = false;
       res.status(400).json({
         success: false,
         message: 'Cannot approve driver: student has not submitted valid vehicle details.'
@@ -463,10 +492,10 @@ export async function approveDriver(req: AuthRequest, res: Response): Promise<vo
       return;
     }
 
-    await db.query("UPDATE users SET driver_status = 'approved' WHERE id = ?", [targetUserId]);
+    await conn.query("UPDATE users SET driver_status = 'approved' WHERE id = ?", [targetUserId]);
 
     try {
-      await db.query(
+      await conn.query(
         `UPDATE driver_applications
          SET status = 'approved', admin_note = ?, reviewed_by = ?, reviewed_at = NOW()
          WHERE user_id = ? AND status = 'pending'`,
@@ -476,6 +505,44 @@ export async function approveDriver(req: AuthRequest, res: Response): Promise<vo
       if (err?.code !== 'ER_NO_SUCH_TABLE') throw err;
     }
 
+    await conn.commit();
+    txActive = false;
+    committed = true;
+  } catch (error: any) {
+    if (txActive) {
+      try {
+        await conn.rollback();
+      } catch (rollbackErr) {
+        console.error('approveDriver rollback error:', rollbackErr);
+      }
+    }
+    if (error?.code === 'ER_LOCK_DEADLOCK' || error?.errno === 1213) {
+      res.status(409).json({
+        success: false,
+        message: 'Concurrent driver review conflict. Please try again.'
+      });
+      return;
+    }
+    if (
+      error?.code === 'ER_LOCK_WAIT_TIMEOUT' ||
+      error?.errno === 1205 ||
+      error?.isDatabaseUnavailable ||
+      error?.status === 503
+    ) {
+      res.status(503).json({
+        success: false,
+        message: 'Database busy or unavailable. Please try again shortly.'
+      });
+      return;
+    }
+    console.error('approveDriver error:', error);
+    res.status(500).json({ success: false, message: 'Failed to approve driver application.' });
+    return;
+  } finally {
+    conn.release();
+  }
+
+  if (committed) {
     await createNotification({
       userId: targetUserId,
       type: 'driver_approved',
@@ -483,57 +550,85 @@ export async function approveDriver(req: AuthRequest, res: Response): Promise<vo
       message: 'Congratulations! Your DIU student driver application is approved. You can now post rides.',
       link: '/rides/create'
     });
-
-    res.status(200).json({
-      success: true,
-      message: 'Student driver application approved. Student can now post rides!'
-    });
-  } catch (error: any) {
-    console.error('approveDriver error:', error);
-    res.status(500).json({ success: false, message: 'Failed to approve driver application.' });
   }
+
+  res.status(200).json({
+    success: true,
+    message: 'Student driver application approved. Student can now post rides!'
+  });
 }
 
 export async function rejectDriver(req: AuthRequest, res: Response): Promise<void> {
+  const targetUserId = isPositiveIntId(req.params.id);
+  if (!targetUserId) {
+    res.status(400).json({ success: false, message: 'Invalid user ID.' });
+    return;
+  }
+
+  const adminNote =
+    typeof req.body?.admin_note === 'string' && req.body.admin_note.trim()
+      ? req.body.admin_note.trim().slice(0, 500)
+      : null;
+
+  let conn: IDatabaseConnection;
   try {
-    const targetUserId = isPositiveIntId(req.params.id);
-    if (!targetUserId) {
-      res.status(400).json({ success: false, message: 'Invalid user ID.' });
+    conn = await db.getConnection();
+  } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({
+        success: false,
+        message: error.message || 'Database service is temporarily unavailable.'
+      });
       return;
     }
+    console.error('rejectDriver connection error:', error);
+    res.status(500).json({ success: false, message: 'Failed to reject driver application.' });
+    return;
+  }
 
-    const adminNote =
-      typeof req.body?.admin_note === 'string' && req.body.admin_note.trim()
-        ? req.body.admin_note.trim().slice(0, 500)
-        : null;
+  let txActive = false;
+  let committed = false;
+  try {
+    await conn.beginTransaction();
+    txActive = true;
 
-    const [userRows] = await db.query('SELECT id, driver_status FROM users WHERE id = ?', [targetUserId]);
+    const [userRows] = await conn.query('SELECT id, driver_status FROM users WHERE id = ? FOR UPDATE', [
+      targetUserId
+    ]);
     const targetUser = Array.isArray(userRows) && userRows.length > 0 ? (userRows[0] as any) : null;
 
     if (!targetUser) {
+      await conn.rollback();
+      txActive = false;
       res.status(404).json({ success: false, message: 'Student not found.' });
       return;
     }
 
     if (targetUser.driver_status === 'none') {
+      await conn.rollback();
+      txActive = false;
       res.status(400).json({ success: false, message: 'Student has no driver application to reject.' });
       return;
     }
 
     if (targetUser.driver_status === 'approved') {
+      await conn.rollback();
+      txActive = false;
       res.status(409).json({ success: false, message: 'Cannot reject an already approved driver.' });
       return;
     }
 
     if (targetUser.driver_status === 'rejected') {
+      await conn.rollback();
+      txActive = false;
       res.status(409).json({ success: false, message: 'Driver application is already rejected.' });
       return;
     }
 
-    await db.query("UPDATE users SET driver_status = 'rejected' WHERE id = ?", [targetUserId]);
+    await conn.query("UPDATE users SET driver_status = 'rejected' WHERE id = ?", [targetUserId]);
 
     try {
-      await db.query(
+      await conn.query(
         `UPDATE driver_applications
          SET status = 'rejected', admin_note = ?, reviewed_by = ?, reviewed_at = NOW()
          WHERE user_id = ? AND status = 'pending'`,
@@ -543,6 +638,44 @@ export async function rejectDriver(req: AuthRequest, res: Response): Promise<voi
       if (err?.code !== 'ER_NO_SUCH_TABLE') throw err;
     }
 
+    await conn.commit();
+    txActive = false;
+    committed = true;
+  } catch (error: any) {
+    if (txActive) {
+      try {
+        await conn.rollback();
+      } catch (rollbackErr) {
+        console.error('rejectDriver rollback error:', rollbackErr);
+      }
+    }
+    if (error?.code === 'ER_LOCK_DEADLOCK' || error?.errno === 1213) {
+      res.status(409).json({
+        success: false,
+        message: 'Concurrent driver review conflict. Please try again.'
+      });
+      return;
+    }
+    if (
+      error?.code === 'ER_LOCK_WAIT_TIMEOUT' ||
+      error?.errno === 1205 ||
+      error?.isDatabaseUnavailable ||
+      error?.status === 503
+    ) {
+      res.status(503).json({
+        success: false,
+        message: 'Database busy or unavailable. Please try again shortly.'
+      });
+      return;
+    }
+    console.error('rejectDriver error:', error);
+    res.status(500).json({ success: false, message: 'Failed to reject driver application.' });
+    return;
+  } finally {
+    conn.release();
+  }
+
+  if (committed) {
     await createNotification({
       userId: targetUserId,
       type: 'driver_rejected',
@@ -552,15 +685,12 @@ export async function rejectDriver(req: AuthRequest, res: Response): Promise<voi
         : 'Your driver application was declined by campus administration.',
       link: '/become-driver'
     });
-
-    res.status(200).json({
-      success: true,
-      message: 'Student driver application rejected.'
-    });
-  } catch (error: any) {
-    console.error('rejectDriver error:', error);
-    res.status(500).json({ success: false, message: 'Failed to reject driver application.' });
   }
+
+  res.status(200).json({
+    success: true,
+    message: 'Student driver application rejected.'
+  });
 }
 
 export async function getAllRidesAdmin(req: AuthRequest, res: Response): Promise<void> {

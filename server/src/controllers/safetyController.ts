@@ -1,6 +1,6 @@
 import type { Response } from 'express';
 import type { AuthRequest } from '../middleware/auth.ts';
-import { db } from '../config/db.ts';
+import { db, type IDatabaseConnection } from '../config/db.ts';
 import {
   isNonEmptyString,
   isPositiveIntId,
@@ -50,35 +50,66 @@ export async function getEmergencyContacts(req: AuthRequest, res: Response): Pro
 }
 
 export async function addEmergencyContact(req: AuthRequest, res: Response): Promise<void> {
+  if (!req.user) {
+    res.status(401).json({ success: false, message: 'Not authenticated.' });
+    return;
+  }
+
+  const { name, relationship, phone } = req.body ?? {};
+  if (!isNonEmptyString(name, 2, 100) || !isNonEmptyString(relationship, 2, 60) || !isNonEmptyString(phone, 8, 25)) {
+    res.status(400).json({
+      success: false,
+      message: 'Name, relationship, and a valid phone number are required.'
+    });
+    return;
+  }
+
+  const cleanPhone = sanitizePhone(phone);
+  if (!isValidPhone(cleanPhone)) {
+    res.status(400).json({
+      success: false,
+      message: 'Please provide a valid 11-digit Bangladesh phone number.'
+    });
+    return;
+  }
+
+  const cleanName = name.trim();
+  const cleanRelationship = relationship.trim();
+
+  let conn: IDatabaseConnection;
   try {
-    if (!req.user) {
-      res.status(401).json({ success: false, message: 'Not authenticated.' });
+    conn = await db.getConnection();
+  } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({ success: false, message: error.message || 'Database service is temporarily unavailable.' });
+      return;
+    }
+    console.error('addEmergencyContact connection error:', error);
+    res.status(500).json({ success: false, message: 'Failed to save emergency contact.' });
+    return;
+  }
+
+  let txActive = false;
+  try {
+    await conn.beginTransaction();
+    txActive = true;
+
+    // Lock parent user row so concurrent contact additions for the same student serialize safely in TiDB/MySQL
+    const [userRows] = await conn.query('SELECT id FROM users WHERE id = ? FOR UPDATE', [req.user.id]);
+    if (!Array.isArray(userRows) || userRows.length === 0) {
+      await conn.rollback();
+      txActive = false;
+      res.status(404).json({ success: false, message: 'User account not found.' });
       return;
     }
 
-    const { name, relationship, phone } = req.body ?? {};
-    if (!isNonEmptyString(name, 2, 100) || !isNonEmptyString(relationship, 2, 60) || !isNonEmptyString(phone, 8, 25)) {
-      res.status(400).json({
-        success: false,
-        message: 'Name, relationship, and a valid phone number are required.'
-      });
-      return;
-    }
-
-    const cleanPhone = sanitizePhone(phone);
-    if (!isValidPhone(cleanPhone)) {
-      res.status(400).json({
-        success: false,
-        message: 'Please provide a valid 11-digit Bangladesh phone number.'
-      });
-      return;
-    }
-
-    const [existing] = await db.query(
+    const [existing] = await conn.query(
       'SELECT id FROM emergency_contacts WHERE user_id = ?',
       [req.user.id]
     );
     if (Array.isArray(existing) && existing.length >= 5) {
+      await conn.rollback();
+      txActive = false;
       res.status(400).json({
         success: false,
         message: 'You can save up to 5 emergency contacts.'
@@ -86,10 +117,13 @@ export async function addEmergencyContact(req: AuthRequest, res: Response): Prom
       return;
     }
 
-    const [insertRes] = await db.query(
+    const [insertRes] = await conn.query(
       'INSERT INTO emergency_contacts (user_id, name, relationship, phone) VALUES (?, ?, ?, ?)',
-      [req.user.id, name.trim(), relationship.trim(), cleanPhone]
+      [req.user.id, cleanName, cleanRelationship, cleanPhone]
     );
+
+    await conn.commit();
+    txActive = false;
 
     res.status(201).json({
       success: true,
@@ -97,13 +131,32 @@ export async function addEmergencyContact(req: AuthRequest, res: Response): Prom
       contact: {
         id: (insertRes as any).insertId,
         user_id: req.user.id,
-        name: name.trim(),
-        relationship: relationship.trim(),
+        name: cleanName,
+        relationship: cleanRelationship,
         phone: cleanPhone
       }
     });
   } catch (error: any) {
-    if (error?.isDatabaseUnavailable || error?.status === 503) {
+    if (txActive) {
+      try {
+        await conn.rollback();
+      } catch (rollbackErr) {
+        console.error('addEmergencyContact rollback error:', rollbackErr);
+      }
+    }
+    if (error?.code === 'ER_LOCK_DEADLOCK' || error?.errno === 1213) {
+      res.status(409).json({
+        success: false,
+        message: 'Concurrent emergency contact update conflict. Please try again.'
+      });
+      return;
+    }
+    if (
+      error?.code === 'ER_LOCK_WAIT_TIMEOUT' ||
+      error?.errno === 1205 ||
+      error?.isDatabaseUnavailable ||
+      error?.status === 503
+    ) {
       res.status(503).json({ success: false, message: error.message || 'Database service is temporarily unavailable.' });
       return;
     }
@@ -113,6 +166,8 @@ export async function addEmergencyContact(req: AuthRequest, res: Response): Prom
     }
     console.error('addEmergencyContact error:', error);
     res.status(500).json({ success: false, message: 'Failed to save emergency contact.' });
+  } finally {
+    conn.release();
   }
 }
 
@@ -398,10 +453,16 @@ export async function blockUser(req: AuthRequest, res: Response): Promise<void> 
       [req.user.id, blockedId]
     );
     if (!Array.isArray(existing) || existing.length === 0) {
-      await db.query('INSERT INTO user_blocks (blocker_id, blocked_id) VALUES (?, ?)', [
-        req.user.id,
-        blockedId
-      ]);
+      try {
+        await db.query('INSERT INTO user_blocks (blocker_id, blocked_id) VALUES (?, ?)', [
+          req.user.id,
+          blockedId
+        ]);
+      } catch (insertErr: any) {
+        if (insertErr?.code !== 'ER_DUP_ENTRY' && insertErr?.errno !== 1062) {
+          throw insertErr;
+        }
+      }
     }
 
     res.status(200).json({

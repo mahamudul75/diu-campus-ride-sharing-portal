@@ -18,6 +18,11 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+export function shouldClearSessionOnAuthCheckError(error: any): boolean {
+  const status = error?.response?.status;
+  return status === 401 || status === 403;
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(() => {
     const cached = localStorage.getItem('diu_user');
@@ -40,10 +45,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setUser(res.data.user);
         localStorage.setItem('diu_user', JSON.stringify(res.data.user));
       }
-    } catch {
-      // Not logged in or expired
-      setUser(null);
-      localStorage.removeItem('diu_user');
+    } catch (err) {
+      // Only clear session when the backend explicitly confirms unauthorized/invalid/suspended (401/403)
+      if (shouldClearSessionOnAuthCheckError(err)) {
+        setUser(null);
+        localStorage.removeItem('diu_user');
+      }
     } finally {
       setLoading(false);
     }
