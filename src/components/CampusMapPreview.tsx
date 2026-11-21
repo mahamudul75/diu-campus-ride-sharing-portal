@@ -199,98 +199,105 @@ export const CampusMapPreview: React.FC = () => {
   return (
     <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
       <div className="rounded-3xl bg-[#FFFFFF] dark:bg-[#0F172A] border border-[#DCE2EC] dark:border-[#1E293B] shadow-lg shadow-slate-900/5 dark:shadow-black/35 overflow-hidden">
-        <div className="grid grid-cols-1 lg:grid-cols-[460px_1fr] xl:grid-cols-[490px_1fr] items-stretch divide-y lg:divide-y-0 lg:divide-x divide-[#DCE2EC] dark:divide-[#1E293B]">
-          {/* Left Panel: Mobility Destination Grid */}
-          <div className="bg-[#FFFFFF] dark:bg-[#0F172A] flex flex-col justify-between">
-            <div>
-              {/* Header */}
-              <div className="px-5 sm:px-6 pt-5 sm:pt-6 pb-4 flex items-start justify-between gap-3">
-                <div>
-                  <h3 className="text-lg font-bold text-[#0F172A] dark:text-[#F8FAFC] tracking-tight">
-                    Popular Campus Routes
-                  </h3>
-                  <p className="text-xs text-[#64748B] dark:text-[#94A3B8] mt-1">
-                    Explore popular destinations from campus
-                  </p>
-                </div>
-                <div
-                  className="w-9 h-9 rounded-xl bg-[#EEF0FA] dark:bg-[#1E293B] text-[#4F5FC9] dark:text-[#818CF8] flex items-center justify-center shrink-0"
-                  aria-hidden="true"
-                >
-                  <Compass className="w-4 h-4" />
-                </div>
+        <div className="grid grid-cols-1 lg:grid-cols-[400px_1fr] xl:grid-cols-[430px_1fr] items-stretch divide-y lg:divide-y-0 lg:divide-x divide-[#DCE2EC] dark:divide-[#1E293B]">
+          {/* Left Panel: Single-Column Vertical Route Selector */}
+          <div className="bg-[#FFFFFF] dark:bg-[#0F172A] flex flex-col">
+            {/* Header */}
+            <div className="px-5 sm:px-6 pt-5 pb-4 flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-lg font-bold text-[#0F172A] dark:text-[#F8FAFC] tracking-tight">
+                  Popular Campus Routes
+                </h3>
+                <p className="text-xs text-[#64748B] dark:text-[#94A3B8] mt-1">
+                  Explore popular destinations from campus
+                </p>
               </div>
-
-              {/* 2x3 Route Grid */}
               <div
-                className="px-5 sm:px-6 pb-5 grid grid-cols-1 sm:grid-cols-2 gap-2.5"
-                role="listbox"
-                aria-label="Popular Campus Routes"
+                className="w-9 h-9 rounded-xl bg-[#EEF0FA] dark:bg-[#1E293B] text-[#4F5FC9] dark:text-[#818CF8] flex items-center justify-center shrink-0"
+                aria-hidden="true"
               >
-                {POPULAR_CAMPUS_ROUTES.map((route) => {
-                  const isSelected = route.id === activeRouteId;
-                  return (
-                    <button
-                      key={route.id}
-                      type="button"
-                      role="option"
-                      aria-selected={isSelected}
-                      aria-label={route.name}
-                      onClick={() => setActiveRouteId(route.id)}
-                      className={`group text-left p-3 sm:p-3.5 rounded-2xl transition-all duration-150 cursor-pointer flex flex-col justify-between min-h-[76px] ${
-                        isSelected
-                          ? 'bg-[#EEF0FA] dark:bg-[#1C2847] ring-1 ring-inset ring-[#4F5FC9]/35 dark:ring-[#818CF8]/40 shadow-xs'
-                          : 'bg-[#F4F6FA] dark:bg-[#151F33] hover:bg-[#EAEFF7] dark:hover:bg-[#1A263E]'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between gap-2 w-full">
-                        <span className="inline-flex items-center gap-1.5 min-w-0">
-                          <span
-                            className="w-2 h-2 rounded-full shrink-0 transition-transform duration-150"
-                            style={{
-                              backgroundColor: isSelected
-                                ? route.color
-                                : isDark
-                                ? '#64748B'
-                                : '#94A3B8'
-                            }}
-                          />
-                          <span
-                            className={`text-[11px] font-medium truncate ${
-                              isSelected
-                                ? 'text-[#4F5FC9] dark:text-[#A5B4FC]'
-                                : 'text-[#64748B] dark:text-[#94A3B8]'
-                            }`}
-                          >
-                            Daffodil Smart City ↔
-                          </span>
-                        </span>
-
-                        <span
-                          className={`w-4 h-4 rounded-full flex items-center justify-center shrink-0 transition-all duration-150 ${
-                            isSelected
-                              ? 'bg-[#4F5FC9] dark:bg-[#818CF8] text-white dark:text-[#0F172A]'
-                              : 'bg-[#E2E8F0] dark:bg-[#1E293B] text-transparent group-hover:bg-[#CBD5E1] dark:group-hover:bg-[#293548]'
-                          }`}
-                          aria-hidden="true"
-                        >
-                          <Check className="w-2.5 h-2.5 stroke-[3]" />
-                        </span>
-                      </div>
-
-                      <span
-                        className={`text-sm font-bold tracking-tight mt-2 block leading-snug ${
-                          isSelected
-                            ? 'text-[#0F172A] dark:text-[#FFFFFF]'
-                            : 'text-[#1E293B] dark:text-[#E2E8F0]'
-                        }`}
-                      >
-                        {route.destName}
-                      </span>
-                    </button>
-                  );
-                })}
+                <Compass className="w-4 h-4" />
               </div>
+            </div>
+
+            {/* Vertical Stack of 4 Full-Width Route Cards */}
+            <div
+              className="px-5 sm:px-6 pb-5 flex flex-col gap-2.5"
+              role="listbox"
+              aria-label="Popular Campus Routes"
+            >
+              {POPULAR_CAMPUS_ROUTES.map((route) => {
+                const isSelected = route.id === activeRouteId;
+                return (
+                  <button
+                    key={route.id}
+                    type="button"
+                    role="option"
+                    aria-selected={isSelected}
+                    aria-label={route.name}
+                    onClick={() => setActiveRouteId(route.id)}
+                    className={`group w-full text-left px-4 py-3.5 rounded-2xl transition-all duration-150 cursor-pointer flex items-center justify-between gap-3 ${
+                      isSelected
+                        ? 'bg-[#EEF0FA] dark:bg-[#1C2847] ring-1 ring-inset ring-[#4F5FC9]/35 dark:ring-[#818CF8]/40 shadow-xs'
+                        : 'bg-[#F4F6FA] dark:bg-[#151F33] hover:bg-[#EAEFF7] dark:hover:bg-[#1A263E]'
+                    }`}
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <span
+                        className="w-2.5 h-2.5 rounded-full shrink-0 transition-transform duration-150"
+                        style={{
+                          backgroundColor: isSelected
+                            ? route.color
+                            : isDark
+                            ? '#64748B'
+                            : '#94A3B8'
+                        }}
+                      />
+                      <span className="text-[13px] leading-snug">
+                        <span
+                          className={`font-medium ${
+                            isSelected
+                              ? 'text-[#4F5FC9] dark:text-[#A5B4FC]'
+                              : 'text-[#64748B] dark:text-[#94A3B8]'
+                          }`}
+                        >
+                          Daffodil Smart City
+                        </span>
+                        <span
+                          aria-hidden="true"
+                          className={`mx-1.5 font-medium ${
+                            isSelected
+                              ? 'text-[#4F5FC9] dark:text-[#818CF8]'
+                              : 'text-[#94A3B8] dark:text-[#64748B]'
+                          }`}
+                        >
+                          →
+                        </span>
+                        <span
+                          className={`font-bold ${
+                            isSelected
+                              ? 'text-[#0F172A] dark:text-[#FFFFFF]'
+                              : 'text-[#1E293B] dark:text-[#E2E8F0]'
+                          }`}
+                        >
+                          {route.destName}
+                        </span>
+                      </span>
+                    </div>
+
+                    <span
+                      className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 transition-all duration-150 ${
+                        isSelected
+                          ? 'bg-[#4F5FC9] dark:bg-[#818CF8] text-white dark:text-[#0F172A]'
+                          : 'bg-[#E2E8F0] dark:bg-[#1E293B] text-transparent group-hover:bg-[#CBD5E1] dark:group-hover:bg-[#293548]'
+                      }`}
+                      aria-hidden="true"
+                    >
+                      <Check className="w-3 h-3 stroke-[3]" />
+                    </span>
+                  </button>
+                );
+              })}
             </div>
 
             {/* Integrated Campus Information Footer */}
@@ -328,10 +335,10 @@ export const CampusMapPreview: React.FC = () => {
           </div>
 
           {/* Right Panel: Interactive Map Canvas */}
-          <div className="relative z-0 isolate bg-[#E8ECF4] dark:bg-[#0B1220] min-h-[340px] sm:min-h-[400px] lg:min-h-[430px]">
+          <div className="relative z-0 isolate bg-[#E8ECF4] dark:bg-[#0B1220] min-h-[300px] sm:min-h-[340px] lg:min-h-[360px]">
             <div
               ref={mapContainerRef}
-              className="w-full h-full min-h-[340px] sm:min-h-[400px] lg:min-h-[430px] [&_.leaflet-top.leaflet-right]:mt-2.5 [&_.leaflet-top.leaflet-right]:mr-2.5 [&_.leaflet-control-zoom]:!border [&_.leaflet-control-zoom]:!border-[#DCE2EC] dark:[&_.leaflet-control-zoom]:!border-[#1E293B] [&_.leaflet-control-zoom]:!rounded-xl [&_.leaflet-control-zoom]:!overflow-hidden [&_.leaflet-control-zoom]:!shadow-md [&_.leaflet-control-zoom_a]:!bg-[#FFFFFF]/95 dark:[&_.leaflet-control-zoom_a]:!bg-[#0F172A]/95 [&_.leaflet-control-zoom_a]:!text-[#0F172A] dark:[&_.leaflet-control-zoom_a]:!text-[#E2E8F0] [&_.leaflet-control-zoom_a]:!border-[#DCE2EC] dark:[&_.leaflet-control-zoom_a]:!border-[#1E293B] [&_.leaflet-control-zoom_a]:!w-8 [&_.leaflet-control-zoom_a]:!h-8 [&_.leaflet-control-zoom_a]:!leading-8 hover:[&_.leaflet-control-zoom_a]:!bg-[#EEF0FA] dark:hover:[&_.leaflet-control-zoom_a]:!bg-[#1C2847] [&_.leaflet-control-attribution]:!bg-[#FFFFFF]/85 dark:[&_.leaflet-control-attribution]:!bg-[#0F172A]/85 [&_.leaflet-control-attribution]:!text-[#475569] dark:[&_.leaflet-control-attribution]:!text-[#94A3B8] [&_.leaflet-control-attribution]:!text-[10px] [&_.leaflet-control-attribution]:!px-2.5 [&_.leaflet-control-attribution]:!py-0.5 [&_.leaflet-control-attribution]:!rounded-tl-lg [&_.leaflet-control-attribution_a]:!text-[#4F5FC9] dark:[&_.leaflet-control-attribution_a]:!text-[#818CF8]"
+              className="w-full h-full min-h-[300px] sm:min-h-[340px] lg:min-h-[360px] [&_.leaflet-top.leaflet-right]:mt-2.5 [&_.leaflet-top.leaflet-right]:mr-2.5 [&_.leaflet-control-zoom]:!border [&_.leaflet-control-zoom]:!border-[#DCE2EC] dark:[&_.leaflet-control-zoom]:!border-[#1E293B] [&_.leaflet-control-zoom]:!rounded-xl [&_.leaflet-control-zoom]:!overflow-hidden [&_.leaflet-control-zoom]:!shadow-md [&_.leaflet-control-zoom_a]:!bg-[#FFFFFF]/95 dark:[&_.leaflet-control-zoom_a]:!bg-[#0F172A]/95 [&_.leaflet-control-zoom_a]:!text-[#0F172A] dark:[&_.leaflet-control-zoom_a]:!text-[#E2E8F0] [&_.leaflet-control-zoom_a]:!border-[#DCE2EC] dark:[&_.leaflet-control-zoom_a]:!border-[#1E293B] [&_.leaflet-control-zoom_a]:!w-8 [&_.leaflet-control-zoom_a]:!h-8 [&_.leaflet-control-zoom_a]:!leading-8 hover:[&_.leaflet-control-zoom_a]:!bg-[#EEF0FA] dark:hover:[&_.leaflet-control-zoom_a]:!bg-[#1C2847] [&_.leaflet-control-attribution]:!bg-[#FFFFFF]/85 dark:[&_.leaflet-control-attribution]:!bg-[#0F172A]/85 [&_.leaflet-control-attribution]:!text-[#475569] dark:[&_.leaflet-control-attribution]:!text-[#94A3B8] [&_.leaflet-control-attribution]:!text-[10px] [&_.leaflet-control-attribution]:!px-2.5 [&_.leaflet-control-attribution]:!py-0.5 [&_.leaflet-control-attribution]:!rounded-tl-lg [&_.leaflet-control-attribution_a]:!text-[#4F5FC9] dark:[&_.leaflet-control-attribution_a]:!text-[#818CF8]"
               style={{ width: '100%' }}
             />
 
