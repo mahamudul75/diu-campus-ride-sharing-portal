@@ -849,3 +849,97 @@ export async function getMyRequests(req: AuthRequest, res: Response): Promise<vo
     res.status(500).json({ success: false, message: 'Failed to fetch your ride requests.' });
   }
 }
+
+export async function getIncomingRequests(req: AuthRequest, res: Response): Promise<void> {
+  try {
+    if (!req.user) {
+      res.status(401).json({ success: false, message: 'Not authenticated.' });
+      return;
+    }
+
+    if (req.user.driver_status !== 'approved') {
+      res.status(403).json({
+        success: false,
+        message: 'Access denied: Only approved DIU student drivers can view incoming booking requests.'
+      });
+      return;
+    }
+
+    const { limit, offset } = parsePaginationParams(req.query as Record<string, unknown>, {
+      defaultLimit: 50,
+      maxLimit: 100
+    });
+
+    const [rows] = await db.query(
+      `SELECT req.id, req.ride_id, req.passenger_id, req.status, req.created_at, req.updated_at,
+              r.driver_id, r.pickup_name, r.pickup_lat, r.pickup_lng,
+              r.dest_name, r.dest_lat, r.dest_lng,
+              r.departure_time, r.fare, r.seats_available, r.seats_total, r.vehicle_type,
+              r.status AS ride_status,
+              u.name AS passenger_name, u.email AS passenger_email,
+              u.phone AS passenger_phone, u.student_id AS passenger_student_id
+       FROM ride_requests req
+       JOIN rides r ON req.ride_id = r.id
+       JOIN users u ON req.passenger_id = u.id
+       WHERE r.driver_id = ?
+       ORDER BY req.created_at DESC
+       LIMIT ? OFFSET ?`,
+      [req.user.id, limit + 1, offset]
+    );
+
+    const rawRows = (rows as any[]) || [];
+    const hasMore = rawRows.length > limit;
+    const requestRows = hasMore ? rawRows.slice(0, limit) : rawRows;
+    const passengerIds = Array.from(
+      new Set(requestRows.map((r) => Number(r.passenger_id)).filter(Boolean))
+    );
+
+    const [ratingsMap, extMap] = await Promise.all([
+      getUserRatingSummaries(passengerIds),
+      getUserExtendedFieldsBatch(passengerIds, { includeAvatar: true })
+    ]);
+
+    const enriched = requestRows.map((r) => {
+      const pid = Number(r.passenger_id);
+      const ext = extMap.get(pid);
+      const rating = ratingsMap.get(pid) || { avg_rating: null, review_count: 0 };
+      const canSeePhone =
+        r.status === 'accepted' && ((ext?.show_phone_to_accepted ?? 1) !== 0 || req.user?.role === 'admin');
+      const distKm =
+        r.pickup_lat !== undefined && r.dest_lat !== undefined
+          ? calculateHaversineDistanceKm(Number(r.pickup_lat), Number(r.pickup_lng), Number(r.dest_lat), Number(r.dest_lng))
+          : null;
+
+      return {
+        ...r,
+        departure_time: r.departure_time ? toUtcIsoString(r.departure_time) : r.departure_time,
+        passenger_phone: canSeePhone ? r.passenger_phone : null,
+        passenger_student_verified: ext?.student_verified ?? 0,
+        passenger_email_verified: ext?.email_verified ?? 0,
+        passenger_avatar_url: ext?.avatar_url ?? null,
+        passenger_avg_rating: rating.avg_rating,
+        passenger_review_count: rating.review_count,
+        distance_km: distKm,
+        estimated_minutes:
+          distKm !== null ? estimateDurationMinutes(distKm, r.vehicle_type === 'car' ? 'car' : 'bike') : null
+      };
+    });
+
+    res.status(200).json({
+      success: true,
+      requests: enriched,
+      pagination: {
+        limit,
+        offset,
+        has_more: hasMore
+      }
+    });
+  } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({ success: false, message: error.message || 'Database service is temporarily unavailable.' });
+      return;
+    }
+    console.error('getIncomingRequests error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch incoming booking requests.' });
+  }
+}

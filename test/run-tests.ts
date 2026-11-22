@@ -4161,6 +4161,216 @@ async function runTests() {
         p27BlockRows.length === 1,
       'Concurrent blockUser recovers from ER_DUP_ENTRY idempotently (200 + 200) with 1 block row'
     );
+
+    // -----------------------------------------------------------------------
+    // PHASE 28: Driver Incoming Bookings Endpoint (/api/requests/incoming)
+    // -----------------------------------------------------------------------
+    console.log('\n[Phase 28] Driver Incoming Bookings Endpoint (/api/requests/incoming)');
+
+    const p28Hash = await bcrypt.hash('Pass28!123', 10);
+    const [p28DriverARes] = await db.query(
+      `INSERT INTO users (student_id, name, email, phone, password_hash, role, driver_status, vehicle_type, vehicle_model, vehicle_plate, is_blocked)
+       VALUES (?, ?, ?, ?, ?, 'student', 'approved', 'car', 'Toyota Premio', 'Dhaka Metro-GA 28-1001', 0)`,
+      ['221-15-801', 'P28 Driver Alpha', 'p28drivera@diu.edu.bd', '+8801711000801', p28Hash]
+    );
+    const p28DriverAId = Number((p28DriverARes as any).insertId);
+    await db.query("UPDATE users SET driver_status = 'approved' WHERE id = ?", [p28DriverAId]);
+
+    const [p28DriverBRes] = await db.query(
+      `INSERT INTO users (student_id, name, email, phone, password_hash, role, driver_status, vehicle_type, vehicle_model, vehicle_plate, is_blocked)
+       VALUES (?, ?, ?, ?, ?, 'student', 'approved', 'bike', 'Yamaha FZS', 'Dhaka Metro-HA 28-1002', 0)`,
+      ['221-15-802', 'P28 Driver Beta', 'p28driverb@diu.edu.bd', '+8801711000802', p28Hash]
+    );
+    const p28DriverBId = Number((p28DriverBRes as any).insertId);
+    await db.query("UPDATE users SET driver_status = 'approved' WHERE id = ?", [p28DriverBId]);
+
+    const [p28Pass1Res] = await db.query(
+      `INSERT INTO users (student_id, name, email, phone, password_hash, role, driver_status, is_blocked)
+       VALUES (?, ?, ?, ?, ?, 'student', 'none', 0)`,
+      ['221-15-803', 'P28 Passenger One', 'p28pass1@diu.edu.bd', '+8801711000803', p28Hash]
+    );
+    const p28Pass1Id = Number((p28Pass1Res as any).insertId);
+
+    const [p28Pass2Res] = await db.query(
+      `INSERT INTO users (student_id, name, email, phone, password_hash, role, driver_status, is_blocked)
+       VALUES (?, ?, ?, ?, ?, 'student', 'none', 0)`,
+      ['221-15-804', 'P28 Passenger HiddenPhone', 'p28pass2@diu.edu.bd', '+8801711000804', p28Hash]
+    );
+    const p28Pass2Id = Number((p28Pass2Res as any).insertId);
+    await db.query('UPDATE users SET bio = ?, show_phone_to_accepted = ? WHERE id = ?', [null, 0, p28Pass2Id]);
+
+    const p28DriverAToken = generateToken({
+      id: p28DriverAId,
+      email: 'p28drivera@diu.edu.bd',
+      student_id: '221-15-801',
+      role: 'student',
+      driver_status: 'approved'
+    });
+    const p28Pass1Token = generateToken({
+      id: p28Pass1Id,
+      email: 'p28pass1@diu.edu.bd',
+      student_id: '221-15-803',
+      role: 'student',
+      driver_status: 'none'
+    });
+    const p28Pass2Token = generateToken({
+      id: p28Pass2Id,
+      email: 'p28pass2@diu.edu.bd',
+      student_id: '221-15-804',
+      role: 'student',
+      driver_status: 'none'
+    });
+
+    // 1. Auth & role checks on GET /api/requests/incoming
+    const p28UnauthRes = await fetch(`${baseUrl}/requests/incoming`);
+    const p28NonDriverRes = await fetch(`${baseUrl}/requests/incoming`, {
+      headers: { Authorization: `Bearer ${p28Pass1Token}` }
+    });
+    assert(
+      p28UnauthRes.status === 401 && p28NonDriverRes.status === 403,
+      'GET /api/requests/incoming rejects unauthenticated (401) and non-driver (403) callers'
+    );
+
+    // 2. Seed rides & passenger requests across two drivers
+    const p28DepSql = formatDateToMySqlUtc(new Date(Date.now() + 6 * 3600000));
+    const [p28RideARes] = await db.query(
+      `INSERT INTO rides
+        (driver_id, pickup_name, pickup_lat, pickup_lng, dest_name, dest_lat, dest_lng, departure_time, fare, seats_total, seats_available, vehicle_type, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 140, 3, 3, 'car', 'open')`,
+      [p28DriverAId, 'DIU Main Gate', 23.8768, 90.3202, 'Dhanmondi 27', 23.7538, 90.377, p28DepSql]
+    );
+    const p28RideAId = Number((p28RideARes as any).insertId);
+
+    const [p28RideBRes] = await db.query(
+      `INSERT INTO rides
+        (driver_id, pickup_name, pickup_lat, pickup_lng, dest_name, dest_lat, dest_lng, departure_time, fare, seats_total, seats_available, vehicle_type, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 90, 1, 1, 'bike', 'open')`,
+      [p28DriverBId, 'DIU Hall', 23.8768, 90.3202, 'Uttara Sector 10', 23.8891, 90.3911, p28DepSql]
+    );
+    const p28RideBId = Number((p28RideBRes as any).insertId);
+
+    const p28Create1 = await callController(createRideRequest, {
+      user: { id: p28Pass1Id, name: 'P28 Passenger One', role: 'student' },
+      params: { id: String(p28RideAId) }
+    });
+    const p28Req1Id = Number(p28Create1.body?.requestId);
+
+    const p28Create2 = await callController(createRideRequest, {
+      user: { id: p28Pass2Id, name: 'P28 Passenger HiddenPhone', role: 'student' },
+      params: { id: String(p28RideAId) }
+    });
+    const p28Req2Id = Number(p28Create2.body?.requestId);
+
+    // Other driver's ride booking (must NOT appear in Driver A's incoming requests)
+    const p28CreateOther = await callController(createRideRequest, {
+      user: { id: p28Pass1Id, name: 'P28 Passenger One', role: 'student' },
+      params: { id: String(p28RideBId) }
+    });
+    assert(
+      p28Create1.status === 201 &&
+        p28Create2.status === 201 &&
+        p28CreateOther.status === 201 &&
+        p28Req1Id > 0 &&
+        p28Req2Id > 0,
+      'Passengers submit booking requests to Driver A and Driver B rides'
+    );
+
+    // 3. Driver A sees only incoming requests for Driver A's rides, with pending phone hidden
+    const p28IncBeforeRes = await fetch(`${baseUrl}/requests/incoming`, {
+      headers: { Authorization: `Bearer ${p28DriverAToken}` }
+    });
+    const p28IncBeforeJson: any = await p28IncBeforeRes.json();
+    const incBeforeList: any[] = p28IncBeforeJson.requests || [];
+    const incReq1Before = incBeforeList.find((r) => r.id === p28Req1Id);
+    const incReq2Before = incBeforeList.find((r) => r.id === p28Req2Id);
+
+    assert(
+      p28IncBeforeRes.status === 200 &&
+        incBeforeList.length === 2 &&
+        incBeforeList.every((r) => Number(r.driver_id) === p28DriverAId) &&
+        incReq1Before?.passenger_name === 'P28 Passenger One' &&
+        incReq1Before?.passenger_student_id === '221-15-803' &&
+        incReq1Before?.pickup_name === 'DIU Main Gate' &&
+        incReq1Before?.dest_name === 'Dhanmondi 27' &&
+        incReq1Before?.passenger_phone === null &&
+        incReq2Before?.passenger_phone === null,
+      'GET /api/requests/incoming returns driver-scoped passenger & ride info and masks pending passenger phones'
+    );
+
+    // 4. GET /api/requests/mine stays passenger-scoped and unaffected
+    const p28DriverMineRes = await fetch(`${baseUrl}/requests/mine`, {
+      headers: { Authorization: `Bearer ${p28DriverAToken}` }
+    });
+    const p28DriverMineJson: any = await p28DriverMineRes.json();
+    const p28PassMineRes = await fetch(`${baseUrl}/requests/mine`, {
+      headers: { Authorization: `Bearer ${p28Pass1Token}` }
+    });
+    const p28PassMineJson: any = await p28PassMineRes.json();
+    assert(
+      p28DriverMineRes.status === 200 &&
+        Array.isArray(p28DriverMineJson.requests) &&
+        p28DriverMineJson.requests.length === 0 &&
+        p28PassMineRes.status === 200 &&
+        Array.isArray(p28PassMineJson.requests) &&
+        p28PassMineJson.requests.length === 2,
+      'GET /api/requests/mine remains strictly passenger-scoped for both driver and passenger'
+    );
+
+    // 5. Accept & Reject reuse existing controllers and enforce phone privacy on GET /api/requests/incoming
+    const p28Accept1Res = await fetch(`${baseUrl}/requests/${p28Req1Id}/accept`, {
+      method: 'PATCH',
+      headers: { Origin: trustedOrigin, Authorization: `Bearer ${p28DriverAToken}` }
+    });
+    const p28Accept2Res = await fetch(`${baseUrl}/requests/${p28Req2Id}/accept`, {
+      method: 'PATCH',
+      headers: { Origin: trustedOrigin, Authorization: `Bearer ${p28DriverAToken}` }
+    });
+    assert(
+      p28Accept1Res.status === 200 && p28Accept2Res.status === 200,
+      'Driver accepts incoming requests via existing PATCH /api/requests/:id/accept'
+    );
+
+    const p28IncAfterRes = await fetch(`${baseUrl}/requests/incoming`, {
+      headers: { Authorization: `Bearer ${p28DriverAToken}` }
+    });
+    const p28IncAfterJson: any = await p28IncAfterRes.json();
+    const incAfterList: any[] = p28IncAfterJson.requests || [];
+    const incReq1After = incAfterList.find((r) => r.id === p28Req1Id);
+    const incReq2After = incAfterList.find((r) => r.id === p28Req2Id);
+    assert(
+      incReq1After?.status === 'accepted' &&
+        incReq1After?.passenger_phone === '+8801711000803' &&
+        incReq2After?.status === 'accepted' &&
+        incReq2After?.passenger_phone === null,
+      'Accepted incoming requests reveal passenger_phone only when show_phone_to_accepted allows it'
+    );
+
+    // 6. Rejecting a pending request updates status to rejected in GET /api/requests/incoming
+    const p28Pass2Other = await callController(createRideRequest, {
+      user: { id: p28Pass2Id, name: 'P28 Passenger HiddenPhone', role: 'student' },
+      params: { id: String(p28RideBId) }
+    });
+    const p28ReqB2Id = Number(p28Pass2Other.body?.requestId);
+    const p28DriverBToken = generateToken({
+      id: p28DriverBId,
+      email: 'p28driverb@diu.edu.bd',
+      student_id: '221-15-802',
+      role: 'student',
+      driver_status: 'approved'
+    });
+    const p28RejectRes = await fetch(`${baseUrl}/requests/${p28ReqB2Id}/reject`, {
+      method: 'PATCH',
+      headers: { Origin: trustedOrigin, Authorization: `Bearer ${p28DriverBToken}` }
+    });
+    const p28DriverBIncRes = await fetch(`${baseUrl}/requests/incoming`, {
+      headers: { Authorization: `Bearer ${p28DriverBToken}` }
+    });
+    const p28DriverBIncJson: any = await p28DriverBIncRes.json();
+    const rejectedRow = (p28DriverBIncJson.requests || []).find((r: any) => r.id === p28ReqB2Id);
+    assert(
+      p28RejectRes.status === 200 && rejectedRow?.status === 'rejected' && rejectedRow?.passenger_phone === null,
+      'Rejecting an incoming request via PATCH /api/requests/:id/reject reflects in GET /api/requests/incoming'
+    );
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }

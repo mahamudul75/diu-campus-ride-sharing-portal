@@ -3,13 +3,15 @@ import {
   acceptRequest,
   rejectRequest,
   cancelRequest,
-  getMyRequests
+  getMyRequests,
+  getIncomingRequests
 } from '../controllers/requestController.ts';
-import { authenticateToken } from '../middleware/auth.ts';
+import { authenticateToken, requireApprovedDriver } from '../middleware/auth.ts';
 
 const router = express.Router();
 
 router.get('/mine', authenticateToken, getMyRequests);
+router.get('/incoming', authenticateToken, requireApprovedDriver, getIncomingRequests);
 router.patch('/:id/accept', authenticateToken, acceptRequest);
 router.patch('/:id/reject', authenticateToken, rejectRequest);
 router.patch('/:id/cancel', authenticateToken, cancelRequest);
