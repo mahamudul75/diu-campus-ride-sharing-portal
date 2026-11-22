@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   Shield,
+  Phone,
   PhoneCall,
   Plus,
   Trash2,
@@ -16,6 +17,16 @@ import { useToast } from '../context/ToastContext.tsx';
 import DashboardLayout from '../components/DashboardLayout.tsx';
 import StatusBadge from '../components/StatusBadge.tsx';
 import Spinner from '../components/Spinner.tsx';
+
+function getSafeTelHref(rawPhone: string | null | undefined): string | null {
+  if (typeof rawPhone !== 'string') return null;
+  const trimmed = rawPhone.trim();
+  if (!trimmed) return null;
+  const hasLeadingPlus = trimmed.startsWith('+');
+  const digits = trimmed.replace(/\D/g, '');
+  if (!digits) return null;
+  return `tel:${hasLeadingPlus ? '+' : ''}${digits}`;
+}
 
 export const SafetyPage: React.FC = () => {
   const { showToast } = useToast();
@@ -248,31 +259,51 @@ export const SafetyPage: React.FC = () => {
               </p>
             ) : (
               <div className="divide-y divide-[#D4DAE7]/50 dark:divide-[#34445E]">
-                {contacts.map((c) => (
-                  <div key={c.id} className="py-3 first:pt-0 last:pb-0 flex items-center justify-between gap-3 text-xs">
-                    <div>
-                      <p className="font-bold text-[#222B42] dark:text-[#F1F4FC]">
-                        {c.name} <span className="text-[#626E86] dark:text-[#B0BCD0] font-normal">({c.relationship})</span>
-                      </p>
-                      <a
-                        href={`tel:${c.phone}`}
-                        className="font-mono text-[#515FC5] dark:text-[#818CF8] font-semibold hover:underline tabular-nums"
-                      >
-                        {c.phone}
-                      </a>
+                {contacts.map((c) => {
+                  const telHref = getSafeTelHref(c.phone);
+                  const callTarget =
+                    c.relationship && c.relationship.toLowerCase() !== c.name.toLowerCase()
+                      ? `${c.name} (${c.relationship})`
+                      : c.name;
+                  const callAriaLabel = `Call ${callTarget}`;
+
+                  return (
+                    <div key={c.id} className="py-3 first:pt-0 last:pb-0 flex items-center justify-between gap-3 text-xs">
+                      <div className="min-w-0 flex-1">
+                        <p className="font-bold text-[#222B42] dark:text-[#F1F4FC] truncate">
+                          {c.name}{' '}
+                          <span className="text-[#626E86] dark:text-[#B0BCD0] font-normal">({c.relationship})</span>
+                        </p>
+                        <p className="font-mono text-[#515FC5] dark:text-[#818CF8] font-semibold tabular-nums truncate">
+                          {c.phone}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+                        {telHref && (
+                          <a
+                            href={telHref}
+                            title={callAriaLabel}
+                            aria-label={callAriaLabel}
+                            className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg bg-[#515FC5]/10 hover:bg-[#515FC5]/20 dark:bg-[#818CF8]/15 dark:hover:bg-[#818CF8]/25 text-[#515FC5] dark:text-[#818CF8] border border-[#515FC5]/25 dark:border-[#818CF8]/30 font-semibold transition-colors cursor-pointer whitespace-nowrap"
+                          >
+                            <Phone className="w-3.5 h-3.5 shrink-0" />
+                            <span>Call</span>
+                          </a>
+                        )}
+                        <button
+                          type="button"
+                          disabled={deletingContactId === c.id}
+                          onClick={() => handleDeleteContact(c.id)}
+                          title="Delete contact"
+                          aria-label={`Delete emergency contact ${c.name}`}
+                          className="p-1.5 rounded-lg text-[#626E86] dark:text-[#B0BCD0] hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/30 cursor-pointer disabled:opacity-50"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
                     </div>
-                    <button
-                      type="button"
-                      disabled={deletingContactId === c.id}
-                      onClick={() => handleDeleteContact(c.id)}
-                      title="Delete contact"
-                      aria-label={`Delete emergency contact ${c.name}`}
-                      className="p-1.5 rounded-lg text-[#626E86] dark:text-[#B0BCD0] hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/30 cursor-pointer disabled:opacity-50"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
 
