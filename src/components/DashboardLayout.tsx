@@ -121,9 +121,10 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({
       >
         <div className="p-4 border-b border-[#DCE2EC] dark:border-[#34445D] flex items-center justify-between">
           <Link
-            to="/dashboard"
+            to="/"
             onClick={() => setMobileSidebarOpen(false)}
-            className="flex items-center gap-2.5"
+            aria-label="Go to DIU Ride homepage"
+            className="flex items-center gap-2.5 cursor-pointer"
           >
             <div className="w-8 h-8 rounded-xl bg-[#4F5FC9] dark:bg-[#818CF8] text-white dark:text-[#111827] flex items-center justify-center font-bold shadow-md shadow-[#4F5FC9]/20">
               <Car className="w-4 h-4" />
