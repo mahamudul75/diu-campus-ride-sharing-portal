@@ -219,6 +219,13 @@ export async function getDriverApplicationHistory(req: AuthRequest, res: Respons
       throw err;
     }
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({
+        success: false,
+        message: 'Database service is temporarily unavailable. Please try again shortly.'
+      });
+      return;
+    }
     console.error('getDriverApplicationHistory error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch driver application history.' });
   }

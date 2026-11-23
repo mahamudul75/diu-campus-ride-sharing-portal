@@ -108,7 +108,7 @@ export async function getRides(req: AuthRequest, res: Response): Promise<void> {
       SELECT r.id, r.driver_id, r.pickup_name, r.pickup_lat, r.pickup_lng,
              r.dest_name, r.dest_lat, r.dest_lng, r.departure_time, r.fare,
              r.seats_total, r.seats_available, r.vehicle_type, r.note, r.status, r.created_at,
-             u.name AS driver_name, u.email AS driver_email, u.vehicle_model AS driver_vehicle_model,
+             u.name AS driver_name, u.vehicle_model AS driver_vehicle_model,
              u.vehicle_plate AS driver_vehicle_plate
       FROM rides r
       JOIN users u ON r.driver_id = u.id
@@ -179,6 +179,7 @@ export async function getRides(req: AuthRequest, res: Response): Promise<void> {
       const ext = extCache.get(Number(r.driver_id));
       return {
         ...r,
+        driver_email: null, // Never expose email in public ride search results
         driver_vehicle_plate: null, // Mask plate in public search list
         departure_time: toUtcIsoString(r.departure_time),
         distance_km: distKm,
@@ -242,6 +243,7 @@ export async function getRideById(req: AuthRequest, res: Response): Promise<void
 
     let userRequest: any = null;
     const isDriver = Boolean(req.user && req.user.id === ride.driver_id);
+    const isAdmin = Boolean(req.user && req.user.role === 'admin');
     let isAccepted = false;
     let isBlockedPair = false;
 
@@ -280,10 +282,12 @@ export async function getRideById(req: AuthRequest, res: Response): Promise<void
     const estMins = estimateDurationMinutes(distKm, ride.vehicle_type === 'car' ? 'car' : 'bike');
 
     const allowPhoneReveal = isDriver || (isAccepted && driverExt.show_phone_to_accepted !== 0);
+    const allowEmailReveal = isDriver || isAdmin || (isAccepted && !isBlockedPair);
 
     const safeRide = {
       ...ride,
       departure_time: toUtcIsoString(ride.departure_time),
+      driver_email: allowEmailReveal ? ride.driver_email : null,
       driver_phone: allowPhoneReveal ? ride.driver_phone : null,
       driver_vehicle_plate: isDriver || isAccepted ? ride.driver_vehicle_plate : null,
       distance_km: distKm,
@@ -809,7 +813,15 @@ export async function updateRideStatus(req: AuthRequest, res: Response): Promise
 
     await conn.query('UPDATE rides SET status = ? WHERE id = ?', [effectiveTarget, rideId]);
 
+    let cancelledPassengerIds: number[] = [];
     if (effectiveTarget === 'cancelled') {
+      const [affectedRows] = await conn.query(
+        'SELECT DISTINCT passenger_id FROM ride_requests WHERE ride_id = ? AND status IN (?, ?)',
+        [rideId, 'pending', 'accepted']
+      );
+      if (Array.isArray(affectedRows)) {
+        cancelledPassengerIds = (affectedRows as any[]).map((row) => Number(row.passenger_id)).filter(Boolean);
+      }
       await conn.query(
         "UPDATE ride_requests SET status = 'cancelled', updated_at = NOW() WHERE ride_id = ? AND status IN ('pending', 'accepted')",
         [rideId]
@@ -838,13 +850,15 @@ export async function updateRideStatus(req: AuthRequest, res: Response): Promise
         `Your ride from ${ride.pickup_name} to ${ride.dest_name} is complete. Share a rating for your driver.`
       );
     } else if (effectiveTarget === 'cancelled') {
-      await notifyRidePassengers(
-        rideId,
-        ['cancelled'] as any,
-        'ride_cancelled',
-        'Ride Cancelled by Driver',
-        `The ride from ${ride.pickup_name} to ${ride.dest_name} has been cancelled.`
-      );
+      for (const passengerId of cancelledPassengerIds) {
+        await createNotification({
+          userId: passengerId,
+          type: 'ride_cancelled',
+          title: 'Ride Cancelled by Driver',
+          message: `The ride from ${ride.pickup_name} to ${ride.dest_name} has been cancelled.`,
+          link: `/rides/${rideId}`
+        });
+      }
     }
 
     res.status(200).json({

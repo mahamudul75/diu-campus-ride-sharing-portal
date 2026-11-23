@@ -7,7 +7,7 @@ import { useToast } from '../context/ToastContext.tsx';
 import MapPicker, { LocationPoint } from '../components/MapPicker.tsx';
 import DashboardLayout from '../components/DashboardLayout.tsx';
 import Spinner from '../components/Spinner.tsx';
-import { isValidRideCoordinate } from '../utils/validators.ts';
+import { isValidRideCoordinate, isValidRideFare } from '../utils/validators.ts';
 
 export const PostRidePage: React.FC = () => {
   const { user } = useAuth();
@@ -84,8 +84,8 @@ export const PostRidePage: React.FC = () => {
     }
 
     const numFare = Number(fare);
-    if (isNaN(numFare) || numFare < 0) {
-      setError('Please enter a valid fare in BDT.');
+    if (!isValidRideFare(numFare)) {
+      setError('Fare must be between 0 and 50,000 BDT.');
       return;
     }
 
@@ -237,7 +237,7 @@ export const PostRidePage: React.FC = () => {
                     type="number"
                     required
                     min="0"
-                    max="1000"
+                    max="50000"
                     value={fare}
                     onChange={(e) => setFare(e.target.value)}
                     className="w-full text-sm pl-8 pr-4 py-2 bg-white dark:bg-[#24334B] text-[#222B42] dark:text-[#F1F4FC] border border-[#D4DAE7] dark:border-[#34445E] rounded-xl focus:outline-hidden focus:ring-2 focus:ring-[#515FC5]/20 focus:border-[#515FC5] dark:focus:border-[#818CF8] transition-all font-black font-mono"

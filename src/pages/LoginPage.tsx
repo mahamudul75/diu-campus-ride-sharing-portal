@@ -3,6 +3,7 @@ import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { LogIn, Mail, Lock, ArrowRight } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.tsx';
 import Spinner from '../components/Spinner.tsx';
+import { getSafeRedirectPath } from '../utils/validators.ts';
 
 export const LoginPage: React.FC = () => {
   const { login } = useAuth();
@@ -10,7 +11,7 @@ export const LoginPage: React.FC = () => {
   const location = useLocation();
 
   const queryParams = new URLSearchParams(location.search);
-  const redirectPath = queryParams.get('redirect') || '/dashboard';
+  const redirectPath = getSafeRedirectPath(queryParams.get('redirect'), '/dashboard');
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');

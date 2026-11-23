@@ -367,7 +367,7 @@ export async function requestPasswordReset(req: AuthRequest, res: Response): Pro
     );
     const user = Array.isArray(rows) && rows.length > 0 ? (rows[0] as any) : null;
 
-    if (user && !user.is_blocked) {
+    if (user && !isTruthyDbFlag(user.is_blocked)) {
       const rawToken = await createAuthToken(user.id, 'password_reset', 30);
       if (!rawToken) {
         res.status(503).json({ success: false, message: 'Password reset storage requires Migration 002.' });
@@ -450,6 +450,26 @@ export async function resetPassword(req: AuthRequest, res: Response): Promise<vo
         await conn.rollback();
         txActive = false;
         res.status(400).json({ success: false, message: 'This password reset token has expired.' });
+        return;
+      }
+
+      const [targetRows] = await conn.query('SELECT id, is_blocked FROM users WHERE id = ? FOR UPDATE', [
+        record.user_id
+      ]);
+      const targetUser = Array.isArray(targetRows) && targetRows.length > 0 ? (targetRows[0] as any) : null;
+      if (!targetUser) {
+        await conn.rollback();
+        txActive = false;
+        res.status(400).json({ success: false, message: 'Invalid or already used password reset token.' });
+        return;
+      }
+      if (isTruthyDbFlag(targetUser.is_blocked)) {
+        await conn.rollback();
+        txActive = false;
+        res.status(403).json({
+          success: false,
+          message: 'Your account has been suspended by campus administration.'
+        });
         return;
       }
 
@@ -604,6 +624,26 @@ export async function verifyEmail(req: AuthRequest, res: Response): Promise<void
         await conn.rollback();
         txActive = false;
         res.status(400).json({ success: false, message: 'This verification token has expired.' });
+        return;
+      }
+
+      const [targetRows] = await conn.query('SELECT id, is_blocked FROM users WHERE id = ? FOR UPDATE', [
+        record.user_id
+      ]);
+      const targetUser = Array.isArray(targetRows) && targetRows.length > 0 ? (targetRows[0] as any) : null;
+      if (!targetUser) {
+        await conn.rollback();
+        txActive = false;
+        res.status(400).json({ success: false, message: 'Invalid or already used verification token.' });
+        return;
+      }
+      if (isTruthyDbFlag(targetUser.is_blocked)) {
+        await conn.rollback();
+        txActive = false;
+        res.status(403).json({
+          success: false,
+          message: 'Your account has been suspended by campus administration.'
+        });
         return;
       }
 

@@ -241,6 +241,7 @@ export async function getRideRequests(req: AuthRequest, res: Response): Promise<
     const requestRows = hasMore ? rawRows.slice(0, limit) : rawRows;
     const passengerIds = requestRows.map((r) => Number(r.passenger_id));
 
+    const isAdmin = req.user.role === 'admin';
     const [ratingsMap, extMap] = await Promise.all([
       getUserRatingSummaries(passengerIds),
       getUserExtendedFieldsBatch(passengerIds, { includeAvatar: true })
@@ -251,9 +252,11 @@ export async function getRideRequests(req: AuthRequest, res: Response): Promise<
       const ext = extMap.get(pid);
       const rating = ratingsMap.get(pid) || { avg_rating: null, review_count: 0 };
       const canSeePhone =
-        r.status === 'accepted' && ((ext?.show_phone_to_accepted ?? 1) !== 0 || req.user?.role === 'admin');
+        r.status === 'accepted' && ((ext?.show_phone_to_accepted ?? 1) !== 0 || isAdmin);
+      const canSeeEmail = isAdmin || r.status === 'accepted';
       return {
         ...r,
+        passenger_email: canSeeEmail ? r.passenger_email : null,
         passenger_phone: canSeePhone ? r.passenger_phone : null,
         passenger_student_verified: ext?.student_verified ?? 0,
         passenger_email_verified: ext?.email_verified ?? 0,
@@ -785,6 +788,7 @@ export async function getMyRequests(req: AuthRequest, res: Response): Promise<vo
     const driverIds = requestRows.map((r) => Number(r.driver_id)).filter(Boolean);
     const rideIds = Array.from(new Set(requestRows.map((r) => Number(r.ride_id)).filter(Boolean)));
 
+    const isAdmin = req.user.role === 'admin';
     const [ratingMap, extCache, reviewedRideIds] = await Promise.all([
       getUserRatingSummaries(driverIds),
       getUserExtendedFieldsBatch(driverIds, { includeAvatar: false }),
@@ -812,13 +816,16 @@ export async function getMyRequests(req: AuthRequest, res: Response): Promise<vo
         r.pickup_lat !== undefined && r.dest_lat !== undefined
           ? calculateHaversineDistanceKm(Number(r.pickup_lat), Number(r.pickup_lng), Number(r.dest_lat), Number(r.dest_lng))
           : null;
-      const ext = r.driver_id ? extCache.get(Number(r.driver_id)) : undefined;
-      const rating = r.driver_id ? ratingMap.get(Number(r.driver_id)) : undefined;
+      const did = r.driver_id ? Number(r.driver_id) : 0;
+      const ext = did ? extCache.get(did) : undefined;
+      const rating = did ? ratingMap.get(did) : undefined;
       const allowPhone = r.status === 'accepted' && (ext?.show_phone_to_accepted ?? 1) !== 0;
+      const allowEmail = isAdmin || r.status === 'accepted';
 
       return {
         ...r,
         departure_time: r.departure_time ? toUtcIsoString(r.departure_time) : r.departure_time,
+        driver_email: allowEmail ? r.driver_email : null,
         driver_phone: allowPhone ? r.driver_phone : null,
         driver_vehicle_plate: r.status === 'accepted' ? r.driver_vehicle_plate : null,
         distance_km: distKm,
@@ -894,6 +901,7 @@ export async function getIncomingRequests(req: AuthRequest, res: Response): Prom
       new Set(requestRows.map((r) => Number(r.passenger_id)).filter(Boolean))
     );
 
+    const isAdmin = req.user.role === 'admin';
     const [ratingsMap, extMap] = await Promise.all([
       getUserRatingSummaries(passengerIds),
       getUserExtendedFieldsBatch(passengerIds, { includeAvatar: true })
@@ -904,7 +912,8 @@ export async function getIncomingRequests(req: AuthRequest, res: Response): Prom
       const ext = extMap.get(pid);
       const rating = ratingsMap.get(pid) || { avg_rating: null, review_count: 0 };
       const canSeePhone =
-        r.status === 'accepted' && ((ext?.show_phone_to_accepted ?? 1) !== 0 || req.user?.role === 'admin');
+        r.status === 'accepted' && ((ext?.show_phone_to_accepted ?? 1) !== 0 || isAdmin);
+      const canSeeEmail = isAdmin || r.status === 'accepted';
       const distKm =
         r.pickup_lat !== undefined && r.dest_lat !== undefined
           ? calculateHaversineDistanceKm(Number(r.pickup_lat), Number(r.pickup_lng), Number(r.dest_lat), Number(r.dest_lng))
@@ -913,6 +922,7 @@ export async function getIncomingRequests(req: AuthRequest, res: Response): Prom
       return {
         ...r,
         departure_time: r.departure_time ? toUtcIsoString(r.departure_time) : r.departure_time,
+        passenger_email: canSeeEmail ? r.passenger_email : null,
         passenger_phone: canSeePhone ? r.passenger_phone : null,
         passenger_student_verified: ext?.student_verified ?? 0,
         passenger_email_verified: ext?.email_verified ?? 0,

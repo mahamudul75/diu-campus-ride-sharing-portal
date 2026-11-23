@@ -2,13 +2,18 @@
 -- CAMPUS RIDE SHARING PORTAL — DAFFODIL INTERNATIONAL UNIVERSITY (DIU)
 -- Database: MySQL 8.0+ / TiDB Cloud
 -- Schema Definition: server/src/database/schema.sql
+--
+-- WARNING: FRESH DATABASE INITIALIZATION SCRIPT ONLY
+-- This file contains destructive DROP TABLE IF EXISTS statements and resets
+-- all tables. NEVER execute this script against an existing or live database.
+-- For existing databases, apply incremental scripts under migrations/ instead.
 -- ============================================================================
 
-CREATE DATABASE IF NOT EXISTS diu_ride_sharing
+CREATE DATABASE IF NOT EXISTS diu_campus_ride_sharing
   CHARACTER SET utf8mb4
   COLLATE utf8mb4_unicode_ci;
 
-USE diu_ride_sharing;
+USE diu_campus_ride_sharing;
 
 SET FOREIGN_KEY_CHECKS = 0;
 

@@ -200,6 +200,14 @@ export async function createReview(
       return;
     }
 
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({
+        success: false,
+        message: 'Database service is temporarily unavailable. Please try again shortly.'
+      });
+      return;
+    }
+
     console.error('createReview error:', error);
 
     res.status(500).json({
@@ -288,6 +296,13 @@ export async function getUserReviews(
       throw err;
     }
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({
+        success: false,
+        message: 'Database service is temporarily unavailable. Please try again shortly.'
+      });
+      return;
+    }
     console.error('getUserReviews error:', error);
 
     res.status(500).json({
@@ -434,6 +449,13 @@ export async function getRideReviewsAndEligibility(
       eligible_targets: eligibleTargets
     });
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({
+        success: false,
+        message: 'Database service is temporarily unavailable. Please try again shortly.'
+      });
+      return;
+    }
     console.error('getRideReviewsAndEligibility error:', error);
 
     res.status(500).json({

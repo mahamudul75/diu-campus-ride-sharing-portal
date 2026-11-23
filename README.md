@@ -37,10 +37,10 @@ Unlike public commercial ride-hailing applications, this platform provides a clo
 | API Architecture | REST API |
 | Security | Helmet, CORS, Cookie-Parser |
 | Authentication | JWT, bcryptjs, HttpOnly Cookies |
-| Database | MySQL 8.0+, mysql2 |
-| Database Fallback | Transactional in-memory relational store |
-| Mapping | Leaflet 1.9, OpenStreetMap |
-| Geocoding | Nominatim |
+| Database | MySQL 8.0+ / TiDB Cloud Serverless (`mysql2`) |
+| Database Fallback | Transactional in-memory relational store (dev/test only) |
+| Mapping & Routing | Leaflet 1.9, OpenStreetMap tiles (with OSM Germany fallback), OSRM |
+| Geocoding | Nominatim (OpenStreetMap) |
 | Testing | Node.js, tsx |
 
 ---
@@ -134,12 +134,13 @@ JWT_EXPIRES_IN=7d
 
 DIU_EMAIL_DOMAIN=diu.edu.bd
 
-# MySQL Configuration
+# MySQL / TiDB Cloud Configuration
 DB_HOST=localhost
 DB_PORT=3306
 DB_USER=root
-DB_PASSWORD=your_mysql_password
-DB_NAME=diu_ride_sharing
+DB_PASSWORD=your_database_password
+DB_NAME=diu_campus_ride_sharing
+DB_SSL_CA="path/to/isrgrootx1.pem"
 ```
 
 **Security Notice:**
@@ -149,26 +150,30 @@ DB_NAME=diu_ride_sharing
 
 ### Step 4: Database Setup
 
-If you are using MySQL locally:
+If you are initializing a **brand-new** local MySQL or TiDB database:
 
-1. Create the project database.
-2. Review the existing database schema.
-3. Apply the required database migrations in the correct order.
-4. Insert development seed data if required.
-
-Example:
+1. Create the project database:
 
 ```sql
-CREATE DATABASE diu_ride_sharing;
+CREATE DATABASE IF NOT EXISTS diu_campus_ride_sharing;
 ```
 
-The project includes database schema and migration files under:
+2. Run `server/src/database/schema.sql` **only on a fresh empty database** (warning: `schema.sql` contains `DROP TABLE IF EXISTS` statements and will wipe existing tables).
+3. For existing databases, apply incremental migrations instead of re-running `schema.sql`:
 
-```text
-server/src/database/
+```bash
+npm run migrate
+npm run migrate:indexes
+npm run migrate:passenger-requests
 ```
 
-**Important:** Follow the project's existing migration instructions and migration sequence. Do not execute the base schema or seed scripts repeatedly against an existing database without checking their compatibility.
+4. Provision the campus admin account safely using environment variables (`ADMIN_NAME`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `ADMIN_STUDENT_ID`, `ADMIN_PHONE` in `.env`):
+
+```bash
+npm run seed:admin
+```
+
+*(Note: `server/src/database/seed.sql` is intended strictly for fresh local development/testing environments as it contains `TRUNCATE TABLE` statements. Never execute `schema.sql` or `seed.sql` against a live or shared database.)*
 
 ### Step 5: Run the Application
 
@@ -186,19 +191,10 @@ http://localhost:3000
 
 ---
 
-## 🔑 Demo Accounts
+## 🔑 Admin & Development Accounts
 
-The following accounts are intended for development, demonstration, and academic evaluation, provided they are available in the configured seed database.
-
-| Role | Email | Password |
-|---|---|---|
-| Campus Admin | `admin@diu.edu.bd` | `Admin123!` |
-| Approved Driver | `tanvir.cse@diu.edu.bd` | `Password123!` |
-| Approved Driver | `nusrat.swe@diu.edu.bd` | `Password123!` |
-| Pending Driver | `rahat.eee@diu.edu.bd` | `Password123!` |
-| Student Passenger | `sadia.bba@diu.edu.bd` | `Password123!` |
-
-**Note:** Demo account availability depends on the configured development seed data. Do not use these credentials in a production environment.
+- **Campus Admin:** Provisioned safely via `npm run seed:admin` using the `ADMIN_*` environment variables defined in your local `.env` file (`ADMIN_EMAIL`, `ADMIN_PASSWORD`, `ADMIN_NAME`, `ADMIN_STUDENT_ID`, `ADMIN_PHONE`). Never hardcode or publish production credentials.
+- **Local Development Seed Data:** If you run `server/src/database/seed.sql` on an empty local database, sample student/driver/admin rows are created for local UI walkthroughs; review `seed.sql` directly if needed for local development and change all passwords before any shared deployment.
 
 ---
 
@@ -232,10 +228,12 @@ Additional tests may cover booking concurrency, authorization, validation, and o
 Run the available quality checks:
 
 ```bash
-npm run build
-npm test
 npm run lint
+npm run test
+npm run build
 ```
+
+*(In `package.json`, `npm run lint` runs TypeScript verification via `tsc --noEmit`, `npm test` runs the isolated in-memory test suite `test/run-tests.ts`, and `npm run build` runs `vite build`.)*
 
 Only use scripts available in the project's `package.json`.
 
@@ -249,65 +247,141 @@ Base URL:
 http://localhost:3000/api
 ```
 
+### 0. Health & Liveness
+
+| Method | Endpoint | Description |
+|---|---|---|
+| GET | `/health` | Readiness & database connection health check |
+| GET | `/live` | Lightweight process liveness check |
+
 ### 1. Authentication
 
 | Method | Endpoint | Description |
 |---|---|---|
 | POST | `/auth/register` | Register a DIU student |
-| POST | `/auth/login` | Authenticate student and set cookie |
+| POST | `/auth/login` | Authenticate student and set HttpOnly cookie |
 | POST | `/auth/logout` | Clear authentication cookie |
 | GET | `/auth/me` | Retrieve authenticated student |
+| POST | `/auth/forgot-password` | Request password reset token |
+| POST | `/auth/reset-password` | Reset password with valid reset token |
+| POST | `/auth/verify-email` | Verify student email with verification token |
+| POST | `/auth/resend-verification` | Resend email verification token |
 
 ### 2. User Profile
 
 | Method | Endpoint | Description |
 |---|---|---|
 | GET | `/users/profile` | Retrieve student profile |
-| PUT | `/users/profile` | Update profile information |
+| GET | `/users/dashboard-stats` | Retrieve personal booking and ride counts |
+| PUT | `/users/profile` | Update profile information and privacy toggle |
 | PUT | `/users/password` | Change account password |
+| POST | `/users/avatar` | Upload validated profile avatar image |
+| DELETE | `/users/avatar` | Remove profile avatar |
+| GET | `/users/:id/public` | View public DIU student profile |
 
 ### 3. Driver Operations
 
 | Method | Endpoint | Description |
 |---|---|---|
 | POST | `/drivers/apply` | Submit driver application |
+| GET | `/drivers/history` | View driver application review history |
 
 ### 4. Ride Management
 
 | Method | Endpoint | Description |
 |---|---|---|
 | GET | `/rides` | Search rides with filters |
+| GET | `/rides/mine` | Retrieve posted rides |
 | GET | `/rides/:id` | Retrieve ride details |
 | POST | `/rides` | Publish a ride (approved drivers only) |
-| PUT | `/rides/:id` | Update an open ride |
-| PATCH | `/rides/:id/cancel` | Cancel a scheduled ride |
+| PUT | `/rides/:id` | Update an open/scheduled ride |
+| PATCH | `/rides/:id/status` | Update ride status (`scheduled`, `open`, `in_progress`, `completed`, `cancelled`) |
+| PATCH | `/rides/:id/cancel` | Cancel a scheduled/open ride |
 | PATCH | `/rides/:id/complete` | Mark a ride as completed |
-| GET | `/rides/mine` | Retrieve posted rides |
 
 ### 5. Ride Requests & Bookings
 
 | Method | Endpoint | Description |
 |---|---|---|
 | POST | `/rides/:id/requests` | Submit a booking request |
-| GET | `/rides/:id/requests` | Retrieve incoming ride requests |
+| GET | `/rides/:id/requests` | Retrieve incoming requests for a specific ride |
+| GET | `/requests/mine` | Retrieve personal passenger booking requests |
+| GET | `/requests/incoming` | Retrieve incoming booking requests across driver's rides |
 | PATCH | `/requests/:id/accept` | Accept a booking request |
 | PATCH | `/requests/:id/reject` | Reject a booking request |
 | PATCH | `/requests/:id/cancel` | Cancel a booking request |
-| GET | `/requests/mine` | Retrieve personal booking requests |
 
-### 6. Administration
+### 6. Passenger Ride Requests & Driver Offers
+
+| Method | Endpoint | Description |
+|---|---|---|
+| GET | `/passenger-requests` | Browse open passenger requests (approved drivers only) |
+| GET | `/passenger-requests/mine` | Retrieve personal passenger requests |
+| GET | `/passenger-requests/offers/mine` | Retrieve offers submitted by authenticated driver |
+| GET | `/passenger-requests/:id` | View passenger request details and offers |
+| POST | `/passenger-requests` | Post a new passenger ride request |
+| PATCH | `/passenger-requests/:id/cancel` | Cancel own passenger ride request |
+| POST | `/passenger-requests/:id/offers` | Submit a driver offer for a passenger request |
+| PATCH | `/passenger-requests/offers/:offerId` | Update a pending driver offer |
+| PATCH | `/passenger-requests/offers/:offerId/withdraw` | Withdraw a pending driver offer |
+| PATCH | `/passenger-requests/:id/offers/:offerId/accept` | Accept a driver offer (atomic ride & booking creation) |
+| PATCH | `/passenger-requests/:id/offers/:offerId/reject` | Reject a driver offer |
+
+### 7. Reviews, Notifications, Chat & Safety Center
+
+| Method | Endpoint | Description |
+|---|---|---|
+| POST | `/reviews` | Submit a rating/review for a completed ride |
+| GET | `/reviews/user/:userId` | Retrieve reviews received by a student |
+| GET | `/reviews/ride/:rideId` | Retrieve ride reviews and review eligibility |
+| GET | `/notifications` | List notifications and unread count |
+| PATCH | `/notifications/read-all` | Mark all notifications as read |
+| PATCH | `/notifications/:id/read` | Mark one notification as read |
+| DELETE | `/notifications/:id` | Delete a notification |
+| GET | `/chat/conversations` | List ride/match conversations |
+| POST | `/chat/conversations` | Get or create a conversation |
+| GET | `/chat/conversations/:id/messages` | Fetch conversation message history |
+| PATCH | `/chat/conversations/:id/read` | Mark conversation messages as read |
+| POST | `/chat/conversations/:id/messages` | Send a message in a conversation |
+| GET | `/safety/emergency-contacts` | List personal emergency contacts (max 5) |
+| POST | `/safety/emergency-contacts` | Add an emergency contact |
+| DELETE | `/safety/emergency-contacts/:id` | Remove an emergency contact |
+| POST | `/safety/reports` | Submit a student safety report |
+| GET | `/safety/reports/mine` | List submitted safety reports |
+| GET | `/safety/blocks` | List blocked users |
+| POST | `/safety/blocks` | Block a user |
+| DELETE | `/safety/blocks/:blockedId` | Unblock a user |
+
+### 8. Administration
 
 | Method | Endpoint | Description |
 |---|---|---|
 | GET | `/admin/stats` | Retrieve platform statistics |
-| GET | `/admin/users` | View student accounts |
+| GET | `/admin/users` | Search and list student accounts |
+| PATCH | `/admin/users/:id/verify` | Toggle Verified DIU Student badge |
 | PATCH | `/admin/users/:id/block` | Block or reactivate an account |
 | DELETE | `/admin/users/:id` | Remove a student account |
 | GET | `/admin/drivers/pending` | View pending driver applications |
 | PATCH | `/admin/drivers/:id/approve` | Approve a driver application |
 | PATCH | `/admin/drivers/:id/reject` | Reject a driver application |
+| GET | `/admin/rides` | View all platform rides |
+| PATCH | `/admin/rides/:id/moderate` | Cancel/moderate a ride and notify participants |
+| GET | `/admin/bookings` | View platform booking records |
+| GET | `/admin/reports` | View safety reports |
+| PATCH | `/admin/reports/:id` | Update report status and optionally suspend user |
 
 *All protected endpoints require the appropriate authentication and authorization.*
+
+---
+
+## 🗺️ Map Services & Public Provider Limitations
+
+The frontend uses free, zero-key public geospatial services by default:
+
+- **Map Tiles (`OpenStreetMap` + `OSM Germany` fallback):** Configured in `src/utils/mapConfig.ts`. Public OSM tile servers enforce fair-use/rate limits and may temporarily throttle heavy traffic; the client detects failed or policy-notice tiles and automatically falls back to OSM Germany.
+- **Geocoding (`Nominatim`):** Reverse and forward address searches in `MapPicker` use `https://nominatim.openstreetmap.org` with client-side debouncing (550 ms), in-memory response caching, request timeouts, and automatic `AbortController` cancellation. If Nominatim is temporarily unreachable or rate-limited, coordinate labels fall back gracefully to `lat, lng`.
+- **Routing (`OSRM`):** Route polylines and distance/ETA estimates use the public `https://router.project-osrm.org` demo server with timeouts and caching. If OSRM times out or rate-limits requests, maps automatically fall back to a dashed straight-line route with Haversine distance estimation.
+- **Production Recommendation:** For high-volume campus production traffic, consider hosting dedicated tile/OSRM/Nominatim instances or configuring a custom commercial tile endpoint via `VITE_MAP_TILE_URL` / `VITE_MAP_ATTRIBUTION` while respecting provider Terms of Service.
 
 ---
 

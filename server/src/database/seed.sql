@@ -1,12 +1,13 @@
 -- ============================================================================
 -- CAMPUS RIDE SHARING PORTAL — DAFFODIL INTERNATIONAL UNIVERSITY (DIU)
 -- Database Seed Data: server/src/database/seed.sql
--- Default Passwords:
---   Admin:   Admin123!    (Hash: $2b$10$zS3lqCszk9zI5U5Lq31q8eR69g41D1eT3Z1Q.nUuR6iI9n/7lPq4e)
---   Users:   Password123! (Hash: $2b$10$7ZkP9o6vW8eJ3R4T5Y6U7u8I9o0P1Q2R3S4T5U6V7W8X9Y0Z1A2B3C)
+--
+-- WARNING: DEVELOPMENT / DEMO FRESH-SEED SCRIPT ONLY
+-- Contains destructive TRUNCATE TABLE statements. Do NOT run against a live
+-- or production database. Use `npm run seed:admin` for production admin setup.
 -- ============================================================================
 
-USE diu_ride_sharing;
+USE diu_campus_ride_sharing;
 
 SET FOREIGN_KEY_CHECKS = 0;
 TRUNCATE TABLE ride_requests;

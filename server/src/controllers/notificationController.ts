@@ -67,6 +67,13 @@ export async function getMyNotifications(req: AuthRequest, res: Response): Promi
       throw err;
     }
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({
+        success: false,
+        message: 'Database service is temporarily unavailable. Please try again shortly.'
+      });
+      return;
+    }
     console.error('getMyNotifications error:', error);
     res.status(500).json({ success: false, message: 'Failed to load notifications.' });
   }
@@ -103,6 +110,13 @@ export async function markNotificationRead(req: AuthRequest, res: Response): Pro
 
     res.status(200).json({ success: true, message: 'Notification marked as read.' });
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({
+        success: false,
+        message: 'Database service is temporarily unavailable. Please try again shortly.'
+      });
+      return;
+    }
     if (error?.code === 'ER_NO_SUCH_TABLE') {
       res.status(503).json({ success: false, message: 'Notifications table requires Migration 002.' });
       return;
@@ -127,6 +141,13 @@ export async function markAllNotificationsRead(req: AuthRequest, res: Response):
 
     res.status(200).json({ success: true, message: 'All notifications marked as read.' });
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({
+        success: false,
+        message: 'Database service is temporarily unavailable. Please try again shortly.'
+      });
+      return;
+    }
     console.error('markAllNotificationsRead error:', error);
     res.status(500).json({ success: false, message: 'Failed to mark notifications as read.' });
   }
@@ -159,6 +180,13 @@ export async function deleteNotification(req: AuthRequest, res: Response): Promi
     await db.query('DELETE FROM notifications WHERE id = ? AND user_id = ?', [notificationId, req.user.id]);
     res.status(200).json({ success: true, message: 'Notification removed.' });
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({
+        success: false,
+        message: 'Database service is temporarily unavailable. Please try again shortly.'
+      });
+      return;
+    }
     if (error?.code === 'ER_NO_SUCH_TABLE') {
       res.status(503).json({ success: false, message: 'Notifications table requires Migration 002.' });
       return;

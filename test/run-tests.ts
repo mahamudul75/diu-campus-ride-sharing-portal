@@ -24,6 +24,8 @@ import {
 import apiRouter from '../server/src/routes/index.ts';
 import { getConversations, getOrCreateConversation } from '../server/src/controllers/chatController.ts';
 import { createRideRequest, acceptRequest } from '../server/src/controllers/requestController.ts';
+import { createRide } from '../server/src/controllers/rideController.ts';
+import { createReview } from '../server/src/controllers/reviewController.ts';
 import { resetPassword, verifyEmail } from '../server/src/controllers/authController.ts';
 import {
   submitUserReport,
@@ -42,7 +44,9 @@ import { isValidStudentId, isValidDiuEmail, isTruthyDbFlag } from '../server/src
 import {
   isValidDiuEmail as isFrontendValidDiuEmail,
   isValidBdPhone as isFrontendValidBdPhone,
-  isValidRideCoordinate
+  isValidRideCoordinate,
+  isValidRideFare,
+  getSafeRedirectPath
 } from '../src/utils/validators.ts';
 import { shouldIncrementUnreadChatCount } from '../src/utils/chatUnread.ts';
 import { isDbFlagTrue, isDbFlagNotFalse } from '../src/utils/boolean.ts';
@@ -4370,6 +4374,625 @@ async function runTests() {
     assert(
       p28RejectRes.status === 200 && rejectedRow?.status === 'rejected' && rejectedRow?.passenger_phone === null,
       'Rejecting an incoming request via PATCH /api/requests/:id/reject reflects in GET /api/requests/incoming'
+    );
+
+    // -----------------------------------------------------------------------
+    // PHASE 29: Student Email Privacy on Rides & Ride Requests
+    // -----------------------------------------------------------------------
+    console.log('\n[Phase 29] Student Email Privacy on Rides & Ride Requests');
+
+    const p29Hash = await bcrypt.hash('Pass29!123', 10);
+    const [p29DriverRes] = await db.query(
+      `INSERT INTO users (student_id, name, email, phone, password_hash, role, driver_status, vehicle_type, vehicle_model, vehicle_plate, is_blocked)
+       VALUES (?, ?, ?, ?, ?, 'student', 'approved', 'car', 'Honda Civic', 'Dhaka Metro-GA 29-2001', 0)`,
+      ['221-15-901', 'P29 Driver Owner', 'p29driver@diu.edu.bd', '+8801711000901', p29Hash]
+    );
+    const p29DriverId = Number((p29DriverRes as any).insertId);
+    await db.query("UPDATE users SET driver_status = 'approved' WHERE id = ?", [p29DriverId]);
+
+    const p29PassSpecs = [
+      { sid: '221-15-902', name: 'P29 Pass Accepted', email: 'p29accepted@diu.edu.bd', phone: '+8801711000902' },
+      { sid: '221-15-903', name: 'P29 Pass Pending', email: 'p29pending@diu.edu.bd', phone: '+8801711000903' },
+      { sid: '221-15-904', name: 'P29 Pass Rejected', email: 'p29rejected@diu.edu.bd', phone: '+8801711000904' },
+      { sid: '221-15-905', name: 'P29 Pass Cancelled', email: 'p29cancelled@diu.edu.bd', phone: '+8801711000905' },
+      { sid: '221-15-906', name: 'P29 Other Student', email: 'p29other@diu.edu.bd', phone: '+8801711000906' }
+    ];
+    const p29PassIds: number[] = [];
+    for (const spec of p29PassSpecs) {
+      const [uRes] = await db.query(
+        `INSERT INTO users (student_id, name, email, phone, password_hash, role, driver_status, is_blocked)
+         VALUES (?, ?, ?, ?, ?, 'student', 'none', 0)`,
+        [spec.sid, spec.name, spec.email, spec.phone, p29Hash]
+      );
+      p29PassIds.push(Number((uRes as any).insertId));
+    }
+    const [p29AcceptedId, p29PendingId, p29RejectedId, p29CancelledId, p29OtherId] = p29PassIds;
+
+    const p29DriverToken = generateToken({
+      id: p29DriverId,
+      email: 'p29driver@diu.edu.bd',
+      student_id: '221-15-901',
+      role: 'student',
+      driver_status: 'approved'
+    });
+    const p29AcceptedToken = generateToken({
+      id: p29AcceptedId,
+      email: 'p29accepted@diu.edu.bd',
+      student_id: '221-15-902',
+      role: 'student',
+      driver_status: 'none'
+    });
+    const p29PendingToken = generateToken({
+      id: p29PendingId,
+      email: 'p29pending@diu.edu.bd',
+      student_id: '221-15-903',
+      role: 'student',
+      driver_status: 'none'
+    });
+    const p29RejectedToken = generateToken({
+      id: p29RejectedId,
+      email: 'p29rejected@diu.edu.bd',
+      student_id: '221-15-904',
+      role: 'student',
+      driver_status: 'none'
+    });
+    const p29CancelledToken = generateToken({
+      id: p29CancelledId,
+      email: 'p29cancelled@diu.edu.bd',
+      student_id: '221-15-905',
+      role: 'student',
+      driver_status: 'none'
+    });
+    const p29OtherToken = generateToken({
+      id: p29OtherId,
+      email: 'p29other@diu.edu.bd',
+      student_id: '221-15-906',
+      role: 'student',
+      driver_status: 'none'
+    });
+
+    const p29DepSql = formatDateToMySqlUtc(new Date(Date.now() + 8 * 3600000));
+    const [p29RideRes] = await db.query(
+      `INSERT INTO rides
+        (driver_id, pickup_name, pickup_lat, pickup_lng, dest_name, dest_lat, dest_lng, departure_time, fare, seats_total, seats_available, vehicle_type, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 160, 4, 4, 'car', 'open')`,
+      [p29DriverId, 'P29 Campus Plaza', 23.8768, 90.3202, 'P29 Farmgate', 23.7561, 90.3872, p29DepSql]
+    );
+    const p29RideId = Number((p29RideRes as any).insertId);
+
+    const p29CreateAccepted = await callController(createRideRequest, {
+      user: { id: p29AcceptedId, name: 'P29 Pass Accepted', role: 'student' },
+      params: { id: String(p29RideId) }
+    });
+    const p29ReqAcceptedId = Number(p29CreateAccepted.body?.requestId);
+
+    const p29CreatePending = await callController(createRideRequest, {
+      user: { id: p29PendingId, name: 'P29 Pass Pending', role: 'student' },
+      params: { id: String(p29RideId) }
+    });
+    const p29ReqPendingId = Number(p29CreatePending.body?.requestId);
+
+    const p29CreateRejected = await callController(createRideRequest, {
+      user: { id: p29RejectedId, name: 'P29 Pass Rejected', role: 'student' },
+      params: { id: String(p29RideId) }
+    });
+    const p29ReqRejectedId = Number(p29CreateRejected.body?.requestId);
+
+    const p29CreateCancelled = await callController(createRideRequest, {
+      user: { id: p29CancelledId, name: 'P29 Pass Cancelled', role: 'student' },
+      params: { id: String(p29RideId) }
+    });
+    const p29ReqCancelledId = Number(p29CreateCancelled.body?.requestId);
+
+    const p29AcceptRes = await fetch(`${baseUrl}/requests/${p29ReqAcceptedId}/accept`, {
+      method: 'PATCH',
+      headers: { Origin: trustedOrigin, Authorization: `Bearer ${p29DriverToken}` }
+    });
+    const p29RejectRes = await fetch(`${baseUrl}/requests/${p29ReqRejectedId}/reject`, {
+      method: 'PATCH',
+      headers: { Origin: trustedOrigin, Authorization: `Bearer ${p29DriverToken}` }
+    });
+    const p29CancelRes = await fetch(`${baseUrl}/requests/${p29ReqCancelledId}/cancel`, {
+      method: 'PATCH',
+      headers: { Origin: trustedOrigin, Authorization: `Bearer ${p29CancelledToken}` }
+    });
+    assert(
+      p29AcceptRes.status === 200 && p29RejectRes.status === 200 && p29CancelRes.status === 200,
+      'Phase 29 setup creates accepted, pending, rejected, and cancelled ride requests'
+    );
+
+    // 1. Public ride search (GET /api/rides) never exposes driver_email
+    const p29SearchAnonJson: any = await (await fetch(`${baseUrl}/rides?limit=100`)).json();
+    const p29SearchOtherJson: any = await (
+      await fetch(`${baseUrl}/rides?limit=100`, { headers: { Authorization: `Bearer ${p29OtherToken}` } })
+    ).json();
+    const p29SearchAcceptedJson: any = await (
+      await fetch(`${baseUrl}/rides?limit=100`, { headers: { Authorization: `Bearer ${p29AcceptedToken}` } })
+    ).json();
+    const p29FoundAnon = (p29SearchAnonJson.rides || []).find((r: any) => Number(r.id) === p29RideId);
+    const p29FoundOther = (p29SearchOtherJson.rides || []).find((r: any) => Number(r.id) === p29RideId);
+    const p29FoundAccepted = (p29SearchAcceptedJson.rides || []).find((r: any) => Number(r.id) === p29RideId);
+    assert(
+      p29FoundAnon?.driver_email === null &&
+        p29FoundOther?.driver_email === null &&
+        p29FoundAccepted?.driver_email === null &&
+        (p29SearchAnonJson.rides || []).every((r: any) => r.driver_email === null),
+      'GET /api/rides masks driver_email in public and authenticated search listings'
+    );
+
+    // 2. Ride detail (GET /api/rides/:id) hides driver_email except for driver owner, admin, or accepted passenger
+    const [
+      p29DetailAnon,
+      p29DetailOther,
+      p29DetailPending,
+      p29DetailRejected,
+      p29DetailCancelled,
+      p29DetailAccepted,
+      p29DetailDriver,
+      p29DetailAdmin
+    ] = await Promise.all([
+      fetch(`${baseUrl}/rides/${p29RideId}`).then((r) => r.json()),
+      fetch(`${baseUrl}/rides/${p29RideId}`, { headers: { Authorization: `Bearer ${p29OtherToken}` } }).then((r) => r.json()),
+      fetch(`${baseUrl}/rides/${p29RideId}`, { headers: { Authorization: `Bearer ${p29PendingToken}` } }).then((r) => r.json()),
+      fetch(`${baseUrl}/rides/${p29RideId}`, { headers: { Authorization: `Bearer ${p29RejectedToken}` } }).then((r) => r.json()),
+      fetch(`${baseUrl}/rides/${p29RideId}`, { headers: { Authorization: `Bearer ${p29CancelledToken}` } }).then((r) => r.json()),
+      fetch(`${baseUrl}/rides/${p29RideId}`, { headers: { Authorization: `Bearer ${p29AcceptedToken}` } }).then((r) => r.json()),
+      fetch(`${baseUrl}/rides/${p29RideId}`, { headers: { Authorization: `Bearer ${p29DriverToken}` } }).then((r) => r.json()),
+      fetch(`${baseUrl}/rides/${p29RideId}`, { headers: { Cookie: adminLogin.cookie } }).then((r) => r.json())
+    ]);
+    assert(
+      (p29DetailAnon as any).ride?.driver_email === null &&
+        (p29DetailOther as any).ride?.driver_email === null &&
+        (p29DetailPending as any).ride?.driver_email === null &&
+        (p29DetailRejected as any).ride?.driver_email === null &&
+        (p29DetailCancelled as any).ride?.driver_email === null &&
+        (p29DetailAccepted as any).ride?.driver_email === 'p29driver@diu.edu.bd' &&
+        (p29DetailDriver as any).ride?.driver_email === 'p29driver@diu.edu.bd' &&
+        (p29DetailAdmin as any).ride?.driver_email === 'p29driver@diu.edu.bd',
+      'GET /api/rides/:id exposes driver_email only to driver owner, admin, and accepted unblocked passengers'
+    );
+
+    // 3. Passenger My Bookings (GET /api/requests/mine) hides driver_email unless request is accepted
+    const [p29MinePending, p29MineRejected, p29MineCancelled, p29MineAccepted] = await Promise.all([
+      fetch(`${baseUrl}/requests/mine`, { headers: { Authorization: `Bearer ${p29PendingToken}` } }).then((r) => r.json()),
+      fetch(`${baseUrl}/requests/mine`, { headers: { Authorization: `Bearer ${p29RejectedToken}` } }).then((r) => r.json()),
+      fetch(`${baseUrl}/requests/mine`, { headers: { Authorization: `Bearer ${p29CancelledToken}` } }).then((r) => r.json()),
+      fetch(`${baseUrl}/requests/mine`, { headers: { Authorization: `Bearer ${p29AcceptedToken}` } }).then((r) => r.json())
+    ]);
+    assert(
+      ((p29MinePending as any).requests || []).find((x: any) => x.id === p29ReqPendingId)?.driver_email === null &&
+        ((p29MineRejected as any).requests || []).find((x: any) => x.id === p29ReqRejectedId)?.driver_email === null &&
+        ((p29MineCancelled as any).requests || []).find((x: any) => x.id === p29ReqCancelledId)?.driver_email === null &&
+        ((p29MineAccepted as any).requests || []).find((x: any) => x.id === p29ReqAcceptedId)?.driver_email ===
+          'p29driver@diu.edu.bd',
+      'GET /api/requests/mine masks driver_email on pending/rejected/cancelled requests and reveals on accepted requests'
+    );
+
+    // 4. Ride Requests (GET /api/rides/:id/requests) & Incoming Requests (GET /api/requests/incoming)
+    const [p29RideReqsDriver, p29RideReqsAdmin, p29IncomingDriver] = await Promise.all([
+      fetch(`${baseUrl}/rides/${p29RideId}/requests`, {
+        headers: { Authorization: `Bearer ${p29DriverToken}` }
+      }).then((r) => r.json()),
+      fetch(`${baseUrl}/rides/${p29RideId}/requests`, {
+        headers: { Cookie: adminLogin.cookie }
+      }).then((r) => r.json()),
+      fetch(`${baseUrl}/requests/incoming`, {
+        headers: { Authorization: `Bearer ${p29DriverToken}` }
+      }).then((r) => r.json())
+    ]);
+
+    const rrDriverList: any[] = (p29RideReqsDriver as any).requests || [];
+    const rrAdminList: any[] = (p29RideReqsAdmin as any).requests || [];
+    const incDriverList: any[] = (p29IncomingDriver as any).requests || [];
+
+    assert(
+      rrDriverList.find((x) => x.id === p29ReqAcceptedId)?.passenger_email === 'p29accepted@diu.edu.bd' &&
+        rrDriverList.find((x) => x.id === p29ReqPendingId)?.passenger_email === null &&
+        rrDriverList.find((x) => x.id === p29ReqRejectedId)?.passenger_email === null &&
+        rrDriverList.find((x) => x.id === p29ReqCancelledId)?.passenger_email === null &&
+        rrAdminList.length === 4 &&
+        rrAdminList.every((x) => typeof x.passenger_email === 'string' && x.passenger_email.includes('@')),
+      'GET /api/rides/:id/requests masks passenger_email for pending/rejected/cancelled requests for driver while allowing accepted and admin'
+    );
+
+    assert(
+      incDriverList.find((x) => x.id === p29ReqAcceptedId)?.passenger_email === 'p29accepted@diu.edu.bd' &&
+        incDriverList.find((x) => x.id === p29ReqPendingId)?.passenger_email === null &&
+        incDriverList.find((x) => x.id === p29ReqRejectedId)?.passenger_email === null &&
+        incDriverList.find((x) => x.id === p29ReqCancelledId)?.passenger_email === null,
+      'GET /api/requests/incoming masks passenger_email for pending/rejected/cancelled requests and reveals for accepted requests'
+    );
+
+    // 5. Blocked user pair suppresses accepted email on ride detail view (while driver owner & admin retain access)
+    await db.query('INSERT INTO user_blocks (blocker_id, blocked_id) VALUES (?, ?)', [p29DriverId, p29AcceptedId]);
+    try {
+      const [p29BlkDetailPass, p29BlkDetailDriver, p29BlkDetailAdmin] = await Promise.all([
+        fetch(`${baseUrl}/rides/${p29RideId}`, { headers: { Authorization: `Bearer ${p29AcceptedToken}` } }).then((r) => r.json()),
+        fetch(`${baseUrl}/rides/${p29RideId}`, { headers: { Authorization: `Bearer ${p29DriverToken}` } }).then((r) => r.json()),
+        fetch(`${baseUrl}/rides/${p29RideId}`, { headers: { Cookie: adminLogin.cookie } }).then((r) => r.json())
+      ]);
+      assert(
+        (p29BlkDetailPass as any).ride?.driver_email === null &&
+          (p29BlkDetailDriver as any).ride?.driver_email === 'p29driver@diu.edu.bd' &&
+          (p29BlkDetailAdmin as any).ride?.driver_email === 'p29driver@diu.edu.bd',
+        'Blocked user pair suppresses driver_email on GET /api/rides/:id even for accepted booking while owner and admin retain access'
+      );
+    } finally {
+      await db.query('DELETE FROM user_blocks WHERE blocker_id = ? AND blocked_id = ?', [p29DriverId, p29AcceptedId]);
+    }
+
+    // =========================================================================
+    // Phase 30: Final Audit Bug-Fix Pass (Redirect, Fare, Blocked Tokens, 503, Cancel)
+    // =========================================================================
+    console.log('\n[Phase 30: Final Audit Bug-Fix Pass Tests]');
+
+    // 1. Login Redirect Validation (getSafeRedirectPath)
+    assert(
+      getSafeRedirectPath('/dashboard') === '/dashboard' &&
+        getSafeRedirectPath('/rides/42?tab=details') === '/rides/42?tab=details' &&
+        getSafeRedirectPath('/passenger-requests/5#offers') === '/passenger-requests/5#offers',
+      'getSafeRedirectPath preserves safe internal relative paths'
+    );
+    assert(
+      getSafeRedirectPath('//evil.com') === '/dashboard' &&
+        getSafeRedirectPath('///evil.com') === '/dashboard' &&
+        getSafeRedirectPath('https://evil.com/phish') === '/dashboard' &&
+        getSafeRedirectPath('http://evil.com') === '/dashboard' &&
+        getSafeRedirectPath('javascript:alert(1)') === '/dashboard' &&
+        getSafeRedirectPath('/\\evil.com') === '/dashboard' &&
+        getSafeRedirectPath('/%5cevil.com') === '/dashboard' &&
+        getSafeRedirectPath('%2F%2Fevil.com') === '/dashboard' &&
+        getSafeRedirectPath('dashboard') === '/dashboard' &&
+        getSafeRedirectPath('') === '/dashboard' &&
+        getSafeRedirectPath(null) === '/dashboard' &&
+        getSafeRedirectPath(undefined) === '/dashboard',
+      'getSafeRedirectPath rejects protocol-relative, external, encoded, backslash, and malformed redirects'
+    );
+
+    // 2. Fare Validation Alignment (0 - 50,000 BDT)
+    assert(
+      isValidRideFare(0) === true &&
+        isValidRideFare(1500) === true &&
+        isValidRideFare('50000') === true &&
+        isValidRideFare(-1) === false &&
+        isValidRideFare(50001) === false &&
+        isValidRideFare(NaN) === false &&
+        isValidRideFare(Infinity) === false &&
+        isValidRideFare('') === false &&
+        isValidRideFare(null) === false,
+      'isValidRideFare enforces consistent 0 to 50,000 BDT range'
+    );
+
+    const p30FareDep = new Date(Date.now() + 72 * 3600000).toISOString();
+    const p30RideHighFareCall = await callController(createRide, {
+      user: { id: 2, name: 'Tanvir Ahmed', role: 'student', driver_status: 'approved' },
+      body: {
+        pickup_name: 'DIU Gate 1',
+        pickup_lat: 23.8768,
+        pickup_lng: 90.3202,
+        dest_name: 'Airport',
+        dest_lat: 23.8513,
+        dest_lng: 90.4088,
+        departure_time: p30FareDep,
+        fare: 1500,
+        seats_total: 2,
+        vehicle_type: 'car'
+      }
+    });
+    const p30FareRideId = Number(p30RideHighFareCall.body?.rideId);
+    const p30CreatedRideDetail: any = await (await fetch(`${baseUrl}/rides/${p30FareRideId}`)).json();
+    assert(
+      p30RideHighFareCall.status === 201 &&
+        p30FareRideId > 0 &&
+        Number(p30CreatedRideDetail.ride?.fare) === 1500,
+      'createRide accepts valid fare of 1500 BDT (matching updated PostRidePage range)'
+    );
+
+    const p30RideOverMaxCall = await callController(createRide, {
+      user: { id: 2, name: 'Tanvir Ahmed', role: 'student', driver_status: 'approved' },
+      body: {
+        pickup_name: 'DIU Gate 1',
+        pickup_lat: 23.8768,
+        pickup_lng: 90.3202,
+        dest_name: 'Airport',
+        dest_lat: 23.8513,
+        dest_lng: 90.4088,
+        departure_time: p30FareDep,
+        fare: 50001,
+        seats_total: 2,
+        vehicle_type: 'car'
+      }
+    });
+    assert(p30RideOverMaxCall.status === 400, 'createRide rejects fare above 50,000 BDT (400)');
+
+    const p30UpdateOverMaxRes = await fetch(`${baseUrl}/rides/${p30FareRideId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: driverLogin.cookie },
+      body: JSON.stringify({ fare: 50001 })
+    });
+    assert(p30UpdateOverMaxRes.status === 400, 'PUT /api/rides/:id rejects fare above 50,000 BDT (400)');
+
+    // 3. Blocked Account Token & Recovery Security
+    const p30PassHash = await bcrypt.hash('Password123!', 10);
+    const [p30BlkIns] = await db.query(
+      `INSERT INTO users (student_id, name, email, phone, password_hash, role, driver_status)
+       VALUES (?, ?, ?, ?, ?, 'student', 'none')`,
+      ['231-15-981', 'P30 Blocked Student', 'p30blocked@diu.edu.bd', '01755551111', p30PassHash]
+    );
+    const p30BlkUserId = Number((p30BlkIns as any).insertId);
+    const p30BlkToken = generateToken({
+      id: p30BlkUserId,
+      email: 'p30blocked@diu.edu.bd',
+      student_id: '231-15-981',
+      role: 'student',
+      driver_status: 'none'
+    });
+
+    const p30ResetRaw = crypto.randomBytes(32).toString('hex');
+    const p30ResetHash = crypto.createHash('sha256').update(p30ResetRaw).digest('hex');
+    const p30VerifyRaw = crypto.randomBytes(32).toString('hex');
+    const p30VerifyHash = crypto.createHash('sha256').update(p30VerifyRaw).digest('hex');
+
+    await db.query(
+      'INSERT INTO auth_tokens (user_id, purpose, token_hash, expires_at) VALUES (?, ?, ?, ?)',
+      [p30BlkUserId, 'password_reset', p30ResetHash, formatDateToMySqlUtc(new Date(Date.now() + 3600000))]
+    );
+    await db.query(
+      'INSERT INTO auth_tokens (user_id, purpose, token_hash, expires_at) VALUES (?, ?, ?, ?)',
+      [p30BlkUserId, 'email_verify', p30VerifyHash, formatDateToMySqlUtc(new Date(Date.now() + 3600000))]
+    );
+
+    // Block user AFTER tokens were issued
+    await db.query('UPDATE users SET is_blocked = 1 WHERE id = ?', [p30BlkUserId]);
+
+    let p30ForgotMailsSent = 0;
+    setSmtpTransporterForTesting({
+      sendMail: async () => {
+        p30ForgotMailsSent += 1;
+        return { messageId: 'p30-blocked' };
+      }
+    } as any);
+    try {
+      const p30ForgotRes = await fetch(`${baseUrl}/auth/forgot-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Origin: trustedOrigin },
+        body: JSON.stringify({ email: 'p30blocked@diu.edu.bd' })
+      });
+      assert(
+        p30ForgotRes.status === 200 && p30ForgotMailsSent === 0,
+        'POST /api/auth/forgot-password returns neutral 200 and sends NO reset email to blocked accounts'
+      );
+    } finally {
+      resetSmtpTransporterForTesting();
+    }
+
+    const p30BlkResetRes = await fetch(`${baseUrl}/auth/reset-password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin },
+      body: JSON.stringify({
+        token: p30ResetRaw,
+        new_password: 'BypassPassword1!',
+        confirm_new_password: 'BypassPassword1!'
+      })
+    });
+    const p30BlkVerifyRes = await fetch(`${baseUrl}/auth/verify-email`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin },
+      body: JSON.stringify({ token: p30VerifyRaw })
+    });
+    const p30BlkResendRes = await fetch(`${baseUrl}/auth/resend-verification`, {
+      method: 'POST',
+      headers: { Origin: trustedOrigin, Authorization: `Bearer ${p30BlkToken}` }
+    });
+
+    const [p30BlkUserAfter] = await db.query('SELECT password_hash, email_verified FROM users WHERE id = ?', [
+      p30BlkUserId
+    ]);
+    const [p30BlkResetTok] = await db.query(
+      'SELECT id, used_at FROM auth_tokens WHERE token_hash = ?',
+      [p30ResetHash]
+    );
+    const [p30BlkVerifyTok] = await db.query(
+      'SELECT id, used_at FROM auth_tokens WHERE token_hash = ?',
+      [p30VerifyHash]
+    );
+    assert(
+      p30BlkResetRes.status === 403,
+      `Blocked account reset-password returns 403 (got ${p30BlkResetRes.status})`
+    );
+    assert(
+      p30BlkVerifyRes.status === 403,
+      `Blocked account verify-email returns 403 (got ${p30BlkVerifyRes.status})`
+    );
+    assert(
+      p30BlkResendRes.status === 403,
+      `Blocked account resend-verification returns 403 (got ${p30BlkResendRes.status})`
+    );
+    assert(
+      (p30BlkUserAfter as any[])[0].password_hash === p30PassHash &&
+        Number((p30BlkUserAfter as any[])[0].email_verified) === 0 &&
+        (p30BlkResetTok as any[])[0]?.used_at === null &&
+        (p30BlkVerifyTok as any[])[0]?.used_at === null,
+      'Blocked account password, email_verified, and auth_tokens remain unchanged/unconsumed'
+    );
+
+    // Unblock user and confirm previously valid tokens still work normally for active users (direct controller invocation to avoid authTokenLimiter quota)
+    await db.query('UPDATE users SET is_blocked = 0 WHERE id = ?', [p30BlkUserId]);
+    let p30ActiveVerifyStatus = 0;
+    let p30ActiveResetStatus = 0;
+    await verifyEmail(
+      { body: { token: p30VerifyRaw } } as any,
+      {
+        status: (code: number) => {
+          p30ActiveVerifyStatus = code;
+          return { json: () => {} };
+        }
+      } as any
+    );
+    await resetPassword(
+      {
+        body: {
+          token: p30ResetRaw,
+          new_password: 'UnblockedPass1!',
+          confirm_new_password: 'UnblockedPass1!'
+        }
+      } as any,
+      {
+        status: (code: number) => {
+          p30ActiveResetStatus = code;
+          return { json: () => {} };
+        }
+      } as any
+    );
+    assert(
+      p30ActiveVerifyStatus === 200 && p30ActiveResetStatus === 200,
+      'Active unblocked student can verify email and reset password normally'
+    );
+
+    // 4. Secondary Controllers HTTP 503 on DatabaseUnavailableError
+    const origQueryP30 = db.query;
+    const origGetConnP30 = db.getConnection;
+    const dbDownErrP30 = Object.assign(
+      new Error('Database service is temporarily unavailable. Please try again shortly.'),
+      { isDatabaseUnavailable: true, status: 503 }
+    );
+    try {
+      db.query = async (sql: string, params?: any[]) => {
+        if (
+          sql.includes('email_verified, student_verified, show_phone_to_accepted, bio') &&
+          sql.includes('FROM users WHERE id = ?')
+        ) {
+          return await origQueryP30(sql, params);
+        }
+        throw dbDownErrP30;
+      };
+      db.getConnection = async () => {
+        throw dbDownErrP30;
+      };
+
+      const createReview503 = await callController(createReview, {
+        user: { id: 5, name: 'Sadia', role: 'student' },
+        body: { ride_id: 1, reviewee_id: 2, rating: 5 }
+      });
+
+      const secondary503Responses = await Promise.all([
+        fetch(`${baseUrl}/reviews/user/2`),
+        fetch(`${baseUrl}/reviews/ride/1`),
+        fetch(`${baseUrl}/notifications`, { headers: { Cookie: sadiaNewLogin.cookie } }),
+        fetch(`${baseUrl}/notifications/read-all`, {
+          method: 'PATCH',
+          headers: { Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie }
+        }),
+        fetch(`${baseUrl}/notifications/1/read`, {
+          method: 'PATCH',
+          headers: { Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie }
+        }),
+        fetch(`${baseUrl}/notifications/1`, {
+          method: 'DELETE',
+          headers: { Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie }
+        }),
+        fetch(`${baseUrl}/users/profile`, { headers: { Cookie: sadiaNewLogin.cookie } }),
+        fetch(`${baseUrl}/users/dashboard-stats`, { headers: { Cookie: sadiaNewLogin.cookie } }),
+        fetch(`${baseUrl}/users/2/public`, { headers: { Cookie: sadiaNewLogin.cookie } }),
+        fetch(`${baseUrl}/users/profile`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: sadiaNewLogin.cookie },
+          body: JSON.stringify({ name: 'Test User', phone: '01712345678' })
+        }),
+        fetch(`${baseUrl}/drivers/history`, { headers: { Cookie: driverLogin.cookie } }),
+        fetch(`${baseUrl}/admin/stats`, { headers: { Cookie: adminLogin.cookie } }),
+        fetch(`${baseUrl}/admin/users`, { headers: { Cookie: adminLogin.cookie } }),
+        fetch(`${baseUrl}/admin/drivers/pending`, { headers: { Cookie: adminLogin.cookie } }),
+        fetch(`${baseUrl}/admin/rides`, { headers: { Cookie: adminLogin.cookie } }),
+        fetch(`${baseUrl}/admin/bookings`, { headers: { Cookie: adminLogin.cookie } }),
+        fetch(`${baseUrl}/admin/reports`, { headers: { Cookie: adminLogin.cookie } }),
+        fetch(`${baseUrl}/admin/rides/1/moderate`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: adminLogin.cookie },
+          body: JSON.stringify({ reason: 'Audit 503 test' })
+        })
+      ]);
+
+      const secondary503Bodies = await Promise.all(secondary503Responses.map((r) => r.json()));
+      assert(
+        createReview503.status === 503 &&
+          createReview503.body?.success === false &&
+          secondary503Responses.every((r) => r.status === 503) &&
+          secondary503Bodies.every(
+            (b: any) =>
+              b?.success === false &&
+              typeof b?.message === 'string' &&
+              !b.message.includes('ER_') &&
+              !b.message.includes('SELECT')
+          ),
+        `All 19 secondary controller endpoints return safe HTTP 503 on DatabaseUnavailableError: statuses=${[createReview503.status, ...secondary503Responses.map((r) => r.status)].join(',')}`
+      );
+    } finally {
+      db.query = origQueryP30;
+      db.getConnection = origGetConnP30;
+    }
+
+    // 5. Cancellation handler (PATCH /api/rides/:id/status -> cancelled) notifies only active pending/accepted passengers
+    const [p30Pass1Ins] = await db.query(
+      `INSERT INTO users (student_id, name, email, phone, password_hash, role, driver_status)
+       VALUES (?, ?, ?, ?, ?, 'student', 'none')`,
+      ['231-15-982', 'P30 SelfCancelled', 'p30selfcancel@diu.edu.bd', '01755551112', p30PassHash]
+    );
+    const [p30Pass2Ins] = await db.query(
+      `INSERT INTO users (student_id, name, email, phone, password_hash, role, driver_status)
+       VALUES (?, ?, ?, ?, ?, 'student', 'none')`,
+      ['231-15-983', 'P30 ActivePending', 'p30activepending@diu.edu.bd', '01755551113', p30PassHash]
+    );
+    const p30Pass1Id = Number((p30Pass1Ins as any).insertId);
+    const p30Pass2Id = Number((p30Pass2Ins as any).insertId);
+    const p30Pass1Token = generateToken({
+      id: p30Pass1Id,
+      email: 'p30selfcancel@diu.edu.bd',
+      student_id: '231-15-982',
+      role: 'student',
+      driver_status: 'none'
+    });
+
+    const p30Req1Call = await callController(createRideRequest, {
+      user: { id: p30Pass1Id, name: 'P30 SelfCancelled', role: 'student' },
+      params: { id: String(p30FareRideId) }
+    });
+    const p30Req1Id = Number(p30Req1Call.body?.requestId);
+    assert(p30Req1Call.status === 201 && p30Req1Id > 0, 'Passenger 1 submits booking prior to self-cancel');
+
+    // Passenger 1 self-cancels BEFORE driver cancels the ride
+    const p30SelfCancelRes = await fetch(`${baseUrl}/requests/${p30Req1Id}/cancel`, {
+      method: 'PATCH',
+      headers: { Origin: trustedOrigin, Authorization: `Bearer ${p30Pass1Token}` }
+    });
+    assert(p30SelfCancelRes.status === 200, 'Passenger 1 self-cancels booking prior to ride cancellation');
+
+    // Passenger 2 keeps an active pending request
+    const p30Req2Call = await callController(createRideRequest, {
+      user: { id: p30Pass2Id, name: 'P30 ActivePending', role: 'student' },
+      params: { id: String(p30FareRideId) }
+    });
+    assert(p30Req2Call.status === 201, 'Passenger 2 submits active pending request');
+
+    // Driver cancels ride via PATCH /api/rides/:id/status
+    const p30StatusCancelRes = await fetch(`${baseUrl}/rides/${p30FareRideId}/status`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Origin: trustedOrigin, Cookie: driverLogin.cookie },
+      body: JSON.stringify({ status: 'cancelled' })
+    });
+    assert(p30StatusCancelRes.status === 200, 'Driver cancels ride via PATCH /api/rides/:id/status');
+
+    const [p30Notif1Rows] = await db.query(
+      "SELECT id FROM notifications WHERE user_id = ? AND type = 'ride_cancelled'",
+      [p30Pass1Id]
+    );
+    const [p30Notif2Rows] = await db.query(
+      "SELECT id FROM notifications WHERE user_id = ? AND type = 'ride_cancelled'",
+      [p30Pass2Id]
+    );
+    assert(
+      (p30Notif1Rows as any[]).length === 0 && (p30Notif2Rows as any[]).length === 1,
+      'Ride status cancellation notifies active pending/accepted passengers without spamming already self-cancelled passengers'
     );
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));

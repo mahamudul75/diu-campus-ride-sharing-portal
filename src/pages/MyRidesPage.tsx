@@ -29,6 +29,7 @@ import Modal from '../components/Modal.tsx';
 import RateUserModal from '../components/RateUserModal.tsx';
 import ReportUserModal from '../components/ReportUserModal.tsx';
 import { isDbFlagTrue } from '../utils/boolean.ts';
+import { isValidRideFare } from '../utils/validators.ts';
 
 function toLocalDateTimeInputValue(isoString: string): string {
   const date = new Date(isoString);
@@ -352,6 +353,12 @@ export const MyRidesPage: React.FC = () => {
       return;
     }
 
+    const parsedFare = Number(editFare);
+    if (!isValidRideFare(parsedFare)) {
+      showToast('Fare must be between 0 and 50,000 BDT.', 'error');
+      return;
+    }
+
     setSavingEdit(true);
     try {
       const res = await api.put(`/rides/${editingRide.id}`, {
@@ -360,7 +367,7 @@ export const MyRidesPage: React.FC = () => {
         departure_time: parsedDep.toISOString(),
         seats_total: Number(editSeatsTotal),
         vehicle_type: editVehicleType,
-        fare: Number(editFare),
+        fare: parsedFare,
         note: editNote.trim() || null
       });
       if (res.data?.success) {

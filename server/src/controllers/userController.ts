@@ -34,6 +34,13 @@ export async function getProfile(req: AuthRequest, res: Response): Promise<void>
       user: { ...(rows[0] as any), ...ext, ...rating }
     });
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({
+        success: false,
+        message: 'Database service is temporarily unavailable. Please try again shortly.'
+      });
+      return;
+    }
     console.error('getProfile error:', error);
     res.status(500).json({ success: false, message: 'Failed to retrieve profile.' });
   }
@@ -126,6 +133,13 @@ export async function updateProfile(req: AuthRequest, res: Response): Promise<vo
       user: { ...(rows as any[])[0], ...ext }
     });
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({
+        success: false,
+        message: 'Database service is temporarily unavailable. Please try again shortly.'
+      });
+      return;
+    }
     console.error('updateProfile error:', error);
     res.status(500).json({ success: false, message: 'Failed to update profile.' });
   }
@@ -164,6 +178,13 @@ export async function uploadAvatar(req: AuthRequest, res: Response): Promise<voi
       res.status(503).json({ success: false, message: 'Profile avatar column requires Migration 002.' });
       return;
     }
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({
+        success: false,
+        message: 'Database service is temporarily unavailable. Please try again shortly.'
+      });
+      return;
+    }
     console.error('uploadAvatar error:', error);
     res.status(500).json({ success: false, message: 'Failed to upload profile picture.' });
   }
@@ -194,6 +215,13 @@ export async function removeAvatar(req: AuthRequest, res: Response): Promise<voi
   } catch (error: any) {
     if (error?.code === 'ER_BAD_FIELD_ERROR') {
       res.status(503).json({ success: false, message: 'Profile avatar column requires Migration 002.' });
+      return;
+    }
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({
+        success: false,
+        message: 'Database service is temporarily unavailable. Please try again shortly.'
+      });
       return;
     }
     console.error('removeAvatar error:', error);
@@ -253,6 +281,13 @@ export async function updatePassword(req: AuthRequest, res: Response): Promise<v
       message: 'Password changed successfully.'
     });
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({
+        success: false,
+        message: 'Database service is temporarily unavailable. Please try again shortly.'
+      });
+      return;
+    }
     console.error('updatePassword error:', error);
     res.status(500).json({ success: false, message: 'Failed to change password.' });
   }
@@ -301,6 +336,13 @@ export async function getPublicStudentProfile(req: AuthRequest, res: Response): 
       }
     });
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({
+        success: false,
+        message: 'Database service is temporarily unavailable. Please try again shortly.'
+      });
+      return;
+    }
     console.error('getPublicStudentProfile error:', error);
     res.status(500).json({ success: false, message: 'Failed to load student profile.' });
   }
@@ -344,6 +386,13 @@ export async function getDashboardStats(req: AuthRequest, res: Response): Promis
       }
     });
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({
+        success: false,
+        message: 'Database service is temporarily unavailable. Please try again shortly.'
+      });
+      return;
+    }
     console.error('getDashboardStats error:', error);
     res.status(500).json({ success: false, message: 'Failed to load dashboard statistics.' });
   }

@@ -125,6 +125,13 @@ export async function getAdminStats(_req: AuthRequest, res: Response): Promise<v
       }
     });
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({
+        success: false,
+        message: 'Database service is temporarily unavailable. Please try again shortly.'
+      });
+      return;
+    }
     console.error('getAdminStats error:', error);
     res.status(500).json({ success: false, message: 'Failed to retrieve admin dashboard stats.' });
   }
@@ -216,6 +223,13 @@ export async function getUsers(req: AuthRequest, res: Response): Promise<void> {
       }
     });
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({
+        success: false,
+        message: 'Database service is temporarily unavailable. Please try again shortly.'
+      });
+      return;
+    }
     console.error('getUsers error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch users.' });
   }
@@ -266,6 +280,13 @@ export async function verifyStudent(req: AuthRequest, res: Response): Promise<vo
       message: nextState === 1 ? `${user.name} marked as Verified DIU Student.` : `Verification removed for ${user.name}.`
     });
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({
+        success: false,
+        message: 'Database service is temporarily unavailable. Please try again shortly.'
+      });
+      return;
+    }
     console.error('verifyStudent error:', error);
     res.status(500).json({ success: false, message: 'Failed to update student verification.' });
   }
@@ -326,6 +347,13 @@ export async function toggleBlockUser(req: AuthRequest, res: Response): Promise<
       is_blocked: newBlockedState
     });
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({
+        success: false,
+        message: 'Database service is temporarily unavailable. Please try again shortly.'
+      });
+      return;
+    }
     console.error('toggleBlockUser error:', error);
     res.status(500).json({ success: false, message: 'Failed to update user block status.' });
   }
@@ -374,6 +402,13 @@ export async function deleteUser(req: AuthRequest, res: Response): Promise<void>
       message: 'User account and associated records removed successfully.'
     });
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({
+        success: false,
+        message: 'Database service is temporarily unavailable. Please try again shortly.'
+      });
+      return;
+    }
     console.error('deleteUser error:', error);
     res.status(500).json({ success: false, message: 'Failed to delete user.' });
   }
@@ -410,6 +445,13 @@ export async function getPendingDrivers(req: AuthRequest, res: Response): Promis
       }
     });
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({
+        success: false,
+        message: 'Database service is temporarily unavailable. Please try again shortly.'
+      });
+      return;
+    }
     console.error('getPendingDrivers error:', error);
     res.status(500).json({ success: false, message: 'Failed to retrieve pending drivers.' });
   }
@@ -761,6 +803,13 @@ export async function getAllRidesAdmin(req: AuthRequest, res: Response): Promise
       }
     });
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({
+        success: false,
+        message: 'Database service is temporarily unavailable. Please try again shortly.'
+      });
+      return;
+    }
     console.error('getAllRidesAdmin error:', error);
     res.status(500).json({ success: false, message: 'Failed to retrieve all rides.' });
   }
@@ -787,6 +836,13 @@ export async function moderateRideAdmin(req: AuthRequest, res: Response): Promis
   try {
     conn = await db.getConnection();
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({
+        success: false,
+        message: 'Database service is temporarily unavailable. Please try again shortly.'
+      });
+      return;
+    }
     console.error('moderateRideAdmin error:', error);
     res.status(500).json({ success: false, message: 'Failed to moderate ride.' });
     return;
@@ -861,6 +917,18 @@ export async function moderateRideAdmin(req: AuthRequest, res: Response): Promis
         console.error('moderateRideAdmin rollback error:', rollbackErr);
       }
     }
+    if (
+      error?.code === 'ER_LOCK_WAIT_TIMEOUT' ||
+      error?.errno === 1205 ||
+      error?.isDatabaseUnavailable ||
+      error?.status === 503
+    ) {
+      res.status(503).json({
+        success: false,
+        message: 'Database service is temporarily unavailable. Please try again shortly.'
+      });
+      return;
+    }
     console.error('moderateRideAdmin error:', error);
     res.status(500).json({ success: false, message: 'Failed to moderate ride.' });
   } finally {
@@ -908,6 +976,13 @@ export async function getAllBookingsAdmin(req: AuthRequest, res: Response): Prom
       }
     });
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({
+        success: false,
+        message: 'Database service is temporarily unavailable. Please try again shortly.'
+      });
+      return;
+    }
     console.error('getAllBookingsAdmin error:', error);
     res.status(500).json({ success: false, message: 'Failed to retrieve booking records.' });
   }
@@ -965,6 +1040,13 @@ export async function getReportsAdmin(req: AuthRequest, res: Response): Promise<
       throw err;
     }
   } catch (error: any) {
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({
+        success: false,
+        message: 'Database service is temporarily unavailable. Please try again shortly.'
+      });
+      return;
+    }
     console.error('getReportsAdmin error:', error);
     res.status(500).json({ success: false, message: 'Failed to retrieve safety reports.' });
   }
@@ -1025,6 +1107,13 @@ export async function updateReportAdmin(req: AuthRequest, res: Response): Promis
   } catch (error: any) {
     if (error?.code === 'ER_NO_SUCH_TABLE') {
       res.status(503).json({ success: false, message: 'Safety reports require Migration 002.' });
+      return;
+    }
+    if (error?.isDatabaseUnavailable || error?.status === 503) {
+      res.status(503).json({
+        success: false,
+        message: 'Database service is temporarily unavailable. Please try again shortly.'
+      });
       return;
     }
     console.error('updateReportAdmin error:', error);
